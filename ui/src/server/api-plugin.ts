@@ -448,6 +448,22 @@ export function teamosApi(opts: ApiOptions): Plugin {
 		return { name: null, locked: false };
 	}
 
+	/**
+	 * The dashboard trusts the proxy identity for *who you are*, but until now the
+	 * write endpoints took the sender from the request body, so anyone on the
+	 * tailnet could send as anyone. When the identity is locked, the sender is
+	 * the resolved member, whatever the body says; a locked header that matches
+	 * no member is refused. Unlocked (localhost dev) keeps the picker's choice.
+	 */
+	async function enforceSender(req: IncomingMessage, claimed: unknown): Promise<{ name: string } | { error: string }> {
+		const me = await resolveIdentity(req);
+		if (!me.locked) {
+			return typeof claimed === 'string' && claimed ? { name: claimed } : { error: 'No sender' };
+		}
+		if (!me.name) return { error: `Unrecognized identity: ${me.email ?? 'no email'} matches no member` };
+		return { name: me.name };
+	}
+
 	async function hasTickets(): Promise<boolean> {
 		if (ticketsAvailable !== null) return ticketsAvailable;
 		ticketsAvailable = ticketsDir ? await dirExists(ticketsDir) : false;
@@ -1015,8 +1031,10 @@ export function teamosApi(opts: ApiOptions): Plugin {
 						}
 
 						if (path === '/api/chat/sessions' && method === 'POST') {
-							const { member, human, continueFrom, transcript } = JSON.parse(await readBody(req));
-							const session = await chat.create({ member, human, continueFrom, transcript });
+							const { member, human: claimedHuman, continueFrom, transcript } = JSON.parse(await readBody(req));
+							const who = await enforceSender(req, claimedHuman);
+							if ('error' in who) return json(res, { error: who.error }, 403);
+							const session = await chat.create({ member, human: who.name, continueFrom, transcript });
 							return json(res, chat.summarize(session), 201);
 						}
 
@@ -1064,6 +1082,9 @@ export function teamosApi(opts: ApiOptions): Plugin {
 					// ─── Messages (id-scoped master store) ───────────────────
 					if (path === '/api/messages' && method === 'POST') {
 						const msg = JSON.parse(await readBody(req));
+						const who = await enforceSender(req, msg.from);
+						if ('error' in who) return json(res, { error: who.error }, 403);
+						msg.from = who.name;
 						return json(res, await sendMessage(msg), 201);
 					}
 
