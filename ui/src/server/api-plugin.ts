@@ -149,6 +149,8 @@ interface ChatSessionInfo {
 	startedAt: string;
 	lastActiveAt: string;
 	busy: boolean;
+	/** Set by the dashboard when the viewer may not see the transcript. */
+	private?: boolean;
 	transcript: ChatTranscriptEntry[];
 	/** Where a continued chat resumed an earlier one. */
 	breaks: { index: number; at: string; wrappedUp: boolean }[];
@@ -446,6 +448,39 @@ export function teamosApi(opts: ApiOptions): Plugin {
 			};
 		}
 		return { name: null, locked: false };
+	}
+
+	/**
+	 * The dashboard trusts the proxy identity for *who you are*, but until now the
+	 * write endpoints took the sender from the request body, so anyone on the
+	 * tailnet could send as anyone. When the identity is locked, the sender is
+	 * the resolved member, whatever the body says; a locked header that matches
+	 * no member is refused. Unlocked (localhost dev) keeps the picker's choice.
+	 */
+	async function enforceSender(req: IncomingMessage, claimed: unknown): Promise<{ name: string } | { error: string }> {
+		const me = await resolveIdentity(req);
+		if (!me.locked) {
+			return typeof claimed === 'string' && claimed ? { name: claimed } : { error: 'No sender' };
+		}
+		if (!me.name) return { error: `Unrecognized identity: ${me.email ?? 'no email'} matches no member` };
+		return { name: me.name };
+	}
+
+	/**
+	 * A chat is between the human who opened it and the member. With a locked identity,
+	 * only that human (or a member whose roles include `admin`) sees the transcript or
+	 * may speak in it; everyone else sees that a chat is open and nothing more. Unlocked
+	 * (localhost dev) keeps the old behaviour: every chat is visible.
+	 */
+	async function mayViewChat(req: IncomingMessage, session: unknown): Promise<boolean> {
+		const human = (session as { human?: unknown } | null)?.human;
+		const me = await resolveIdentity(req);
+		if (!me.locked) return true;
+		if (!me.name) return false;
+		if (typeof human === 'string' && me.name === human) return true;
+		const manifest = await readJson(join(teamDir, 'members.json'), { members: [] });
+		const member = (manifest.members ?? []).find((m: any) => m.name === me.name);
+		return Array.isArray(member?.roles) && member.roles.includes('admin');
 	}
 
 	async function hasTickets(): Promise<boolean> {
@@ -1011,12 +1046,19 @@ export function teamosApi(opts: ApiOptions): Plugin {
 							// `session` is the chat the polling tab has open: the poll is its
 							// heartbeat, and the answer says what happened to it if it has gone.
 							const sessionId = url.searchParams.get('session') || undefined;
-							return json(res, await chat.status(member, { sessionId }));
+							const status = await chat.status(member, { sessionId });
+							if (status.session && !(await mayViewChat(req, status.session))) {
+								status.session = { ...status.session, transcript: [], breaks: [], private: true };
+								status.changedFiles = [];
+							}
+							return json(res, status);
 						}
 
 						if (path === '/api/chat/sessions' && method === 'POST') {
-							const { member, human, continueFrom, transcript } = JSON.parse(await readBody(req));
-							const session = await chat.create({ member, human, continueFrom, transcript });
+							const { member, human: claimedHuman, continueFrom, transcript } = JSON.parse(await readBody(req));
+							const who = await enforceSender(req, claimedHuman);
+							if ('error' in who) return json(res, { error: who.error }, 403);
+							const session = await chat.create({ member, human: who.name, continueFrom, transcript });
 							return json(res, chat.summarize(session), 201);
 						}
 
@@ -1024,7 +1066,8 @@ export function teamosApi(opts: ApiOptions): Plugin {
 						if (chatMatch && method === 'POST') {
 							const id = decodeURIComponent(chatMatch[1]);
 							const { text } = JSON.parse(await readBody(req));
-							chat.get(id); // 404 before the stream opens, not as an event inside it
+							const turnSession = chat.get(id); // 404 before the stream opens, not as an event inside it
+							if (!(await mayViewChat(req, turnSession))) return json(res, { error: 'This chat belongs to someone else.' }, 403);
 							const controller = new AbortController();
 							// The client going away is the common case (tab closed,
 							// navigated off mid-answer). Abort tree-kills the agent
@@ -1050,10 +1093,13 @@ export function teamosApi(opts: ApiOptions): Plugin {
 
 						chatMatch = path.match(/^\/api\/chat\/sessions\/([^/]+)$/);
 						if (chatMatch && method === 'GET') {
-							return json(res, chat.summarize(chat.get(decodeURIComponent(chatMatch[1]))));
+							const viewed = chat.get(decodeURIComponent(chatMatch[1]));
+							if (!(await mayViewChat(req, viewed))) return json(res, { error: 'This chat belongs to someone else.' }, 403);
+							return json(res, chat.summarize(viewed));
 						}
 						if (chatMatch && method === 'DELETE') {
 							const id = decodeURIComponent(chatMatch[1]);
+							if (!(await mayViewChat(req, chat.get(id)))) return json(res, { error: 'This chat belongs to someone else.' }, 403);
 							const persist = url.searchParams.get('persist') !== '0';
 							return json(res, await chat.end(id, { persist }));
 						}
@@ -1064,6 +1110,9 @@ export function teamosApi(opts: ApiOptions): Plugin {
 					// ─── Messages (id-scoped master store) ───────────────────
 					if (path === '/api/messages' && method === 'POST') {
 						const msg = JSON.parse(await readBody(req));
+						const who = await enforceSender(req, msg.from);
+						if ('error' in who) return json(res, { error: who.error }, 403);
+						msg.from = who.name;
 						return json(res, await sendMessage(msg), 201);
 					}
 

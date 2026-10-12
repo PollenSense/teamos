@@ -101,6 +101,11 @@ export interface ChatSession {
 	lastActiveAt: string;
 	/** True while a turn's agent is still running. */
 	busy: boolean;
+	/**
+	 * Set when the viewer is not the human who opened the chat (and not an admin): the
+	 * transcript is left out and the pane only says that a chat is open.
+	 */
+	private?: boolean;
 	transcript: ChatTranscriptEntry[];
 	/**
 	 * Where this chat continued an earlier one: a divider before `transcript[index]`.
