@@ -2,6 +2,7 @@
 import { tick } from 'svelte';
 import { ApiError, api } from '../lib/api.js';
 import { identity } from '../lib/identity.svelte.js';
+import Markdown from './Markdown.svelte';
 import type { ChatGone, ChatSession, ChatStatus, ChatTranscriptEntry } from '../lib/types.js';
 
 const { name }: { name: string } = $props();
@@ -353,6 +354,13 @@ function onKeydown(e: KeyboardEvent) {
 				<button class="end-btn" onclick={closeGone} disabled={starting}>Close</button>
 			</span>
 		</div>
+	{:else if session?.private}
+		<div class="start" role="status">
+			<span class="start-hint">
+				<strong>{session.human}</strong> is chatting with {name} (since {new Date(session.startedAt).toLocaleTimeString()}).
+				That conversation is private to them; it is archived as a message when it ends. A member can hold one chat at a time, so try again later.
+			</span>
+		</div>
 	{:else if session}
 		<div class="session-bar">
 			<span class="session-meta">
@@ -374,7 +382,11 @@ function onKeydown(e: KeyboardEvent) {
 				{/each}
 				<div class="turn" class:member={entry.role === 'member'}>
 					<div class="turn-who">{entry.role === 'human' ? session.human : name}</div>
-					<pre class="turn-text">{entry.text}</pre>
+					{#if entry.role === 'member'}
+						<div class="turn-text turn-md"><Markdown source={entry.text} /></div>
+					{:else}
+						<pre class="turn-text">{entry.text}</pre>
+					{/if}
 				</div>
 			{/each}
 			{#each breaks.filter((b) => b.index >= transcript.length && transcript.length > 0) as b (b.at)}

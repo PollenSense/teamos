@@ -1,6 +1,7 @@
 <script lang="ts">
 import { tick, untrack } from 'svelte';
 import { api } from '../lib/api.js';
+import Markdown from './Markdown.svelte';
 import { router } from '../lib/router.svelte.js';
 import type { MailBox, MailboxCounts, Thread, ThreadMessage } from '../lib/types.js';
 
@@ -20,6 +21,24 @@ type Filter = MailBox | 'all';
  * drop the pick back to the default each time.
  */
 const FILTER_KEY = 'teamos-mailbox-filter';
+/** Messages are markdown; the rendered form is the default and the raw text is one click away. */
+const MD_KEY = 'teamos-md-preview';
+function storedMdPreview(): boolean {
+	try {
+		return localStorage.getItem(MD_KEY) !== 'raw';
+	} catch {
+		return true;
+	}
+}
+let mdPreview = $state(storedMdPreview());
+function toggleMdPreview() {
+	mdPreview = !mdPreview;
+	try {
+		localStorage.setItem(MD_KEY, mdPreview ? 'preview' : 'raw');
+	} catch {
+		// private mode: the choice lasts for this page only
+	}
+}
 const FILTERS: readonly Filter[] = ['inbox', 'sent', 'archives', 'all'];
 
 function storedFilter(): Filter | null {
@@ -461,10 +480,15 @@ function roleOf(msg: ThreadMessage): string {
 									</div>
 									{#if bodies[msg.id] === undefined}
 										<div class="empty small">Loading...</div>
+									{:else if mdPreview}
+										<Markdown source={bodies[msg.id]} />
 									{:else}
 										<pre class="msg-text">{bodies[msg.id]}</pre>
 									{/if}
 									<div class="msg-actions">
+										<button class="action-btn view" onclick={toggleMdPreview} title={mdPreview ? 'Show the raw markdown' : 'Show the rendered message'}>
+											{mdPreview ? 'Raw' : 'Preview'}
+										</button>
 										<a class="action-btn reply" href={replyHref(msg)}>Reply</a>
 										{#if msg.to.length + (msg.cc?.length ?? 0) > 1}
 											<a class="action-btn reply" href={replyHref(msg, true)}>Reply All</a>
@@ -735,6 +759,8 @@ function roleOf(msg: ThreadMessage): string {
 	}
 	.action-btn:disabled { opacity: 0.5; cursor: default; }
 	.action-btn.reply { background: var(--primary-subtle); color: var(--primary); }
+	.action-btn.view { background: transparent; border: 1px solid var(--border, rgba(127,127,127,0.4)); color: var(--text-muted); }
+	.action-btn.view:hover { color: var(--text); }
 	.action-btn.reply:hover { background: var(--primary); color: var(--on-primary); text-decoration: none; }
 	.action-btn.archive { background: var(--bg); color: var(--text-muted); border: 1px solid var(--border); }
 	.action-btn.archive:hover { color: var(--text); }

@@ -1,5 +1,6 @@
 <script lang="ts">
 import { api } from '../lib/api.js';
+import Markdown from './Markdown.svelte';
 import { identity } from '../lib/identity.svelte.js';
 import { router } from '../lib/router.svelte.js';
 import type { MemberSummary, Message, Project } from '../lib/types.js';
@@ -225,7 +226,7 @@ function reset() {
 						<span class="reply-subject">{replyMessage.subject}</span>
 					{/if}
 				</div>
-				<pre class="reply-body">{replyMessage.body}</pre>
+				<div class="reply-body"><Markdown source={replyMessage.body} /></div>
 			</div>
 		{/if}
 
