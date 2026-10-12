@@ -2,6 +2,7 @@
 import { tick, untrack } from 'svelte';
 import { api } from '../lib/api.js';
 import Markdown from './Markdown.svelte';
+import type { LinkMap } from '../lib/linkify.js';
 import { router } from '../lib/router.svelte.js';
 import type { MailBox, MailboxCounts, Thread, ThreadMessage } from '../lib/types.js';
 
@@ -68,6 +69,8 @@ let search = $state('');
 let selectedId = $state<string | null>(null);
 let expanded = $state<Set<string>>(new Set());
 let bodies = $state<Record<string, string>>({});
+/** Paths the server resolved in each body (message id -> exact text -> link); empty when none. */
+let bodyLinks = $state<Record<string, LinkMap>>({});
 let bodiesLoading = $state(false);
 let busy = $state<string | null>(null);
 /** Set while a deep link (?msg=) is waiting for its thread to render. */
@@ -232,7 +235,12 @@ async function loadBodies(thread: Thread) {
 	try {
 		const msgs = await api.messagesBatch(missing);
 		const next = { ...bodies };
-		for (const m of msgs) next[m.id] = m.body;
+		const nextLinks = { ...bodyLinks };
+		for (const m of msgs) {
+			next[m.id] = m.body;
+			if (m.links) nextLinks[m.id] = m.links;
+		}
+		bodyLinks = nextLinks;
 		// Ids the store no longer resolves get an explicit marker so the row
 		// doesn't sit on "Loading..." forever.
 		for (const id of missing) if (next[id] === undefined) next[id] = '(message no longer in the store)';
@@ -481,7 +489,7 @@ function roleOf(msg: ThreadMessage): string {
 									{#if bodies[msg.id] === undefined}
 										<div class="empty small">Loading...</div>
 									{:else if mdPreview}
-										<Markdown source={bodies[msg.id]} />
+										<Markdown source={bodies[msg.id]} links={bodyLinks[msg.id]} />
 									{:else}
 										<pre class="msg-text">{bodies[msg.id]}</pre>
 									{/if}

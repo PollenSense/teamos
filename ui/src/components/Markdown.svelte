@@ -1,8 +1,10 @@
 <script lang="ts">
+import type { LinkMap } from '../lib/linkify.js';
 import { renderMarkdown } from '../lib/markdown.js';
 
-const { source }: { source: string } = $props();
-const html = $derived(renderMarkdown(source));
+/** `links`: paths the server resolved in this text (exact text -> target); see lib/linkify.ts. */
+const { source, links }: { source: string; links?: LinkMap } = $props();
+const html = $derived(renderMarkdown(source, links));
 </script>
 
 <div class="md">{@html html}</div>
