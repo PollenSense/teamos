@@ -19,4 +19,4 @@ and written so they could be sent upstream as pull requests. Every change gets o
 
 ## Wanted (not started)
 
-- (nothing yet; add here)
+- **Linkify paths in messages** (Cy, from 2026-10-12): Drive files via an rclone-built index, code via GitHub, tickets and member state via dashboard routes. Config-driven (`links` block in teamos.config.json) so it can go upstream.
