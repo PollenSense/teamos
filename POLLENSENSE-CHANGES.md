@@ -6,13 +6,17 @@ and written so they could be sent upstream as pull requests. Every change gets o
 
 | Date | Branch / commit | What | Why | Upstream PR? |
 | --- | --- | --- | --- | --- |
-| 2026-10-09 | (none yet) | Fork created; this file. | So the AI team's dashboard can be fixed without waiting on upstream. | n/a |
+| 2026-10-09 | main | Fork created; this file. | So the AI team's dashboard can be fixed without waiting on upstream. | n/a |
+| 2026-10-12 | `ps/dashboard-markdown-and-chat-scope` (PR #2, supersedes PR #1) | Sender identity enforced on messages and chat start; chat transcripts visible only to the human who opened them (or an `admin` role); message bodies, reply quotes and member chat replies render as markdown by default with a Raw toggle (`marked` + DOMPurify). | Impersonation (found 2026-10-08), Sagun's chat-privacy request, and Van's ask that markdown messages read as rendered text. | worth sending |
+
+## Done, pending merge (PR #2)
+
+1. **Sender identity enforced.** Before merging: every dashboard user's Tailscale login email must match
+   their `members.json` `email`, or they get 403 on send; three entries are still "guessed" (kris, sagun, jarris).
+2. **Chat visibility scoped.** With a locked identity, only the opener (or an `admin` role) sees or speaks in a
+   chat; others see "X is chatting with Y" and no transcript. Unlocked localhost keeps the old behaviour.
+3. **Markdown preview for messages.** Raw toggle per message, remembered per browser.
 
 ## Wanted (not started)
 
-1. **Enforce the sender identity on the dashboard.** `ui/src/server/api-plugin.ts`: `POST /api/messages`
-   and the chat session start take `from` / `human` from the request body. When `resolveIdentity(req)` is
-   `locked`, overwrite them with the resolved member and return 403 when the header email matches no
-   member. Found 2026-10-08 (anyone on the tailnet could send as anyone).
-2. **Scope chat visibility.** Every chat transcript is visible to every dashboard user. Show a chat only
-   to the human who opened it, the members it addresses, and admins (Sagun's request, 2026-10-08).
+- (nothing yet; add here)
