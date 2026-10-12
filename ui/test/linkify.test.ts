@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, before, describe, it } from 'node:test';
 import { Marked } from 'marked';
-import { findCandidates, type LinkMap, linkRenderer, splitLine } from '../src/lib/linkify.js';
+import { findCandidates, isMessageId, type LinkMap, linkRenderer, splitLine } from '../src/lib/linkify.js';
 import { createLinker } from '../src/server/linkify.js';
 
 const driveFile = (id: string) => `https://drive.google.com/file/d/${id}/view`;
@@ -41,6 +41,15 @@ describe('findCandidates', () => {
 
 	it('ignores bare file names, URLs and the middle of longer paths', () => {
 		assert.deepEqual(findCandidates('README.md https://example.com/a/b.html /abs/path/x.md'), []);
+	});
+});
+
+describe('message ids', () => {
+	it('are found with the path-like tokens, and only when whole', () => {
+		const found = findCandidates('Reply on 2026-10-12T18-44-15.508Z-0cfo, not 2026-10-12T18-44-15.508Z-0cfox or 0cfo. See docs/x.md.');
+		assert.deepEqual(found.sort(), ['2026-10-12T18-44-15.508Z-0cfo', 'docs/x.md']);
+		assert.ok(isMessageId('2026-10-12T18-44-15.508Z-0cfo'));
+		assert.ok(!isMessageId('docs/x.md'));
 	});
 });
 
@@ -251,5 +260,55 @@ describe('Code resolver', () => {
 		const out = await both.linksFor('pollen/src/a.ts docs/only-in-workspace.md');
 		assert.equal(out['pollen/src/a.ts'].href, `${gh}/blob/main/src/a.ts`);
 		assert.equal(out['docs/only-in-workspace.md'].href, driveFolder('DOCS'));
+	});
+});
+
+describe('Dashboard resolver', () => {
+	let root: string;
+	const id = '2026-10-12T18-44-15.508Z-0cfo';
+	before(async () => {
+		root = await mkdtemp(join(tmpdir(), 'linkify-dash-'));
+		await mkdir(join(root, 'team', 'members', 'cy', 'archives'), { recursive: true });
+		await writeFile(join(root, 'team', 'members.json'), JSON.stringify({ members: [{ name: 'cy' }, { name: 'van' }] }));
+		await mkdir(join(root, 'team', '.logs'), { recursive: true });
+		await writeFile(join(root, 'team', '.logs', 'drive-index.tsv'), './\tROOT\t\nteam/\tTEAM\tROOT\n');
+	});
+	after(() => rm(root, { recursive: true, force: true }));
+
+	const make = (links?: object) =>
+		createLinker({
+			projectRoot: root,
+			teamDir: join(root, 'team'),
+			messageExists: async (m) => m === id,
+			links,
+		});
+
+	it('links a member file to that member\'s tab, only for a member who exists', async () => {
+		const out = await make().linksFor(
+			'team/members/cy/state.md team/members/van/todo.json:3 ./team/members/cy/schedule.json team/members/ghost/state.md',
+		);
+		assert.equal(out['team/members/cy/state.md'].href, '#/member/cy?tab=state');
+		assert.equal(out['./team/members/cy/schedule.json'].href, '#/member/cy?tab=schedule');
+		assert.equal(out['team/members/van/todo.json:3'].href, '#/member/van?tab=todos');
+		assert.equal(out['team/members/cy/state.md'].external, false);
+		assert.equal(out['team/members/ghost/state.md'], undefined);
+	});
+
+	it('links a message id that exists, and not one that does not', async () => {
+		const out = await make().linksFor(`${id} 2026-10-12T18-44-15.508Z-zzzz`);
+		assert.equal(out[id].href, `#/message/${id}`);
+		assert.equal(out[id].external, false);
+		assert.deepEqual(Object.keys(out), [id]);
+	});
+
+	it('leaves other member files to Drive', async () => {
+		const out = await make({ drive: { root: 'PollenBot' } }).linksFor('team/members/cy/archives/ team/members/cy/state.md');
+		assert.equal(out['team/members/cy/state.md'].href, '#/member/cy?tab=state');
+		assert.equal(out['team/members/cy/archives/'].href, driveFolder('TEAM'));
+	});
+
+	it('can be turned off, and is off without a team folder', async () => {
+		assert.deepEqual(await make({ dashboard: false }).linksFor(`${id} team/members/cy/state.md`), {});
+		assert.deepEqual(await createLinker({ projectRoot: root }).linksFor('team/members/cy/state.md'), {});
 	});
 });

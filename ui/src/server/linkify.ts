@@ -1,10 +1,11 @@
 import { readFile, stat } from 'node:fs/promises';
-import { join, posix, resolve } from 'node:path';
-import { findCandidates, type LinkMap, type LinkTarget, splitLine } from '../lib/linkify.js';
+import { join, posix, relative, resolve, sep } from 'node:path';
+import { findCandidates, isMessageId, type LinkMap, type LinkTarget, splitLine } from '../lib/linkify.js';
 
 /**
  * The `links` block of teamos.config.json. Everything is optional and nothing is assumed:
- * a project that configures no resolver gets no links.
+ * Drive and repository links exist only where configured. Links to the dashboard's own pages
+ * (a member's state, a message id) need no configuration; `dashboard: false` turns them off.
  *
  *   "links": {
  *     "drive": { "root": "PollenBot", "index": "team/.logs/drive-index.tsv" },
@@ -26,11 +27,17 @@ export interface LinksConfig {
 	 * the links point at (default `main`). A path is linked only if it exists in the checkout.
 	 */
 	repos?: Record<string, { url: string; dir?: string; branch?: string }>;
+	/** Links to this dashboard's pages. Default true. */
+	dashboard?: boolean;
 }
 
 export interface LinkerOptions {
 	/** The workspace the paths in messages are relative to (the folder that holds team/). */
 	projectRoot: string;
+	/** The team folder (members.json, members/<name>/...). Needed for links to member pages. */
+	teamDir?: string;
+	/** Does a message with this id exist? Needed for links to messages. */
+	messageExists?: (id: string) => Promise<boolean>;
 	links?: LinksConfig;
 }
 
@@ -93,6 +100,51 @@ export function createLinker(opts: LinkerOptions): Linker {
 		const segments = rel.split('/');
 		if (segments.some((s) => s === '..' || s.startsWith('.') || s === 'node_modules')) return null;
 		return posix.normalize(rel);
+	}
+
+	// ─── The dashboard's own pages ───────────────────────────
+
+	if (config.dashboard !== false) {
+		const { teamDir, messageExists } = opts;
+		const teamRel = teamDir ? relative(projectRoot, teamDir).split(sep).join('/') : '';
+		const teamInside = !!teamRel && !teamRel.startsWith('..');
+		/** The tab of a member's page that shows each of their files. */
+		const tabOf: Record<string, string> = { 'state.md': 'state', 'todo.json': 'todos', 'schedule.json': 'schedule' };
+		const memberFile = teamInside
+			? new RegExp(`^(?:\\./)*${teamRel.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}/members/([^/]+)/(state\\.md|todo\\.json|schedule\\.json)$`)
+			: null;
+
+		let members: { mtimeMs: number; names: Set<string> } | null = null;
+		async function memberNames(): Promise<Set<string>> {
+			const file = join(teamDir as string, 'members.json');
+			try {
+				const mtimeMs = (await stat(file)).mtimeMs;
+				if (members && members.mtimeMs === mtimeMs) return members.names;
+				const parsed = JSON.parse(await readFile(file, 'utf-8'));
+				const names = new Set<string>(
+					(Array.isArray(parsed?.members) ? parsed.members : []).map((m: { name?: unknown }) => String(m?.name ?? '')),
+				);
+				members = { mtimeMs, names };
+				return names;
+			} catch {
+				return new Set();
+			}
+		}
+
+		const resolveDashboard: Resolver = async ({ text, path }) => {
+			if (isMessageId(text)) {
+				if (!messageExists || !(await messageExists(text))) return null;
+				return { href: `#/message/${text}`, title: 'Open this message in the dashboard', external: false };
+			}
+			const m = memberFile?.exec(path);
+			if (!m || !(await memberNames()).has(m[1])) return null;
+			return {
+				href: `#/member/${encodeURIComponent(m[1])}?tab=${tabOf[m[2]]}`,
+				title: `Open ${m[1]}'s ${tabOf[m[2]]} in the dashboard`,
+				external: false,
+			};
+		};
+		resolvers.push(resolveDashboard);
 	}
 
 	// ─── Code in a source repository ─────────────────────────

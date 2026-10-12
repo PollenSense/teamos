@@ -426,7 +426,12 @@ export function teamosApi(opts: ApiOptions): Plugin {
 	const siblingPort = opts.siblingPort ?? 3004;
 	const ticketsDir = opts.ticketsDir ?? null;
 	let ticketsAvailable: boolean | null = null;
-	const linker = createLinker({ projectRoot: opts.projectRoot ?? join(teamDir, '..'), links: opts.links });
+	const linker = createLinker({
+		projectRoot: opts.projectRoot ?? join(teamDir, '..'),
+		teamDir,
+		messageExists: async (id) => (await readCachedMessage(id)) !== null,
+		links: opts.links,
+	});
 
 	/** A copy of the message with the paths in its body (and its parent's) resolved to links. */
 	async function withLinks(msg: Message): Promise<Message> {

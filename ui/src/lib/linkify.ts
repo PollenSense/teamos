@@ -2,7 +2,7 @@
  * Turning paths in a message into links, without touching the message.
  *
  * The server scans a body for path-shaped tokens and resolves the ones it can (a file in the
- * Drive index, a file in a code repository, a dashboard page) into a map: the exact text found
+ * Drive index, a file in a code repository, a dashboard page, a message) into a map: the exact text found
  * -> where it should link. The browser renders the markdown as before and, while rendering,
  * links those exact strings. The raw body is never rewritten, so the Raw view still shows what
  * the author wrote, and marked's own tokenizer decides what is code or already a link: code
@@ -25,20 +25,34 @@ export interface LinkTarget {
 export type LinkMap = Record<string, LinkTarget>;
 
 /**
- * A path-shaped token: optional leading "./" or "../", one or more "segment/" parts, then an
- * optional last segment that ends in a letter, digit, "_", "@", "+" or "~" (so a full stop that
- * ends a sentence stays out), then an optional ":line" or ":line-line" suffix. It must contain
- * a slash: a bare "README.md" is not a candidate. Not preceded by a path character, "/" or ":"
- * (that would be the middle of a URL or of a longer path).
+ * What is linkable in a body. Two shapes, tried at each position:
+ *
+ * - a message id, as the message store names them: 2026-10-12T18-44-15.508Z-0cfo;
+ * - a path-shaped token: optional leading "./" or "../", one or more "segment/" parts, then an
+ *   optional last segment that ends in a letter, digit, "_", "@", "+" or "~" (so a full stop that
+ *   ends a sentence stays out), then an optional ":line" or ":line-line" suffix. It must contain
+ *   a slash: a bare "README.md" is not a candidate.
+ *
+ * Neither may be preceded by a path character, "/" or ":" (that would be the middle of a URL or
+ * of a longer path).
  */
 const PATH = '[A-Za-z0-9_.@+~-]';
-const CANDIDATE_SOURCE = `(?<![A-Za-z0-9_.@+~/:-])(?:${PATH}+/)+(?:${PATH}*[A-Za-z0-9_@+~])?(?::\\d+(?:-\\d+)?)?`;
+const MESSAGE_ID = '\\d{4}-\\d{2}-\\d{2}T\\d{2}-\\d{2}-\\d{2}\\.\\d{3}Z-[a-z0-9]{4}(?![A-Za-z0-9])';
+const PATH_SHAPE = `(?:${PATH}+/)+(?:${PATH}*[A-Za-z0-9_@+~])?(?::\\d+(?:-\\d+)?)?`;
+const CANDIDATE_SOURCE = `(?<![A-Za-z0-9_.@+~/:-])(?:${MESSAGE_ID}|${PATH_SHAPE})`;
+
+const MESSAGE_ID_WHOLE = new RegExp(`^${MESSAGE_ID}$`);
+
+/** Is this candidate a message id rather than a path? */
+export function isMessageId(candidate: string): boolean {
+	return MESSAGE_ID_WHOLE.test(candidate);
+}
 
 function candidateRegex(): RegExp {
 	return new RegExp(CANDIDATE_SOURCE, 'g');
 }
 
-/** Every distinct path-shaped token in a body (code and links included: the renderer decides). */
+/** Every distinct linkable token in a body (code and links included: the renderer decides). */
 export function findCandidates(source: string): string[] {
 	const found = new Set<string>();
 	for (const m of (source ?? '').matchAll(candidateRegex())) found.add(m[0]);
