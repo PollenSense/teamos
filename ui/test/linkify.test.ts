@@ -184,3 +184,72 @@ describe('Drive resolver', () => {
 		assert.equal((await l.linksFor('docs/x.md'))['docs/x.md'].href, driveFile('TWO'));
 	});
 });
+
+describe('Code resolver', () => {
+	let base: string;
+	let ws: string;
+	before(async () => {
+		base = await mkdtemp(join(tmpdir(), 'linkify-code-'));
+		ws = join(base, 'ws');
+		await mkdir(join(ws, 'docs'), { recursive: true });
+		await mkdir(join(base, 'pollen', 'src'), { recursive: true });
+		await mkdir(join(base, 'pollen', '.github', 'workflows'), { recursive: true });
+		await mkdir(join(base, 'pollen', '.git'), { recursive: true });
+		await mkdir(join(base, 'features'), { recursive: true });
+		await writeFile(join(base, 'pollen', 'src', 'a b.ts'), '');
+		await writeFile(join(base, 'pollen', 'src', 'a.ts'), '');
+		await writeFile(join(base, 'pollen', '.github', 'workflows', 'x.yml'), '');
+		await writeFile(join(base, 'pollen', '.git', 'config'), '');
+		await writeFile(join(base, 'features', 'f.md'), '');
+		await writeFile(join(ws, 'docs', 'only-in-workspace.md'), '');
+		await mkdir(join(ws, 'team', '.logs'), { recursive: true });
+		await writeFile(join(ws, 'team', '.logs', 'drive-index.tsv'), './\tROOT\t\ndocs/\tDOCS\tROOT\n');
+	});
+	after(() => rm(base, { recursive: true, force: true }));
+
+	const repos = {
+		pollen: { url: 'https://github.com/PollenSense/pollen.git' },
+		features: { url: 'https://github.com/PollenSense/pollen-features/', branch: 'trunk' },
+	};
+	const linker = () => createLinker({ projectRoot: ws, links: { repos } });
+	const gh = 'https://github.com/PollenSense/pollen';
+
+	it('links a file with a line or a line range, with or without ../', async () => {
+		const out = await linker().linksFor('../pollen/src/a.ts:12-20 pollen/src/a.ts:7 pollen/src/a.ts ./pollen/src/a.ts');
+		assert.equal(out['../pollen/src/a.ts:12-20'].href, `${gh}/blob/main/src/a.ts#L12-L20`);
+		assert.equal(out['pollen/src/a.ts:7'].href, `${gh}/blob/main/src/a.ts#L7`);
+		assert.equal(out['pollen/src/a.ts'].href, `${gh}/blob/main/src/a.ts`);
+		assert.match(out['pollen/src/a.ts'].title ?? '', /not merged and pushed yet is not there/);
+	});
+
+	it('links a folder as a tree and honours the configured branch and url', async () => {
+		const out = await linker().linksFor('pollen/src/ ../features/f.md');
+		assert.equal(out['pollen/src/'].href, `${gh}/tree/main/src`);
+		assert.equal(out['../features/f.md'].href, 'https://github.com/PollenSense/pollen-features/blob/trunk/f.md');
+	});
+
+	it('allows hidden files of the repo but never its git store, and needs the file to exist', async () => {
+		const out = await linker().linksFor('pollen/.github/workflows/x.yml pollen/.git/config pollen/src/missing.ts pollen/src/../../x');
+		assert.deepEqual(Object.keys(out), ['pollen/.github/workflows/x.yml']);
+	});
+
+	it('leaves out names with spaces or percent signs', async () => {
+		const out = await linker().linksFor('pollen/src/a%20b.ts pollen/src/a-b.ts');
+		assert.deepEqual(Object.keys(out), []);
+	});
+
+	it('ignores a repo with an address that is not plain https', async () => {
+		const bad = createLinker({
+			projectRoot: ws,
+			links: { repos: { pollen: { url: 'javascript:alert(1)' }, features: { url: 'http://insecure.example/x' } } },
+		});
+		assert.deepEqual(await bad.linksFor('pollen/src/a.ts ../features/f.md'), {});
+	});
+
+	it('wins over Drive for a repo path, and Drive still serves the workspace', async () => {
+		const both = createLinker({ projectRoot: ws, links: { repos, drive: { root: 'PollenBot' } } });
+		const out = await both.linksFor('pollen/src/a.ts docs/only-in-workspace.md');
+		assert.equal(out['pollen/src/a.ts'].href, `${gh}/blob/main/src/a.ts`);
+		assert.equal(out['docs/only-in-workspace.md'].href, driveFolder('DOCS'));
+	});
+});

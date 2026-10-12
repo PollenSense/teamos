@@ -1,5 +1,5 @@
 import { readFile, stat } from 'node:fs/promises';
-import { join, posix } from 'node:path';
+import { join, posix, resolve } from 'node:path';
 import { findCandidates, type LinkMap, type LinkTarget, splitLine } from '../lib/linkify.js';
 
 /**
@@ -7,7 +7,8 @@ import { findCandidates, type LinkMap, type LinkTarget, splitLine } from '../lib
  * a project that configures no resolver gets no links.
  *
  *   "links": {
- *     "drive": { "root": "PollenBot", "index": "team/.logs/drive-index.tsv" }
+ *     "drive": { "root": "PollenBot", "index": "team/.logs/drive-index.tsv" },
+ *     "repos": { "pollen": { "url": "https://github.com/PollenSense/pollen" } }
  *   }
  */
 export interface LinksConfig {
@@ -18,6 +19,13 @@ export interface LinksConfig {
 	 * relative to the project root; default `team/.logs/drive-index.tsv`.
 	 */
 	drive?: { root?: string; index?: string };
+	/**
+	 * Source repositories checked out next to the workspace. The key is the name people write
+	 * ("pollen/src/a.ts:12", "../pollen/src/a.ts:12"); `url` is the web address of the repository;
+	 * `dir` is the checkout, relative to the project root or absolute (default `../<key>`); `branch` is the one
+	 * the links point at (default `main`). A path is linked only if it exists in the checkout.
+	 */
+	repos?: Record<string, { url: string; dir?: string; branch?: string }>;
 }
 
 export interface LinkerOptions {
@@ -54,21 +62,24 @@ export function createLinker(opts: LinkerOptions): Linker {
 
 	// ─── Shared helpers ──────────────────────────────────────
 
-	const existsCache = new Map<string, { at: number; ok: boolean }>();
-	/** Does this workspace-relative path exist under the project root? */
-	async function existsInWorkspace(rel: string): Promise<boolean> {
-		const hit = existsCache.get(rel);
+	const statCache = new Map<string, { at: number; kind: 'file' | 'dir' | null }>();
+	/** What is at this absolute path: a file, a folder, or nothing. */
+	async function kindOf(abs: string): Promise<'file' | 'dir' | null> {
+		const hit = statCache.get(abs);
 		const now = Date.now();
-		if (hit && now - hit.at < EXISTS_TTL_MS) return hit.ok;
-		let ok = false;
+		if (hit && now - hit.at < EXISTS_TTL_MS) return hit.kind;
+		let kind: 'file' | 'dir' | null = null;
 		try {
-			await stat(join(projectRoot, rel));
-			ok = true;
+			kind = (await stat(abs)).isDirectory() ? 'dir' : 'file';
 		} catch {
 			// Not there.
 		}
-		existsCache.set(rel, { at: now, ok });
-		return ok;
+		statCache.set(abs, { at: now, kind });
+		return kind;
+	}
+	/** Does this workspace-relative path exist under the project root? */
+	async function existsInWorkspace(rel: string): Promise<boolean> {
+		return (await kindOf(join(projectRoot, rel))) !== null;
 	}
 
 	/**
@@ -82,6 +93,37 @@ export function createLinker(opts: LinkerOptions): Linker {
 		const segments = rel.split('/');
 		if (segments.some((s) => s === '..' || s.startsWith('.') || s === 'node_modules')) return null;
 		return posix.normalize(rel);
+	}
+
+	// ─── Code in a source repository ─────────────────────────
+
+	const repos = new Map<string, { url: string; dir: string; branch: string }>();
+	for (const [name, repo] of Object.entries(config.repos ?? {})) {
+		// The address goes into an href, so only a plain https address is accepted.
+		const url = (repo?.url ?? '').replace(/\.git$/, '').replace(/\/+$/, '');
+		if (!/^https:\/\/[^\s"'<>]+$/.test(url) || name.includes('/')) continue;
+		repos.set(name, { url, dir: repo.dir ?? `../${name}`, branch: repo.branch ?? 'main' });
+	}
+
+	if (repos.size > 0) {
+		const resolveCode: Resolver = async ({ path, line, lineEnd }) => {
+			const m = /^(?:\.\/)*(?:\.\.\/)?([^/]+)\/(.+)$/.exec(path);
+			const repo = m ? repos.get(m[1]) : undefined;
+			if (!m || !repo) return null;
+			const rel = m[2].replace(/\/+$/, '');
+			// A repository's own hidden files (.github/...) are fine; its git store and dependencies are not.
+			if (!rel || rel.split('/').some((seg) => seg === '..' || seg === '.git' || seg === 'node_modules')) return null;
+			const kind = await kindOf(resolve(projectRoot, repo.dir, rel));
+			if (!kind) return null;
+			const webPath = rel.split('/').map(encodeURIComponent).join('/');
+			const anchor = kind === 'file' && line ? `#L${line}${lineEnd && lineEnd > line ? `-L${lineEnd}` : ''}` : '';
+			return {
+				href: `${repo.url}/${kind === 'dir' ? 'tree' : 'blob'}/${encodeURIComponent(repo.branch)}/${webPath}${anchor}`,
+				title: `Open ${m[1]}/${rel} on GitHub (${repo.branch} branch; work that is not merged and pushed yet is not there)`,
+				external: true,
+			};
+		};
+		resolvers.push(resolveCode);
 	}
 
 	// ─── Drive ───────────────────────────────────────────────
