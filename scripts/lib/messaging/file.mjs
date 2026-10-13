@@ -3,6 +3,8 @@ import { mkdir, readFile, unlink, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { pathExists } from '../util.mjs';
 import { applyAttachmentsToBody, isAttachmentName, prepareAttachments, removeAttachments, writeAttachments } from './attachments.mjs';
+import { QuestionIndex } from './question-index.mjs';
+import { checkEntry, countQuestions, ensureQuestionsInBody, parseAnswers, validateQuestions } from './questions.mjs';
 
 /**
  * File-based messaging adapter.
@@ -21,8 +23,18 @@ function makeMessageId() {
 	return `${iso}-${rand}`;
 }
 
-function parseFrontmatterValue(raw) {
+/** Frontmatter fields whose value is one line of JSON (lists of objects); every other field keeps the old parsing. */
+const JSON_FIELDS = new Set(['questions', 'answers']);
+
+function parseFrontmatterValue(raw, key) {
 	const trimmed = raw.trim();
+	if (JSON_FIELDS.has(key) && trimmed.startsWith('[') && trimmed.endsWith(']')) {
+		try {
+			return JSON.parse(trimmed);
+		} catch {
+			return trimmed;
+		}
+	}
 	if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
 		const inner = trimmed.slice(1, -1).trim();
 		if (!inner) return [];
@@ -44,7 +56,7 @@ function parseFrontmatter(content) {
 		if (colonIdx <= 0) continue;
 		const key = line.slice(0, colonIdx).trim();
 		const value = line.slice(colonIdx + 1);
-		metadata[key] = parseFrontmatterValue(value);
+		metadata[key] = parseFrontmatterValue(value, key);
 	}
 	return { metadata, body: match[2].trim() };
 }
@@ -62,6 +74,8 @@ function serializeMessage(msg) {
 	if (msg.supersededBy) lines.push(`supersededBy: ${msg.supersededBy}`);
 	if (msg.projectCode) lines.push(`projectCode: ${msg.projectCode}`);
 	if (msg.attachments?.length) lines.push(`attachments: [${msg.attachments.join(', ')}]`);
+	if (msg.questions?.length) lines.push(`questions: ${JSON.stringify(msg.questions)}`);
+	if (msg.answers?.length) lines.push(`answers: ${JSON.stringify(msg.answers)}`);
 	lines.push('---', '', (msg.body ?? '').trimEnd(), '');
 	return lines.join('\n');
 }
@@ -85,8 +99,17 @@ function normalizeMessage(metadata, body) {
 			typeof metadata.supersededBy === 'string' && metadata.supersededBy ? metadata.supersededBy : undefined,
 		projectCode: typeof metadata.projectCode === 'string' && metadata.projectCode ? metadata.projectCode : undefined,
 		attachments: (Array.isArray(metadata.attachments) ? metadata.attachments : []).filter(isAttachmentName),
+		...objectList('questions', metadata.questions),
+		...objectList('answers', metadata.answers),
 		body,
 	};
+}
+
+/** `{ [key]: list }` when `value` is a list of objects (JSON in the frontmatter); otherwise nothing. */
+function objectList(key, value) {
+	if (!Array.isArray(value)) return {};
+	const list = value.filter((v) => v && typeof v === 'object' && !Array.isArray(v));
+	return list.length > 0 ? { [key]: list } : {};
 }
 
 function stripReplyPrefix(subject) {
@@ -101,6 +124,10 @@ export class FileMessagingAdapter {
 	constructor(teamDir) {
 		this.teamDir = teamDir;
 		this.messagesDir = join(teamDir, 'messages');
+		this._questions = new QuestionIndex(this.messagesDir, (head) => {
+			const { metadata } = parseFrontmatter(head);
+			return normalizeMessage(metadata, '');
+		});
 	}
 
 	// ─── Paths ─────────────────────────────────────────────────────────────────
@@ -130,6 +157,56 @@ export class FileMessagingAdapter {
 			return data.members.map((m) => m?.name).filter((n) => typeof n === 'string' && n.length > 0);
 		} catch {
 			return null;
+		}
+	}
+
+	/** `(name) => boolean` for "is this member a person"; with no roster everyone counts. */
+	async _isHuman() {
+		try {
+			const data = JSON.parse(await readFile(join(this.teamDir, 'members.json'), 'utf-8'));
+			const types = new Map((data.members ?? []).map((m) => [m?.name, m?.type]));
+			if (![...types.values()].some(Boolean)) return undefined;
+			return (name) => types.get(name) === 'human';
+		} catch {
+			return undefined;
+		}
+	}
+
+	async _questionSnapshot() {
+		return this._questions.snapshot({ isHuman: await this._isHuman() });
+	}
+
+	/**
+	 * What the thread says about each question of `ask`: the answers from the replies in the store. Used when
+	 * an answer is sent (to refuse a bad one with the reason) and when a message is read with its state.
+	 */
+	async _foldAsk(ask) {
+		const { folded } = await this._questionSnapshot();
+		return folded.get(ask.id);
+	}
+
+	/** Check a reply's `answers` against the ask it replies to; throws with the reason (status 400). */
+	async _checkAnswers(answers, { from, replyTo }) {
+		const bad = (message) => Object.assign(new Error(message), { status: 400 });
+		if (!replyTo) throw bad('answers need replyTo: the message that asked the question');
+		const seen = new Set();
+		for (const entry of answers) {
+			if (entry.ask !== replyTo) throw bad(`answers must reply to the message that asked: ask ${entry.ask} is not replyTo ${replyTo}`);
+			if (seen.has(entry.q)) throw bad(`answer ${entry.q} once per message`);
+			seen.add(entry.q);
+		}
+		const ask = await this._readRawMessage(replyTo).catch(() => null);
+		if (!ask) throw bad(`answers: message ${replyTo} not found`);
+		if (!ask.questions?.length) throw bad(`answers: ${replyTo} asked no questions`);
+		if (ask.supersededBy) throw bad(`answers: ${replyTo} was replaced by ${ask.supersededBy}; answer that one`);
+		const { folded, ctx } = await this._questionSnapshot();
+		const current = folded.get(ask.id);
+		if (!current) throw bad(`answers: ${replyTo} asked no questions`);
+		for (const entry of answers) {
+			const state = current.questions.find((q) => q.id === entry.q);
+			if (!state) throw bad(`answers: ${replyTo} has no question ${entry.q}`);
+			const verdict = checkEntry(entry, { ask, sender: from, state, ctx });
+			if (!verdict.ok) throw bad(`answers: ${verdict.reason}`);
 		}
 	}
 
@@ -254,7 +331,7 @@ export class FileMessagingAdapter {
 		return summaries.length > 0;
 	}
 
-	async sendMessage({ from, to, cc, subject, body, replyTo, projectCode, attachments }) {
+	async sendMessage({ from, to, cc, subject, body, replyTo, projectCode, attachments, questions, answers }) {
 		if (!from) throw new Error('sendMessage: from is required');
 		if (!Array.isArray(to) || to.length === 0) throw new Error('sendMessage: to is required');
 		if (body == null) throw new Error('sendMessage: body is required');
@@ -275,9 +352,16 @@ export class FileMessagingAdapter {
 		// Images are checked and read before anything is written, so a bad one
 		// leaves no half-sent message behind.
 		const prepared = await prepareAttachments(attachments);
+		const checkedQuestions = validateQuestions(questions, { to, cc: cc ?? [] });
+		const checkedAnswers = parseAnswers(answers);
+		if (checkedAnswers) await this._checkAnswers(checkedAnswers, { from, replyTo });
 
 		const id = makeMessageId();
 		const sentAt = new Date().toISOString();
+
+		let finalBody = attachments == null ? body : applyAttachmentsToBody(body, id, prepared);
+		let questionsAppended = false;
+		if (checkedQuestions) ({ body: finalBody, appended: questionsAppended } = ensureQuestionsInBody(finalBody, checkedQuestions));
 
 		await mkdir(this.messagesDir, { recursive: true });
 		const content = serializeMessage({
@@ -290,7 +374,9 @@ export class FileMessagingAdapter {
 			replyTo,
 			projectCode,
 			attachments: prepared.map((a) => a.name),
-			body: attachments == null ? body : applyAttachmentsToBody(body, id, prepared),
+			questions: checkedQuestions,
+			answers: checkedAnswers,
+			body: finalBody,
 		});
 		await this._writeNewMessage(id, content, prepared);
 
@@ -300,7 +386,7 @@ export class FileMessagingAdapter {
 		}
 		await this._appendToMailbox(from, 'sent', id);
 
-		return { id, sentAt };
+		return { id, sentAt, ...(questionsAppended ? { questionsAppended: true } : {}) };
 	}
 
 	/**
@@ -322,7 +408,7 @@ export class FileMessagingAdapter {
 	 * the predecessors reached — otherwise dropped recipients would be left
 	 * with neither the predecessor (if removed from inbox) nor a replacement.
 	 */
-	async supersedeMessage({ from, supersedes, to, cc, subject, body, projectCode, replyTo, attachments }) {
+	async supersedeMessage({ from, supersedes, to, cc, subject, body, projectCode, replyTo, attachments, questions, answers }) {
 		if (!from) throw new Error('supersedeMessage: from is required');
 		if (!Array.isArray(supersedes) || supersedes.length === 0) {
 			throw new Error('supersedeMessage: supersedes must list at least one prior message id');
@@ -344,6 +430,17 @@ export class FileMessagingAdapter {
 			}
 			if (prev.supersededBy) {
 				throw new Error(`supersedeMessage: ${prevId} is already superseded by ${prev.supersededBy}`);
+			}
+			if (prev.questions?.length) {
+				const state = await this._foldAsk(prev);
+				if (state?.questions.some((q) => q.status !== 'open')) {
+					throw Object.assign(
+						new Error(
+							`supersedeMessage: ${prevId} has questions that were answered or dismissed; answers do not carry across a supersede. Send a follow-up message instead.`,
+						),
+						{ status: 400 },
+					);
+				}
 			}
 			predecessors.push(prev);
 		}
@@ -376,9 +473,16 @@ export class FileMessagingAdapter {
 		}
 
 		const prepared = await prepareAttachments(attachments);
+		const checkedQuestions = validateQuestions(questions, { to, cc: cc ?? [] });
+		const checkedAnswers = parseAnswers(answers);
+		if (checkedAnswers) await this._checkAnswers(checkedAnswers, { from, replyTo });
 
 		const id = makeMessageId();
 		const sentAt = new Date().toISOString();
+
+		let finalBody = attachments == null ? body : applyAttachmentsToBody(body, id, prepared);
+		let questionsAppended = false;
+		if (checkedQuestions) ({ body: finalBody, appended: questionsAppended } = ensureQuestionsInBody(finalBody, checkedQuestions));
 
 		await mkdir(this.messagesDir, { recursive: true });
 		const content = serializeMessage({
@@ -392,7 +496,9 @@ export class FileMessagingAdapter {
 			supersedes: [...supersedes],
 			projectCode,
 			attachments: prepared.map((a) => a.name),
-			body: attachments == null ? body : applyAttachmentsToBody(body, id, prepared),
+			questions: checkedQuestions,
+			answers: checkedAnswers,
+			body: finalBody,
 		});
 		await this._writeNewMessage(id, content, prepared);
 
@@ -416,7 +522,14 @@ export class FileMessagingAdapter {
 		}
 		await this._appendToMailbox(from, 'sent', id);
 
-		return { id, sentAt, supersededIds: [...supersedes], unreadRemoved, alreadyDelivered: stillReachable.length };
+		return {
+			id,
+			sentAt,
+			supersededIds: [...supersedes],
+			unreadRemoved,
+			alreadyDelivered: stillReachable.length,
+			...(questionsAppended ? { questionsAppended: true } : {}),
+		};
 	}
 
 	/**
@@ -445,7 +558,7 @@ export class FileMessagingAdapter {
 	 * the immediately preceding message (replyTo target) is inlined as `parent`,
 	 * one level deep. Deeper history is reached by calling read_message again.
 	 */
-	async readMessage(id, { inlineParent = true, withPaths = false } = {}) {
+	async readMessage(id, { inlineParent = true, withPaths = false, withState = false } = {}) {
 		const msg = await this._readRawMessage(id);
 		if (inlineParent && msg.replyTo) {
 			const parent = await this._readRawMessage(msg.replyTo).catch(() => null);
@@ -455,7 +568,31 @@ export class FileMessagingAdapter {
 			this._addAttachmentPaths(msg);
 			if (msg.parent) this._addAttachmentPaths(msg.parent);
 		}
+		if (withState) {
+			await this._addQuestionState(msg);
+			if (msg.parent) await this._addQuestionState(msg.parent);
+		}
 		return msg;
+	}
+
+	/** `questionState`: each question as folded from the thread (status, answer, also, earlier, reopens, conflict). */
+	async _addQuestionState(msg) {
+		if (!msg.questions?.length) return;
+		const folded = await this._foldAsk(msg);
+		if (folded) msg.questionState = folded.questions;
+	}
+
+	/**
+	 * What `member` owes and is waiting for: `{ waitingOnMe, asked }` (see questions.mjs `waitingOn` and `askedBy`).
+	 * Derived from the whole store on every call; it never touches a mailbox.
+	 */
+	async listQuestions(member) {
+		return this._questions.lists(member, { isHuman: await this._isHuman() });
+	}
+
+	/** The folded state of every ask in the store: Map from the asking message's id to `foldAsk`'s result. */
+	async questionStates() {
+		return (await this._questionSnapshot()).folded;
 	}
 
 	/**
@@ -471,9 +608,16 @@ export class FileMessagingAdapter {
 
 	async _summariesFromIds(ids) {
 		const entries = [];
+		let asks = null; // the folded asks, computed once and only if some message in the list has questions
 		for (const id of ids) {
 			const msg = await this._readRawMessage(id).catch(() => null);
 			if (!msg) continue;
+			let questions;
+			if (msg.questions?.length) {
+				asks ??= await this.questionStates();
+				const folded = asks.get(msg.id);
+				if (folded) questions = countQuestions(folded);
+			}
 			entries.push({
 				id: msg.id,
 				from: msg.from,
@@ -485,6 +629,7 @@ export class FileMessagingAdapter {
 				hasParent: !!msg.replyTo,
 				supersedes: msg.supersedes?.length ? msg.supersedes : undefined,
 				supersededBy: msg.supersededBy,
+				questions,
 			});
 		}
 		entries.sort((a, b) => (b.sentAt || '').localeCompare(a.sentAt || ''));
