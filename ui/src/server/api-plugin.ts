@@ -243,6 +243,19 @@ interface LogReader {
 	read(member: string, name: string, opts: { tail?: number; from?: number; to?: number }): Promise<LogChunk>;
 }
 
+/**
+ * Image attachments (`scripts/lib/messaging/attachments.mjs`), injected by the
+ * vite config like the adapters. It validates every name and id itself and
+ * throws errors carrying the HTTP status to answer with.
+ */
+interface AttachmentStore {
+	limits: { maxBytes: number; maxCount: number; maxTotalBytes: number; types: string[] };
+	stage(input: { from: string; name: string; bytes: Buffer }): Promise<{ token: string; name: string; size: number; mime: string }>;
+	claim(tokens: unknown, from: string): Promise<{ path: string; name: string; ref: string }[]>;
+	release(tokens: string[]): Promise<void>;
+	read(id: string, name: string): Promise<{ bytes: Buffer; mime: string } | null>;
+}
+
 interface AuthConfig {
 	/** If false, identity headers are ignored — the dashboard trusts its own localStorage selection. */
 	trustProxy?: boolean;
@@ -260,6 +273,8 @@ interface ApiOptions {
 	siblingPort?: number;
 	messagingAdapter: MessagingAdapter;
 	messagingAdapterName: string;
+	/** Image attachments on messages; absent = the dashboard does not offer them. */
+	attachments?: AttachmentStore;
 	scheduleAdapter: ScheduleAdapter;
 	scheduleAdapterName: string;
 	auth?: AuthConfig;
@@ -421,8 +436,33 @@ function updateFrontmatterFields(content: string, patch: ProfileFields & { body?
 	return `---\n${fm}\n---\n\n${trimmedBody}${trimmedBody.endsWith('\n') ? '' : '\n'}`;
 }
 
+/**
+ * Read a raw request body, giving up as soon as it passes `maxBytes`. `readBody`
+ * above has no cap; an upload must not be able to fill memory with a body the
+ * size of the sender's patience.
+ */
+function readBodyBytes(req: IncomingMessage, maxBytes: number): Promise<Buffer> {
+	return new Promise((resolve, reject) => {
+		const tooLarge = () => Object.assign(new Error(`Upload is larger than ${Math.round(maxBytes / (1024 * 1024))} MB`), { status: 413 });
+		const declared = Number(req.headers['content-length']);
+		if (Number.isFinite(declared) && declared > maxBytes) return reject(tooLarge());
+		const chunks: Buffer[] = [];
+		let size = 0;
+		req.on('data', (chunk: Buffer) => {
+			size += chunk.length;
+			if (size > maxBytes) {
+				chunks.length = 0;
+				return reject(tooLarge());
+			}
+			chunks.push(chunk);
+		});
+		req.on('end', () => resolve(Buffer.concat(chunks)));
+		req.on('error', reject);
+	});
+}
+
 export function teamosApi(opts: ApiOptions): Plugin {
-	const { teamDir, siblingDir, messagingAdapter, messagingAdapterName, scheduleAdapter, chat, logs } = opts;
+	const { teamDir, siblingDir, messagingAdapter, messagingAdapterName, scheduleAdapter, chat, logs, attachments } = opts;
 	const siblingPort = opts.siblingPort ?? 3004;
 	const ticketsDir = opts.ticketsDir ?? null;
 	let ticketsAvailable: boolean | null = null;
@@ -586,6 +626,7 @@ export function teamosApi(opts: ApiOptions): Plugin {
 	function previewOf(body: string): string {
 		return (body ?? '')
 			.replace(/```[\s\S]*?```/g, ' ')
+			.replace(/!\[[^\]]*\]\([^)]*\)/g, ' [image] ')
 			.replace(/[#>*_`]/g, '')
 			.replace(/\s+/g, ' ')
 			.trim()
@@ -725,6 +766,7 @@ export function teamosApi(opts: ApiOptions): Plugin {
 		body: string;
 		replyTo?: string;
 		projectCode?: string;
+		attachments?: { path: string; name: string; ref: string }[];
 	}) {
 		return messagingAdapter.sendMessage(msg);
 	}
@@ -929,7 +971,7 @@ export function teamosApi(opts: ApiOptions): Plugin {
 
 				try {
 					if (path === '/api/messaging/info' && method === 'GET') {
-						return json(res, { adapter: messagingAdapterName });
+						return json(res, { adapter: messagingAdapterName, ...(attachments ? { attachments: attachments.limits } : {}) });
 					}
 
 					if (path === '/api/me' && method === 'GET') {
@@ -1134,7 +1176,54 @@ export function teamosApi(opts: ApiOptions): Plugin {
 						const who = await enforceSender(req, msg.from);
 						if ('error' in who) return json(res, { error: who.error }, 403);
 						msg.from = who.name;
-						return json(res, await sendMessage(msg), 201);
+						// Images were uploaded first (POST /api/attachments); the message names
+						// them by token. They are claimed for this sender, written next to the
+						// message, and only then forgotten from the staging area.
+						const tokens: string[] = Array.isArray(msg.attachments) ? msg.attachments.map(String) : [];
+						if (msg.attachments != null) {
+							if (!attachments) return json(res, { error: 'Attachments are not available' }, 400);
+							msg.attachments = await attachments.claim(msg.attachments, msg.from);
+						}
+						const sent = await sendMessage(msg);
+						if (attachments && tokens.length > 0) await attachments.release(tokens);
+						return json(res, sent, 201);
+					}
+
+					// One image, as raw bytes (not JSON): the browser has it before the message exists.
+					// ?name= is the file's name, ?from= the sender (replaced by the locked identity).
+					if (path === '/api/attachments' && method === 'POST') {
+						if (!attachments) return json(res, { error: 'Attachments are not available' }, 404);
+						const who = await enforceSender(req, url.searchParams.get('from'));
+						if ('error' in who) return json(res, { error: who.error }, 403);
+						const bytes = await readBodyBytes(req, attachments.limits.maxBytes);
+						const staged = await attachments.stage({ from: who.name, name: url.searchParams.get('name') ?? '', bytes });
+						return json(res, staged, 201);
+					}
+
+					// A stored image: immutable (the name is unique to its message), typed by its
+					// content, never executed (nosniff, a CSP that allows nothing but the image).
+					const attachmentMatch = path.match(/^\/api\/messages\/([^/]+)\/attachments\/([^/]+)$/);
+					if (attachmentMatch && method === 'GET' && attachments) {
+						let id = '';
+						let name = '';
+						try {
+							id = decodeURIComponent(attachmentMatch[1]);
+							name = decodeURIComponent(attachmentMatch[2]);
+						} catch {
+							return json(res, { error: 'Not found' }, 404);
+						}
+						const file = await attachments.read(id, name);
+						if (!file) return json(res, { error: 'Not found' }, 404);
+						res.writeHead(200, {
+							'Content-Type': file.mime,
+							'Content-Length': file.bytes.length,
+							'Content-Disposition': 'inline',
+							'X-Content-Type-Options': 'nosniff',
+							'Content-Security-Policy': "default-src 'none'; img-src 'self'; style-src 'none'; sandbox",
+							'Cross-Origin-Resource-Policy': 'same-origin',
+							'Cache-Control': 'private, max-age=31536000, immutable',
+						});
+						return res.end(file.bytes);
 					}
 
 					// Bodies for a whole thread in one round trip — the dashboard opens
