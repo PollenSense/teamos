@@ -2,6 +2,7 @@ import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { mkdir, readFile, unlink, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { pathExists } from '../util.mjs';
+import { applyAttachmentsToBody, isAttachmentName, prepareAttachments, removeAttachments, writeAttachments } from './attachments.mjs';
 
 /**
  * File-based messaging adapter.
@@ -60,6 +61,7 @@ function serializeMessage(msg) {
 	if (msg.supersedes?.length) lines.push(`supersedes: [${msg.supersedes.join(', ')}]`);
 	if (msg.supersededBy) lines.push(`supersededBy: ${msg.supersededBy}`);
 	if (msg.projectCode) lines.push(`projectCode: ${msg.projectCode}`);
+	if (msg.attachments?.length) lines.push(`attachments: [${msg.attachments.join(', ')}]`);
 	lines.push('---', '', (msg.body ?? '').trimEnd(), '');
 	return lines.join('\n');
 }
@@ -82,6 +84,7 @@ function normalizeMessage(metadata, body) {
 		supersededBy:
 			typeof metadata.supersededBy === 'string' && metadata.supersededBy ? metadata.supersededBy : undefined,
 		projectCode: typeof metadata.projectCode === 'string' && metadata.projectCode ? metadata.projectCode : undefined,
+		attachments: (Array.isArray(metadata.attachments) ? metadata.attachments : []).filter(isAttachmentName),
 		body,
 	};
 }
@@ -251,7 +254,7 @@ export class FileMessagingAdapter {
 		return summaries.length > 0;
 	}
 
-	async sendMessage({ from, to, cc, subject, body, replyTo, projectCode }) {
+	async sendMessage({ from, to, cc, subject, body, replyTo, projectCode, attachments }) {
 		if (!from) throw new Error('sendMessage: from is required');
 		if (!Array.isArray(to) || to.length === 0) throw new Error('sendMessage: to is required');
 		if (body == null) throw new Error('sendMessage: body is required');
@@ -269,6 +272,10 @@ export class FileMessagingAdapter {
 			throw new Error('sendMessage: subject is required on new threads');
 		}
 
+		// Images are checked and read before anything is written, so a bad one
+		// leaves no half-sent message behind.
+		const prepared = await prepareAttachments(attachments);
+
 		const id = makeMessageId();
 		const sentAt = new Date().toISOString();
 
@@ -282,9 +289,10 @@ export class FileMessagingAdapter {
 			sentAt,
 			replyTo,
 			projectCode,
-			body,
+			attachments: prepared.map((a) => a.name),
+			body: attachments == null ? body : applyAttachmentsToBody(body, id, prepared),
 		});
-		await writeFile(this._messagePath(id), content, 'utf-8');
+		await this._writeNewMessage(id, content, prepared);
 
 		const recipients = [...to, ...(cc ?? [])];
 		for (const recipient of recipients) {
@@ -314,7 +322,7 @@ export class FileMessagingAdapter {
 	 * the predecessors reached — otherwise dropped recipients would be left
 	 * with neither the predecessor (if removed from inbox) nor a replacement.
 	 */
-	async supersedeMessage({ from, supersedes, to, cc, subject, body, projectCode, replyTo }) {
+	async supersedeMessage({ from, supersedes, to, cc, subject, body, projectCode, replyTo, attachments }) {
 		if (!from) throw new Error('supersedeMessage: from is required');
 		if (!Array.isArray(supersedes) || supersedes.length === 0) {
 			throw new Error('supersedeMessage: supersedes must list at least one prior message id');
@@ -367,6 +375,8 @@ export class FileMessagingAdapter {
 			throw new Error('supersedeMessage: subject could not be derived');
 		}
 
+		const prepared = await prepareAttachments(attachments);
+
 		const id = makeMessageId();
 		const sentAt = new Date().toISOString();
 
@@ -381,9 +391,10 @@ export class FileMessagingAdapter {
 			replyTo,
 			supersedes: [...supersedes],
 			projectCode,
-			body,
+			attachments: prepared.map((a) => a.name),
+			body: attachments == null ? body : applyAttachmentsToBody(body, id, prepared),
 		});
-		await writeFile(this._messagePath(id), content, 'utf-8');
+		await this._writeNewMessage(id, content, prepared);
 
 		// Mark each predecessor with supersededBy + remove from any inbox where
 		// it still sits unread (so recipients see only the consolidated message).
@@ -406,6 +417,21 @@ export class FileMessagingAdapter {
 		await this._appendToMailbox(from, 'sent', id);
 
 		return { id, sentAt, supersededIds: [...supersedes], unreadRemoved, alreadyDelivered: stillReachable.length };
+	}
+
+	/**
+	 * Write a new message's images and then its file, so the message never
+	 * names an image that is not there; if the file cannot be written the
+	 * images go too.
+	 */
+	async _writeNewMessage(id, content, prepared) {
+		await writeAttachments(this.messagesDir, id, prepared);
+		try {
+			await writeFile(this._messagePath(id), content, 'utf-8');
+		} catch (err) {
+			await removeAttachments(this.messagesDir, id);
+			throw err;
+		}
 	}
 
 	async _readRawMessage(id) {
