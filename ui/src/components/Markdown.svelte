@@ -57,4 +57,14 @@ const html = $derived(renderMarkdown(source, links));
 	.md :global(a) { color: var(--accent, inherit); text-decoration: underline; }
 	.md :global(hr) { border: 0; border-top: 1px solid var(--border, rgba(127, 127, 127, 0.5)); margin: 0.8rem 0; }
 	.md :global(img) { max-width: 100%; }
+	.md :global(a.md-image) { display: inline-block; max-width: 100%; line-height: 0; }
+	.md :global(a.md-image img) {
+		max-width: 100%;
+		max-height: 420px;
+		height: auto;
+		width: auto;
+		border: 1px solid var(--border, rgba(127, 127, 127, 0.4));
+		border-radius: var(--radius);
+		cursor: zoom-in;
+	}
 </style>

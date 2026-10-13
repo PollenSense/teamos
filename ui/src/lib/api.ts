@@ -131,6 +131,16 @@ export interface SendMessageArgs {
 	body: string;
 	replyTo?: string;
 	projectCode?: string;
+	/** Tokens from `uploadAttachment`; the body places them with `![caption](attachment:<token>)`, the rest go at the end. */
+	attachments?: string[];
+}
+
+/** An image the server is holding until the message that names it is sent. */
+export interface StagedAttachment {
+	token: string;
+	name: string;
+	size: number;
+	mime: string;
 }
 
 /**
@@ -182,6 +192,16 @@ export const api = {
 	/** Bodies for a whole thread in one request. */
 	messagesBatch: (ids: string[]) => post<Message[]>('/api/messages/batch', { ids }),
 	sendMessage: (msg: SendMessageArgs) => post<{ id: string; sentAt: string }>('/api/messages', msg),
+	/** Raw bytes, not JSON; `from` is replaced by the signed-in member when the dashboard knows who that is. */
+	uploadAttachment: async (blob: Blob, name: string, from: string): Promise<StagedAttachment> => {
+		const res = await fetch(`/api/attachments?name=${encodeURIComponent(name)}&from=${encodeURIComponent(from)}`, {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/octet-stream' },
+			body: blob,
+		});
+		if (!res.ok) throw await failure(res);
+		return res.json();
+	},
 	archiveMessage: (member: string, id: string) =>
 		post<{ ok: boolean }>(`/api/members/${encodeURIComponent(member)}/inbox/${encodeURIComponent(id)}/archive`, {}),
 	unarchiveMessage: (member: string, id: string) =>
