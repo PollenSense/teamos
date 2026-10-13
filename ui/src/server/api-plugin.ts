@@ -3,6 +3,7 @@ import { access, mkdir, readFile, readdir, rm, stat, unlink, writeFile } from 'n
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { join } from 'node:path';
 import type { Plugin } from 'vite';
+import { createLinker, type LinksConfig } from './linkify.js';
 
 interface MessageSummary {
 	id: string;
@@ -66,6 +67,8 @@ interface Message {
 	supersededBy?: string;
 	projectCode?: string;
 	body: string;
+	/** Paths in `body` that resolve to a link (see lib/linkify.ts). Added on the way out, never stored. */
+	links?: Record<string, { href: string; title?: string; external: boolean }>;
 	parent?: Message;
 }
 
@@ -249,6 +252,9 @@ interface AuthConfig {
 
 interface ApiOptions {
 	teamDir: string;
+	/** Workspace that message paths are relative to; with `links`, turns paths in messages into links. */
+	projectRoot?: string;
+	links?: LinksConfig;
 	ticketsDir?: string;
 	siblingDir?: string;
 	siblingPort?: number;
@@ -420,6 +426,21 @@ export function teamosApi(opts: ApiOptions): Plugin {
 	const siblingPort = opts.siblingPort ?? 3004;
 	const ticketsDir = opts.ticketsDir ?? null;
 	let ticketsAvailable: boolean | null = null;
+	const linker = createLinker({
+		projectRoot: opts.projectRoot ?? join(teamDir, '..'),
+		teamDir,
+		messageExists: async (id) => (await readCachedMessage(id)) !== null,
+		links: opts.links,
+	});
+
+	/** A copy of the message with the paths in its body (and its parent's) resolved to links. */
+	async function withLinks(msg: Message): Promise<Message> {
+		const links = await linker.linksFor(msg.body);
+		const out: Message = { ...msg };
+		if (Object.keys(links).length > 0) out.links = links;
+		if (msg.parent) out.parent = await withLinks(msg.parent);
+		return out;
+	}
 
 	const auth = opts.auth ?? {};
 	const trustProxy = auth.trustProxy === true;
@@ -1124,7 +1145,7 @@ export function teamosApi(opts: ApiOptions): Plugin {
 						const out: Message[] = [];
 						for (const id of wanted) {
 							const msg = await readCachedMessage(id);
-							if (msg) out.push(msg);
+							if (msg) out.push(await withLinks(msg));
 						}
 						return json(res, out);
 					}
@@ -1134,7 +1155,7 @@ export function teamosApi(opts: ApiOptions): Plugin {
 						const id = decodeURIComponent(match[1]);
 						try {
 							const msg = await messagingAdapter.readMessage(id, { inlineParent: true });
-							return json(res, msg);
+							return json(res, await withLinks(msg));
 						} catch {
 							return json(res, { error: 'Not found' }, 404);
 						}

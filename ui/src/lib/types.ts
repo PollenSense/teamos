@@ -1,3 +1,5 @@
+import type { LinkMap } from './linkify.js';
+
 export interface MemberSummary {
 	name: string;
 	title: string;
@@ -37,6 +39,8 @@ export interface Message {
 	supersededBy?: string;
 	projectCode?: string;
 	body: string;
+	/** Paths in `body` the server could resolve to a link (exact text -> target); see lib/linkify.ts. */
+	links?: LinkMap;
 	parent?: Message;
 }
 

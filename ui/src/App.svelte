@@ -3,6 +3,7 @@ import ComposeMessage from './components/ComposeMessage.svelte';
 import Dashboard from './components/Dashboard.svelte';
 import IdentityPicker from './components/IdentityPicker.svelte';
 import MemberDetail from './components/MemberDetail.svelte';
+import MessageRedirect from './components/MessageRedirect.svelte';
 import OrgEditor from './components/OrgEditor.svelte';
 import { api } from './lib/api.js';
 import { router } from './lib/router.svelte.js';
@@ -11,6 +12,7 @@ import type { SiblingInfo } from './lib/types.js';
 let sibling = $state<SiblingInfo | null>(null);
 
 const memberMatch = $derived(router.match('/member/:name'));
+const messageMatch = $derived(router.match('/message/:id'));
 const isCompose = $derived(router.path === '/compose');
 const isOrg = $derived(router.path === '/org');
 
@@ -41,6 +43,8 @@ $effect(() => {
 <main class="main">
 	{#if memberMatch}
 		<MemberDetail name={memberMatch.name} />
+	{:else if messageMatch}
+		<MessageRedirect id={messageMatch.id} />
 	{:else if isCompose}
 		<ComposeMessage />
 	{:else if isOrg}

@@ -226,7 +226,7 @@ function reset() {
 						<span class="reply-subject">{replyMessage.subject}</span>
 					{/if}
 				</div>
-				<div class="reply-body"><Markdown source={replyMessage.body} /></div>
+				<div class="reply-body"><Markdown source={replyMessage.body} links={replyMessage.links} /></div>
 			</div>
 		{/if}
 

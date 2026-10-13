@@ -44,6 +44,8 @@ export default defineConfig(async () => {
 			svelte(),
 			teamosApi({
 				teamDir,
+				projectRoot,
+				links: config.links,
 				ticketsDir: resolve(projectRoot, 'tickets'),
 				siblingDir: resolve(projectRoot, 'tess'),
 				messagingAdapter,

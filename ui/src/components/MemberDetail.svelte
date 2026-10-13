@@ -11,7 +11,8 @@ const { name }: { name: string } = $props();
 
 let detail = $state<MemberDetail | null>(null);
 let loading = $state(true);
-let tab = $state<'messages' | 'chat' | 'todos' | 'state' | 'schedule' | 'logs'>('messages');
+const TABS = ['messages', 'chat', 'todos', 'state', 'schedule', 'logs'] as const;
+let tab = $state<(typeof TABS)[number]>('messages');
 /** Reported up by <Mailbox> so the tab badge doesn't need a second fetch of the same mailboxes. */
 let mailCounts = $state<MailboxCounts | null>(null);
 
@@ -27,6 +28,16 @@ async function load() {
 $effect(() => {
 	name;
 	load();
+});
+
+// A link such as #/member/cy?tab=state opens that tab. Honored once, then dropped from the
+// address, so a later visit to the same member does not keep forcing the tab.
+$effect(() => {
+	const wanted = router.query.tab;
+	if (!wanted) return;
+	const known = TABS.find((t) => t === wanted);
+	if (known) tab = known;
+	router.replace(router.path);
 });
 
 let newTodoTitle = $state('');
