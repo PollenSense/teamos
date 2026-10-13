@@ -10,6 +10,7 @@ import {
 	foldAsk,
 	parseAnswers,
 	validateQuestions,
+	waitingCounts,
 	waitingOn,
 } from './questions.mjs';
 
@@ -298,4 +299,11 @@ test('describeAnswer reads as a sentence', () => {
 		describeAnswer({ kind: 'option', option: 1, by: 'alton', recordedBy: 'ivy', via: 'M1' }, q),
 		'answered by alton: option 1 (Meadow) (recorded by ivy from M1)',
 	);
+});
+
+test('waitingCounts totals open questions per member, skipping closed and superseded asks', () => {
+	const a = foldAsk(ask(), [reply('kris', [{ q: 'q1', option: 1 }])]); // q1 closed, q2 open: waits on kris, van
+	const b = foldAsk(ask({ id: 'A2', supersededBy: 'A3' }), []);
+	assert.deepEqual(waitingCounts([a, b]), { kris: 1, van: 1 });
+	assert.deepEqual(waitingCounts([]), {});
 });

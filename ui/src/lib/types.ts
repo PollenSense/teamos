@@ -1,4 +1,5 @@
 import type { AttachmentLimits } from './attachments.js';
+import type { Question, QuestionState, WaitingItem } from './questions.js';
 import type { LinkMap } from './linkify.js';
 
 export interface MemberSummary {
@@ -13,6 +14,8 @@ export interface MemberSummary {
 	todoCount: number;
 	blockedCount: number;
 	eventCount: number;
+	/** Open questions that wait on this member (derived from the messages). */
+	waitingCount?: number;
 }
 
 export interface MessageSummary {
@@ -41,6 +44,9 @@ export interface Message {
 	projectCode?: string;
 	/** Names of the images stored with the message (`team/messages/attachments/<id>/`); the body shows them. */
 	attachments?: string[];
+	/** Questions the message asks (see lib/questions.ts) and, on the way out, where each one stands. */
+	questions?: Question[];
+	questionState?: QuestionState[];
 	body: string;
 	/** Paths in `body` the server could resolve to a link (exact text -> target); see lib/linkify.ts. */
 	links?: LinkMap;
@@ -65,6 +71,8 @@ export interface ThreadMessage {
 	boxes: MailBox[];
 	/** Reply distance from the root of its own chain, for indentation. */
 	depth: number;
+	/** Set when the message asks questions: how many are still open. */
+	questions?: { open: number; total: number };
 }
 
 /** Messages sharing a subject, with their reply chains resolved through the master store. */
@@ -81,6 +89,8 @@ export interface Thread {
 	lastAt: string;
 	lastFrom: string;
 	preview: string;
+	/** Set when a live message in the thread asks questions: how many are open and who they wait on. */
+	questions?: { open: number; total: number; waitingOn: string[] };
 	messages: ThreadMessage[];
 }
 
@@ -232,4 +242,10 @@ export type TicketCounts = Record<string, number>;
 export interface SiblingInfo {
 	name: string;
 	url: string;
+}
+
+/** What waits on a member and what they are waiting for (`GET /api/members/:name/waiting`). */
+export interface WaitingLists {
+	waitingOnMe: WaitingItem[];
+	asked: unknown[];
 }

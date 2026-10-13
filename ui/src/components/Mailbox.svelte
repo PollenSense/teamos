@@ -2,9 +2,12 @@
 import { tick, untrack } from 'svelte';
 import { api } from '../lib/api.js';
 import Markdown from './Markdown.svelte';
+import QuestionCards from './QuestionCards.svelte';
+import { identity } from '../lib/identity.svelte.js';
 import type { LinkMap } from '../lib/linkify.js';
+import { threadChip, waitingTitle } from '../lib/questions.js';
 import { router } from '../lib/router.svelte.js';
-import type { MailBox, MailboxCounts, Thread, ThreadMessage } from '../lib/types.js';
+import type { MailBox, MailboxCounts, Message, Thread, ThreadMessage, WaitingLists } from '../lib/types.js';
 
 const {
 	name,
@@ -72,6 +75,10 @@ let bodies = $state<Record<string, string>>({});
 /** Paths the server resolved in each body (message id -> exact text -> link); empty when none. */
 let bodyLinks = $state<Record<string, LinkMap>>({});
 let bodiesLoading = $state(false);
+/** Messages that ask questions, as the server last sent them (with each question's state); id -> message. */
+let cards = $state<Record<string, Message>>({});
+/** What waits on the viewed member, for the pinned strip. */
+let waiting = $state<WaitingLists>({ waitingOnMe: [], asked: [] });
 let busy = $state<string | null>(null);
 /** Set while a deep link (?msg=) is waiting for its thread to render. */
 let scrollTarget = $state<string | null>(null);
@@ -152,9 +159,13 @@ let loadSeq = 0;
 async function load(keepSelection = true) {
 	const seq = ++loadSeq;
 	loading = threads.length === 0;
-	const fresh = await api.threads(name);
+	const [fresh, wait] = await Promise.all([
+		api.threads(name),
+		api.waiting(name).catch(() => ({ waitingOnMe: [], asked: [] }) as WaitingLists),
+	]);
 	if (seq !== loadSeq) return;
 	threads = fresh;
+	waiting = wait;
 	loading = false;
 	if (!keepSelection || !fresh.some((t) => t.id === selectedId)) {
 		selectedId = null;
@@ -236,11 +247,14 @@ async function loadBodies(thread: Thread) {
 		const msgs = await api.messagesBatch(missing);
 		const next = { ...bodies };
 		const nextLinks = { ...bodyLinks };
+		const nextCards = { ...cards };
 		for (const m of msgs) {
 			next[m.id] = m.body;
 			if (m.links) nextLinks[m.id] = m.links;
+			if (m.questions?.length) nextCards[m.id] = m;
 		}
 		bodyLinks = nextLinks;
+		cards = nextCards;
 		// Ids the store no longer resolves get an explicit marker so the row
 		// doesn't sit on "Loading..." forever.
 		for (const id of missing) if (next[id] === undefined) next[id] = '(message no longer in the store)';
@@ -248,6 +262,26 @@ async function loadBodies(thread: Thread) {
 	} finally {
 		bodiesLoading = false;
 	}
+}
+
+/** After a card tap: the chips and strip from the server, and the cards of the open thread with their new state. */
+async function refreshQuestions() {
+	await load();
+	const ids = (selected?.messages ?? []).filter((m) => m.questions).map((m) => m.id);
+	if (ids.length === 0) return;
+	const fresh = await api.messagesBatch(ids);
+	const next = { ...cards };
+	for (const m of fresh) if (m.questions?.length) next[m.id] = m;
+	cards = next;
+}
+
+/** A row of the pinned strip: open the thread that holds the ask, at the card. */
+async function openAsk(askId: string) {
+	const owner = threads.find((t) => t.messages.some((m) => m.id === askId));
+	if (!owner) return;
+	if (!matchesFilter(owner, filter)) pickFilter('all');
+	await openThread(owner, [askId]);
+	scrollTarget = askId;
 }
 
 function toggleMessage(id: string) {
@@ -388,6 +422,21 @@ function roleOf(msg: ThreadMessage): string {
 {:else}
 	<div class="panes">
 		<div class="thread-list">
+			{#if waiting.waitingOnMe.length > 0}
+				<div class="waiting-strip" role="region" aria-label="Waiting">
+					<div class="strip-title">{waitingTitle(name, identity.name, waiting.waitingOnMe.length)}</div>
+					{#each waiting.waitingOnMe.slice(0, 6) as w (w.askId + w.q)}
+						<button type="button" class="strip-row" onclick={() => openAsk(w.askId)}>
+							<span class="strip-who">{w.asker} asks:</span>
+							<span class="strip-text">{w.text}</span>
+							<span class="strip-since">since {relTime(w.since)}</span>
+						</button>
+					{/each}
+					{#if waiting.waitingOnMe.length > 6}
+						<div class="strip-more">+{waiting.waitingOnMe.length - 6} more</div>
+					{/if}
+				</div>
+			{/if}
 			{#if visible.length === 0}
 				<div class="empty small">{search ? 'Nothing matches that search' : 'Nothing here'}</div>
 			{:else}
@@ -409,6 +458,10 @@ function roleOf(msg: ThreadMessage): string {
 							{/if}
 							{#if thread.inboxCount > 0}
 								<span class="row-badge inbox">{thread.inboxCount} in inbox</span>
+							{/if}
+							{#if threadChip(thread.questions, identity.name)}
+								{@const chip = threadChip(thread.questions, identity.name)}
+								{#if chip}<span class="row-badge q-{chip.tone}">{chip.label}</span>{/if}
 							{/if}
 							{#each thread.projectCodes as code}
 								<span class="row-badge project">{code}</span>
@@ -492,6 +545,9 @@ function roleOf(msg: ThreadMessage): string {
 										<Markdown source={bodies[msg.id]} links={bodyLinks[msg.id]} />
 									{:else}
 										<pre class="msg-text">{bodies[msg.id]}</pre>
+									{/if}
+									{#if cards[msg.id] && !msg.supersededBy}
+										<QuestionCards message={cards[msg.id]} me={identity.name} onchanged={refreshQuestions} />
 									{/if}
 									<div class="msg-actions">
 										<button class="action-btn view" onclick={toggleMdPreview} title={mdPreview ? 'Show the raw markdown' : 'Show the rendered message'}>
@@ -779,4 +835,36 @@ function roleOf(msg: ThreadMessage): string {
 
 	.empty { text-align: center; padding: 2rem; color: var(--text-muted); font-style: italic; }
 	.empty.small { padding: 1rem; font-size: 0.8rem; }
+	.row-badge.q-waiting { background: rgba(217, 119, 6, 0.14); color: #b45309; }
+	.row-badge.q-mine { background: #d97706; color: #fff; }
+	.row-badge.q-done { background: var(--success-subtle, rgba(22, 163, 74, 0.12)); color: var(--success, #16a34a); }
+	.waiting-strip {
+		border: 1px solid #d97706;
+		border-left-width: 3px;
+		border-radius: var(--radius);
+		background: rgba(217, 119, 6, 0.07);
+		padding: 0.5rem 0.625rem;
+		margin-bottom: 0.5rem;
+		display: flex;
+		flex-direction: column;
+		gap: 0.15rem;
+	}
+	.strip-title { font-size: 0.75rem; font-weight: 700; color: #b45309; text-transform: uppercase; letter-spacing: 0.03em; margin-bottom: 0.15rem; }
+	.strip-row {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 0.25rem 0.5rem;
+		text-align: left;
+		min-height: 36px;
+		align-items: baseline;
+		padding: 0.3rem 0.25rem;
+		border-radius: var(--radius);
+		font-size: 0.8rem;
+		color: var(--text);
+	}
+	.strip-row:hover { background: rgba(217, 119, 6, 0.12); }
+	.strip-who { font-weight: 600; }
+	.strip-text { flex: 1 1 12rem; min-width: 0; }
+	.strip-since { color: var(--text-muted); font-size: 0.72rem; }
+	.strip-more { font-size: 0.75rem; color: var(--text-muted); padding: 0.1rem 0.25rem; }
 </style>

@@ -7,7 +7,7 @@
 		"dev": "vite",
 		"build": "vite build",
 		"check": "svelte-check --tsconfig ./tsconfig.json",
-		"test": "esbuild test/linkify.test.ts test/attachments.test.ts --bundle --platform=node --format=esm --packages=external --outdir=.test-build --out-extension:.js=.mjs --log-level=warning && node --test .test-build/linkify.test.mjs .test-build/attachments.test.mjs"
+		"test": "esbuild test/linkify.test.ts test/attachments.test.ts test/questions.test.ts --bundle --platform=node --format=esm --packages=external --outdir=.test-build --out-extension:.js=.mjs --log-level=warning && node --test .test-build/linkify.test.mjs .test-build/attachments.test.mjs .test-build/questions.test.mjs"
 	},
 	"devDependencies": {
 		"@sveltejs/vite-plugin-svelte": "^6.0.0",

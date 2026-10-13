@@ -174,6 +174,17 @@ section of the cycle prompt lists those replies).
 so they do not depend on a message being in an inbox (an archived ask still waits) and never edit `inbox.json` or
 `archives.json`, so they cannot affect what counts as read.
 
+**Cards (dashboard).** Under a message that asks questions: one card per question with the options as large tap
+targets (44 px or taller), the recommended one tagged, an "Other" box, and where it stands (open and waiting on whom;
+answered by whom, with the option and the time; dismissed; re-opened with the reason; a later answer that differs is
+shown as "Also answered by ... (differs)"). Anyone the message was sent to, except the asker, can answer; everyone
+else sees the state read-only. When one question is open a tap sends at once; with several, taps select and one
+"Send N answers" button sends them as ONE reply to the asker. "Not needed" dismisses (a person on the message).
+A thread row carries a chip ("2 waiting on kris", "waiting on you", "answered"), a pinned "Waiting on you (N)" strip
+sits above the thread list (on another member's page: "Waiting on kris (N)"; a row opens the thread at the card),
+member cards show "N waiting", and composing a reply to a message with open questions shows a hint. Humans do not
+compose questions yet (agents ask; the API already accepts them), and a chat has no cards.
+
 **Where it shows.** `read_message` returns `questionState` (each question with its status and answers); `list_inbox`,
 `list_sent` and `list_archives` summaries of an ask carry `questions: { open, total }`; `list_questions` returns
 `{ waitingOnMe, asked }`; the cycle prompt renders each message's questions with their state and adds a "Questions"
@@ -360,6 +371,13 @@ so the web dashboard reconstructs threads at read time over the same adapter:
   one conversation. Returns per-message `boxes` and `depth` so the UI can render
   the reply tree and say which mailbox each message came from.
 - `POST /api/messages/batch` — bodies for a whole conversation in one request.
+- `POST /api/messages/:id/answers` (`{ answers: [{ q, option | other | dismissed }] }`) — a card tap. The answerer is the
+  signed-in member whatever the body says; the reply goes to the asker only; the plain-words body ("Q1 (Which
+  palette?): option 2, Sky.") is written by the server; the adapter's rules apply and a refusal comes back as 400 with
+  the reason. `GET /api/members/:name/waiting` returns `{ waitingOnMe, asked }`.
+- Message reads (`/api/messages/batch`, `/api/messages/:id`) carry `questionState` for a message that asks questions;
+  thread groups carry `questions: { open, total, waitingOn }` per thread and per message; member summaries carry
+  `waitingCount`.
 - `POST /api/attachments?name=` (raw image bytes → `{ token, name, size, mime }`) and
   `GET /api/messages/:id/attachments/:name` — see [Images](#images).
 

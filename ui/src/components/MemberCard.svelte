@@ -25,6 +25,12 @@ const isMe = $derived(identity.name === member.name);
 				{member.inboxCount}
 			</span>
 		{/if}
+		{#if (member.waitingCount ?? 0) > 0}
+			<span class="stat waiting" title="Open questions waiting on {member.name}">
+				<span class="stat-icon">&#8987;</span>
+				{member.waitingCount} waiting
+			</span>
+		{/if}
 		{#if member.todoCount > 0}
 			<span class="stat">
 				<span class="stat-icon">&#9745;</span>
@@ -43,7 +49,7 @@ const isMe = $derived(identity.name === member.name);
 				{member.eventCount}
 			</span>
 		{/if}
-		{#if member.todoCount === 0 && member.inboxCount === 0 && member.eventCount === 0}
+		{#if member.todoCount === 0 && member.inboxCount === 0 && member.eventCount === 0 && !member.waitingCount}
 			<span class="stat idle">idle</span>
 		{/if}
 	</div>
@@ -123,5 +129,6 @@ const isMe = $derived(identity.name === member.name);
 	.stat-icon { font-size: 0.9rem; }
 	.stat.inbox { color: var(--primary); font-weight: 600; }
 	.stat.blocked { color: var(--danger); font-weight: 600; }
+	.stat.waiting { color: #b45309; font-weight: 600; }
 	.stat.idle { color: var(--text-light); font-style: italic; }
 </style>

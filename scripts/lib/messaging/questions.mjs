@@ -296,6 +296,19 @@ export function waitingOn(member, foldedAsks) {
 	return out.sort((a, b) => (a.since || '').localeCompare(b.since || '') || a.askId.localeCompare(b.askId));
 }
 
+/** How many open questions wait on each member: `{ [name]: n }`, members with none are absent. */
+export function waitingCounts(foldedAsks) {
+	const counts = {};
+	for (const folded of foldedAsks) {
+		if (folded.superseded) continue;
+		for (const q of folded.questions) {
+			if (q.status !== 'open') continue;
+			for (const name of q.waitingOn) counts[name] = (counts[name] ?? 0) + 1;
+		}
+	}
+	return counts;
+}
+
 /**
  * The open questions `member` asked, with who each waits on, since when, and the plain replies (no `answers`)
  * that arrived since: those are the ones the asker still has to record.

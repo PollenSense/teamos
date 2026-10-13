@@ -4,7 +4,7 @@ import { dirname, join, resolve } from 'node:path';
 import { pathExists } from '../util.mjs';
 import { applyAttachmentsToBody, isAttachmentName, prepareAttachments, removeAttachments, writeAttachments } from './attachments.mjs';
 import { QuestionIndex } from './question-index.mjs';
-import { checkEntry, countQuestions, ensureQuestionsInBody, parseAnswers, validateQuestions } from './questions.mjs';
+import { checkEntry, countQuestions, ensureQuestionsInBody, parseAnswers, validateQuestions, waitingCounts } from './questions.mjs';
 
 /**
  * File-based messaging adapter.
@@ -592,6 +592,11 @@ export class FileMessagingAdapter {
 	 */
 	async listQuestions(member) {
 		return this._questions.lists(member, { isHuman: await this._isHuman() });
+	}
+
+	/** How many open questions wait on each member, from one pass over the store: `{ [name]: n }`. */
+	async waitingCounts() {
+		return waitingCounts([...(await this.questionStates()).values()]);
 	}
 
 	/** The folded state of every ask in the store: Map from the asking message's id to `foldAsk`'s result. */
