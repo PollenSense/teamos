@@ -26,7 +26,7 @@
  * as any member by passing `member` explicitly.
  */
 
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { createInterface } from 'node:readline';
 import { loadConfig } from '../config.mjs';
 import { FileScheduleAdapter } from '../schedule/file.mjs';
@@ -138,6 +138,21 @@ const MEMBER_PROP = {
 	description: 'Member identity (defaults to the runner-set member).',
 };
 
+const ATTACHMENTS_DESCRIPTION =
+	'Paths of image files to attach (png, jpg, gif or webp, checked by content; at most 10 files, 8 MB each, 25 MB together). ' +
+	'Relative paths start at the working directory. Put one in the body with ![caption](attachment:1) (the 1-based position in this list); ' +
+	'images the body does not place are added at its end. A file that is not one of those image types is refused and nothing is sent. ' +
+	'Recipients who are agents open an image with their Read tool; people see it in the dashboard.';
+
+/** `attachments` argument -> adapter items; the position in the list is the placeholder (`attachment:1`). */
+function attachmentItems(args) {
+	if (args.attachments == null) return undefined;
+	if (!Array.isArray(args.attachments) || args.attachments.some((p) => typeof p !== 'string' || !p)) {
+		throw { code: -32602, message: '`attachments` must be a list of file paths' };
+	}
+	return args.attachments.map((path, i) => ({ path: resolve(path), ref: String(i + 1) }));
+}
+
 const BASE_TOOLS = [
 	{
 		name: 'send_message',
@@ -156,6 +171,11 @@ const BASE_TOOLS = [
 				cc: { type: 'array', items: { type: 'string' }, description: "Optional cc'd member names" },
 				replyTo: { type: 'string', description: 'Optional id of the message being replied to' },
 				projectCode: { type: 'string', description: 'Optional project tag for filtering/grouping' },
+				attachments: {
+					type: 'array',
+					items: { type: 'string' },
+					description: ATTACHMENTS_DESCRIPTION,
+				},
 			},
 			required: ['to', 'body'],
 		},
@@ -191,6 +211,11 @@ const BASE_TOOLS = [
 						'Optional id of the message this thread replies to (carries through to the new message; usually omit).',
 				},
 				projectCode: { type: 'string', description: 'Optional project tag.' },
+				attachments: {
+					type: 'array',
+					items: { type: 'string' },
+					description: ATTACHMENTS_DESCRIPTION,
+				},
 			},
 			required: ['supersedes', 'to', 'body'],
 		},
@@ -198,7 +223,7 @@ const BASE_TOOLS = [
 	{
 		name: 'read_message',
 		description:
-			'Read a message by id from the master store. Returns the full message; when replyTo is set, the immediate parent is inlined as `parent` (one hop). To walk further back, call read_message again with parent.replyTo.',
+			'Read a message by id from the master store. Returns the full message; when replyTo is set, the immediate parent is inlined as `parent` (one hop). To walk further back, call read_message again with parent.replyTo. When the message has images, `attachmentPaths` lists their absolute paths: open one with your Read tool to see it.',
 		inputSchema: {
 			type: 'object',
 			properties: {
@@ -558,6 +583,7 @@ async function handleToolCall(name, args) {
 				body,
 				replyTo,
 				projectCode,
+				attachments: attachmentItems(args),
 			});
 			return textResult({ id, sentAt, to, cc: cc ?? [] });
 		}
@@ -573,13 +599,14 @@ async function handleToolCall(name, args) {
 				body,
 				replyTo,
 				projectCode,
+				attachments: attachmentItems(args),
 			});
 			return textResult(result);
 		}
 
 		case 'read_message': {
 			const { id } = args;
-			const msg = await adapter.readMessage(id, { inlineParent: true });
+			const msg = await adapter.readMessage(id, { inlineParent: true, withPaths: true });
 			return textResult(msg);
 		}
 

@@ -101,6 +101,13 @@ Rules, enforced by the adapter (`scripts/lib/messaging/attachments.mjs`) for eve
   `![caption](attachment:<ref>)` (the adapter swaps in the stored path); images the body does not place are
   appended at the end. A placeholder whose image was not sent is an error.
 
+**Agents.** `send_message` and `supersede_message` take `attachments: ["<path>", ...]` (relative paths start at the
+working directory); the position in the list is the placeholder, so `![caption](attachment:1)` places the first
+one. Each file is checked by its content like any other upload, so a path to something that is not one of the four
+image types (a secrets file, say) is refused and nothing is sent. To look at an image an agent opens it with its
+Read tool: the cycle prompt lists "Attached images" under a message and `read_message` returns `attachmentPaths`
+(absolute; the body itself only has the path relative to `team/messages/`).
+
 **Dashboard.** Compose accepts paste (at the caret), drag-and-drop and a file picker (the phone's photo library
 or camera). The browser sends each image first, as raw bytes, to `POST /api/attachments?name=` (sender enforced
 like `POST /api/messages`, kept in `team/.logs/attachments-staging/` and swept after a day), gets a token back, and
@@ -144,6 +151,7 @@ send_message({
   cc?: string[],         // optional
   replyTo?: string,      // optional — parent message id
   projectCode?: string,  // optional
+  attachments?: string[], // optional — paths of image files; see Images
 }) → { id: string, sentAt: string }
 ```
 
@@ -190,8 +198,9 @@ Returns the full message plus its immediate parent inlined:
 ```
 {
   id, from, to, cc, subject, sentAt, replyTo, projectCode, body,
+  attachments?, attachmentPaths?,   // image names; absolute paths of the files (see Images)
   parent?: {
-    id, from, to, cc, subject, sentAt, replyTo, projectCode, body
+    id, from, to, cc, subject, sentAt, replyTo, projectCode, body, attachments?, attachmentPaths?
   }
 }
 ```
