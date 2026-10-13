@@ -76,6 +76,8 @@ Field reference:
 | `supersedes` | no | Array of prior message ids this message consolidates / replaces. Set when the message was created via `supersede_message`. |
 | `supersededBy` | no | Id of a later message that supersedes this one. Written by the adapter when `supersede_message` runs; never set by the original sender. |
 | `projectCode` | no | Optional project tag for filtering/grouping |
+| `questions` | no | One line of JSON: a list of questions the sender needs decided; see [Questions](#questions). |
+| `answers` | no | One line of JSON: answers to the questions of the message this replies to; see [Questions](#questions). |
 | `attachments` | no | Array of image file names stored in `team/messages/attachments/<id>/`; omit if none. See [Images](#images). |
 
 ### Images
@@ -123,6 +125,66 @@ as a plain link, and raw HTML that would fetch from elsewhere (`<img>` to anothe
 `<source>`, `<picture>`, an `<input>` that is not a task-list checkbox, `style`, `poster`, `background`) is
 stripped, and so are forms, so opening a message never makes the browser contact another site.
 
+### Questions
+
+A message can ask questions that people answer with a tap (dashboard cards) and agents answer with a reply. The
+state of each question is not stored anywhere: it is **folded from the asking message and the messages that answer
+it**, so the master store stays the only truth and any copy of it is complete. The rules live in
+`scripts/lib/messaging/questions.mjs` (pure, no I/O); the file adapter enforces them when a message is sent and the
+fold enforces them again when the state is read.
+
+**Asking.** `questions:` is ONE line of JSON in the frontmatter (only this field and `answers` are read as JSON; every
+other field parses as before):
+
+```
+questions: [{"id":"q1","text":"Which palette?","options":[{"label":"Meadow","description":"Green and cream"},{"label":"Sky"}],"recommend":1,"waitingOn":["kris"]}]
+```
+
+- `id` is assigned in order (`q1`, `q2`, ...); at most 5 questions per message (three or four is better);
+  `text` up to 300 characters; 2 to 4 `options` (`label` up to 60, `description` up to 160); an "Other" answer is
+  always possible and is not an option.
+- `recommend` (the 1-based option number) is **required**: asking without a recommendation is refused.
+- `waitingOn` defaults to the message's `to`; every name must be on the message (`to` or `cc`).
+- The questions are also written in the body. If a question's text is missing there, the adapter appends a numbered
+  "Questions" block and `send_message` says so (`questionsAppended`), so a reader of the bare file never loses one.
+
+**Answering** is a normal reply (`replyTo` is the asking message) with `answers:`, one JSON line of entries, and a
+plain-words body. Each entry has `ask`, `q` and exactly one of:
+
+| Entry | Meaning | Who may send it |
+| --- | --- | --- |
+| `option: N` or `other: "text"` | an answer | anyone on the ask's `to` or `cc`, not only the person it waits on; not the asker |
+| the same plus `by` and `via` | the asker records someone's plain-text reply | the asker only; `by` must be asked, `via` must be a message from `by` sent after the ask |
+| `dismissed: true` | "no longer needed" | a person on the message, not the asker (an asker withdraws a question by superseding) |
+| `reopen: "reason"` | the asker still needs it | the asker, once per question, a reason is required, only after it was closed |
+
+Anything else is refused with a sentence that says why (not on the thread, option out of range, a second reopen,
+...). One entry per question per message.
+
+**The state** of a question is `open` until the first answer; then `answered` (`answer`: who, when, option or text,
+and `recordedBy`/`via` when the asker recorded it) or `dismissed`. The first answer wins; a later answer is kept in
+`also` and `conflict` says when it differs, never hidden. A reopen moves what was there to `earlier` and starts again
+(once). A superseded ask is ignored (its successor carries the questions); superseding a message that has answered
+or dismissed questions is refused ("send a follow-up instead"), because answers do not carry across. A plain-text
+reply without `answers` is not matched automatically: it is a message, and the asker records it (the "Questions"
+section of the cycle prompt lists those replies).
+
+**Waiting.** `waitingOn(member)` is every open question whose `waitingOn` includes the member, oldest first, and
+`askedBy(member)` the member's own open questions with the plain replies since. Both are derived from the messages,
+so they do not depend on a message being in an inbox (an archived ask still waits) and never edit `inbox.json` or
+`archives.json`, so they cannot affect what counts as read.
+
+**Where it shows.** `read_message` returns `questionState` (each question with its status and answers); `list_inbox`,
+`list_sent` and `list_archives` summaries of an ask carry `questions: { open, total }`; `list_questions` returns
+`{ waitingOnMe, asked }`; the cycle prompt renders each message's questions with their state and adds a "Questions"
+section when something waits on the member or the member is waiting. An answer is mail To the asker, so it wakes the
+asker as any message does; an unanswered question never wakes anyone.
+
+**Cost.** The state needs the headers of every message. `QuestionIndex` (`question-index.mjs`) caches them per file by
+mtime, in memory and in `team/.logs/questions-index.json` (outside the Drive sync; safe to delete; any version of it
+is valid). Measured on a synthetic 5,000-message store: first pass with no cache file 0.5 s, a fresh process with the
+cache file and a warm call about 70 ms.
+
 ### Mailbox files
 
 Each member has three json files, all with the same shape:
@@ -152,6 +214,8 @@ send_message({
   replyTo?: string,      // optional — parent message id
   projectCode?: string,  // optional
   attachments?: string[], // optional — paths of image files; see Images
+  questions?: object[],  // optional — see Questions
+  answers?: object[],    // optional — answers to the message replyTo points at; see Questions
 }) → { id: string, sentAt: string }
 ```
 
@@ -199,6 +263,7 @@ Returns the full message plus its immediate parent inlined:
 {
   id, from, to, cc, subject, sentAt, replyTo, projectCode, body,
   attachments?, attachmentPaths?,   // image names; absolute paths of the files (see Images)
+  questions?, answers?, questionState?,   // see Questions
   parent?: {
     id, from, to, cc, subject, sentAt, replyTo, projectCode, body, attachments?, attachmentPaths?
   }

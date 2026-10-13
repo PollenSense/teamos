@@ -1,72 +1,10 @@
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
-import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { readFile, stat } from 'node:fs/promises';
 import { isAbsolute, join } from 'node:path';
-import { createInterface } from 'node:readline';
-import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
 import { buildInboxSection } from '../cycle.mjs';
 import { FileMessagingAdapter } from './file.mjs';
-
-const SERVER = fileURLToPath(new URL('./mcp-server.mjs', import.meta.url));
-
-const PNG = Buffer.from(
-	'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==',
-	'base64',
-);
-
-async function withProject(fn) {
-	const dir = await mkdtemp(join(tmpdir(), 'teamos-agent-att-'));
-	try {
-		await mkdir(join(dir, 'team'), { recursive: true });
-		await writeFile(
-			join(dir, 'team', 'members.json'),
-			JSON.stringify({ members: [{ name: 'alice' }, { name: 'bob' }] }),
-			'utf-8',
-		);
-		await mkdir(join(dir, 'pics'), { recursive: true });
-		await writeFile(join(dir, 'pics', 'shot.png'), PNG);
-		await writeFile(join(dir, 'pics', 'notes.txt'), 'plain text, definitely not an image at all');
-		await fn(dir);
-	} finally {
-		await rm(dir, { recursive: true, force: true });
-	}
-}
-
-/** The MCP server over stdio, as an agent's CLI runs it; `call` resolves with the JSON-RPC response. */
-async function withServer(dir, fn) {
-	const child = spawn(process.execPath, [SERVER], {
-		cwd: dir,
-		env: { ...process.env, TEAMOS_TEAM_DIR: join(dir, 'team'), TEAMOS_MEMBER_NAME: 'alice' },
-		stdio: ['pipe', 'pipe', 'ignore'],
-	});
-	const waiting = new Map();
-	createInterface({ input: child.stdout }).on('line', (line) => {
-		const msg = JSON.parse(line);
-		waiting.get(msg.id)?.(msg);
-	});
-	let next = 1;
-	const call = (method, params) =>
-		new Promise((resolve) => {
-			const id = next++;
-			waiting.set(id, resolve);
-			child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id, method, params })}\n`);
-		});
-	const tool = async (name, args) => {
-		const res = await call('tools/call', { name, arguments: args });
-		if (res.error) return { error: res.error };
-		const text = res.result.content[0].text;
-		return { isError: !!res.result.isError, text, json: res.result.isError ? null : JSON.parse(text) };
-	};
-	try {
-		await call('initialize', {});
-		await fn({ call, tool });
-	} finally {
-		child.stdin.end();
-		child.kill();
-	}
-}
+import { PNG, withProject, withServer } from './mcp-test-helper.mjs';
 
 test('the message tools offer `attachments`, and read_message says what it returns', () =>
 	withProject((dir) =>

@@ -37,14 +37,29 @@ TeamOS messages behave like email — a message has `from`, `to`, `cc`, `subject
 Use the MCP tools below; they are the only supported way to send, read, or manage messages.
 
 **Tools:**
-- `send_message({ to, body, subject?, cc?, replyTo?, projectCode?, attachments? })` — Send to one or more members. `subject` is required on new threads; replies may omit it and the server will derive `Re: <parent.subject>`. Returns `{ id, sentAt }`.
-- `supersede_message({ supersedes, to, body, subject?, cc?, projectCode?, attachments? })` — Send a new message that consolidates / replaces one or more earlier messages YOU sent on the same topic to the same audience. The new `to`+`cc` must cover every recipient any predecessor reached. See "Consolidate, don't stack" below.
-- `read_message(id)` — Read any message by id. The immediately preceding message is inlined as `parent` (one hop). To walk further back, call `read_message(parent.replyTo)`. When the message has images, `attachmentPaths` lists their absolute paths.
+- `send_message({ to, body, subject?, cc?, replyTo?, projectCode?, attachments?, questions?, answers? })` — Send to one or more members. `subject` is required on new threads; replies may omit it and the server will derive `Re: <parent.subject>`. Returns `{ id, sentAt }`.
+- `supersede_message({ supersedes, to, body, subject?, cc?, projectCode?, attachments?, questions? })` — Send a new message that consolidates / replaces one or more earlier messages YOU sent on the same topic to the same audience. The new `to`+`cc` must cover every recipient any predecessor reached. See "Consolidate, don't stack" below.
+- `read_message(id)` — Read any message by id. The immediately preceding message is inlined as `parent` (one hop). To walk further back, call `read_message(parent.replyTo)`. When the message has images, `attachmentPaths` lists their absolute paths. When it asks questions, `questionState` gives each one's status.
 - `list_inbox()` / `list_sent({ to? })` / `list_archives()` — Summaries of your mailboxes (newest first). Each summary has `hasParent` (thread membership), `supersedes` (predecessors this message replaces), and `supersededBy` (a later message that replaces this one) so you can spot consolidation context without fetching the full body. `list_sent` accepts an optional `to: [<member>, ...]` filter.
+- `list_questions()` — `waitingOnMe`: questions asked of you; `asked`: your own open questions, who each waits on, and the plain replies that came in since (to record).
 - `archive_message(id)` — Move a message from your inbox to your archives after handling it.
 - `unarchive_message(id)` — Put an archived message back in your inbox if you archived prematurely.
 
 **Images.** A message can carry images (a screenshot, a chart). In the cycle prompt they appear under "Attached images", and `read_message` returns `attachmentPaths`: open one with your Read tool to see it. To send one, pass `attachments: ["<path>"]` to `send_message` or `supersede_message` (png, jpg, gif or webp; 8 MB each, 10 per message; a relative path starts at your working directory). Optionally place it in the body with `![caption](attachment:1)` (the 1-based position in the list); otherwise it is added at the end. Attach only what the reader needs, and nothing that shows a secret or personal data: a screenshot shows everything on the page.
+
+**Questions.** When you need a decision, ask it as a question card instead of burying it in prose: `send_message({ ..., questions: [{ text, options: [{ label, description? }], recommend, waitingOn? }] })`. The people asked see tap targets in the dashboard; you read the answers as mail. A question clears for everyone when anyone on the message answers. The cycle prompt shows questions with their state, and a "Questions" section lists what waits on you and what you are waiting for. Rules:
+
+1. Questions are for decisions that shape your work, not for status, FYI or anything the workspace answers. Read the files first; say in the body what you already checked.
+2. Three or four per message at most (five is the limit). Two to four options, each a real choice with its consequence in one line. Always mark a recommendation (`recommend`: the option's number) and say why in the body.
+3. Plain language for humans (the Kris rule): what changes for customers, money or time; no code, file or setting names.
+4. Write the questions in the body too, numbered. Nobody should need the card to understand the message.
+5. Wait on the people who can decide, no more. The default is the `to` list; name someone else (`waitingOn`) only if they are on the message.
+6. A plain-text reply is an answer. Record it: reply to your own question with `answers: [{ ask, q, option | other, by, via }]` (`by` is who answered, `via` the id of their reply) and a one-line thanks, so the question clears for everyone.
+7. Do not nag. Reopen a question once (`answers: [{ ask, q, reopen: "what is still missing" }]`), with a reason that says exactly what is missing. Drop a question you no longer need by superseding the message without it (if it was already answered, send a follow-up instead).
+8. Cards are team-readable and land in the shared Drive: no secrets or personal data in options or text.
+9. One digest per day still holds. Questions do not license a message per question.
+
+To answer a question yourself (another member asked you): `send_message({ to: [<asker>], replyTo: <ask id>, body, answers: [{ ask: <ask id>, q: "q1", option: 2 }] })`; `other: "your words"` for your own answer, `dismissed: true` if it no longer matters (a person only).
 
 **Message ids are opaque.** Pass them through verbatim — never parse or construct them. When replying, use `replyTo: <parent.id>` from the inbox summary.
 

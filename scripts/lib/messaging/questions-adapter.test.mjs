@@ -256,3 +256,24 @@ test('the index follows changes: a message edited after the first pass is read a
 		await writeFile(path, raw.replace(/^questions: .*$/m, 'questions: [{"id":"q1","text":"Only one now","options":[{"label":"a"},{"label":"b"}],"recommend":1,"waitingOn":["kris"]}]'), 'utf-8');
 		assert.deepEqual((await adapter.listQuestions('kris')).waitingOnMe.map((w) => w.text), ['Only one now']);
 	}));
+
+test('the cache file is a plain optimization: a new process reuses it, garbage in it is ignored, deleted messages vanish', () =>
+	withAdapter(async (adapter, dir) => {
+		const { id } = await ask(adapter);
+		assert.equal((await adapter.listQuestions('kris')).waitingOnMe.length, 2);
+		const cachePath = join(dir, '.logs', 'questions-index.json');
+		const cache = JSON.parse(await readFile(cachePath, 'utf-8'));
+		assert.equal(cache.version, 1);
+		assert.ok(cache.files[id]);
+
+		const fresh = new FileMessagingAdapter(dir);
+		assert.equal((await fresh.listQuestions('kris')).waitingOnMe.length, 2);
+
+		await writeFile(cachePath, '{ this is not json', 'utf-8');
+		const afterGarbage = new FileMessagingAdapter(dir);
+		assert.equal((await afterGarbage.listQuestions('kris')).waitingOnMe.length, 2);
+		assert.equal(JSON.parse(await readFile(cachePath, 'utf-8')).version, 1, 'rewritten after a rebuild');
+
+		await rm(join(dir, 'messages', `${id}.md`));
+		assert.deepEqual((await new FileMessagingAdapter(dir).listQuestions('kris')).waitingOnMe, []);
+	}));

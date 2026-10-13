@@ -8,6 +8,7 @@
  * @property {string} sentAt
  * @property {string} [projectCode]
  * @property {boolean} hasParent
+ * @property {{ open: number, total: number }} [questions] — set when the message asks questions
  * @property {string[]} [supersedes] — ids of prior messages this one consolidates / replaces
  * @property {string} [supersededBy] — id of a later message that consolidates / replaces this one
  */
@@ -15,9 +16,10 @@
 /**
  * @typedef {Object} MessagingAdapter
  * @property {(member: string) => Promise<boolean>} hasMessages
- * @property {(args: { from: string, to: string[], cc?: string[], subject?: string, body: string, replyTo?: string, projectCode?: string, attachments?: { path: string, name?: string, ref?: string }[] }) => Promise<{ id: string, sentAt: string }>} sendMessage
- * @property {(args: { from: string, supersedes: string[], to: string[], cc?: string[], subject?: string, body: string, replyTo?: string, projectCode?: string, attachments?: { path: string, name?: string, ref?: string }[] }) => Promise<{ id: string, sentAt: string, supersededIds: string[], unreadRemoved: number, alreadyDelivered: number }>} supersedeMessage
- * @property {(id: string, opts?: { inlineParent?: boolean, withPaths?: boolean }) => Promise<Object>} readMessage — `withPaths` adds `attachmentPaths` (absolute image paths) for agents
+ * @property {(args: { from: string, to: string[], cc?: string[], subject?: string, body: string, replyTo?: string, projectCode?: string, attachments?: { path: string, name?: string, ref?: string }[], questions?: Object[], answers?: Object[] }) => Promise<{ id: string, sentAt: string, questionsAppended?: boolean }>} sendMessage
+ * @property {(args: { from: string, supersedes: string[], to: string[], cc?: string[], subject?: string, body: string, replyTo?: string, projectCode?: string, attachments?: { path: string, name?: string, ref?: string }[], questions?: Object[] }) => Promise<{ id: string, sentAt: string, supersededIds: string[], unreadRemoved: number, alreadyDelivered: number }>} supersedeMessage
+ * @property {(id: string, opts?: { inlineParent?: boolean, withPaths?: boolean, withState?: boolean }) => Promise<Object>} readMessage — `withPaths` adds `attachmentPaths` (absolute image paths) for agents, `withState` adds `questionState` for a message that asks questions
+ * @property {(member: string) => Promise<{ waitingOnMe: Object[], asked: Object[] }>} [listQuestions] — optional: what the member owes and is waiting for
  * @property {(member: string) => Promise<MessageSummary[]>} listInbox
  * @property {(member: string, opts?: { to?: string[] }) => Promise<MessageSummary[]>} listSent
  * @property {(member: string) => Promise<MessageSummary[]>} listArchives

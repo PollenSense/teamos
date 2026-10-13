@@ -124,10 +124,14 @@ export class FileMessagingAdapter {
 	constructor(teamDir) {
 		this.teamDir = teamDir;
 		this.messagesDir = join(teamDir, 'messages');
-		this._questions = new QuestionIndex(this.messagesDir, (head) => {
-			const { metadata } = parseFrontmatter(head);
-			return normalizeMessage(metadata, '');
-		});
+		this._questions = new QuestionIndex(
+			this.messagesDir,
+			(head) => {
+				const { metadata } = parseFrontmatter(head);
+				return normalizeMessage(metadata, '');
+			},
+			{ cachePath: join(teamDir, '.logs', 'questions-index.json') },
+		);
 	}
 
 	// ─── Paths ─────────────────────────────────────────────────────────────────

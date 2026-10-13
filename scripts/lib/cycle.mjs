@@ -12,6 +12,7 @@ import {
 	readTextOrEmpty,
 	waitWhilePaused,
 } from './util.mjs';
+import { describeAnswer } from './messaging/questions.mjs';
 import { CC_PRIORITY, getMembersWithWork, inboxPriority } from './work-detection.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -47,7 +48,81 @@ function renderMessage(msg, { heading, headingLevel = '###' }) {
 		lines.push('', '**Attached images** (open one with your Read tool to see it):');
 		for (const path of msg.attachmentPaths) lines.push(`- ${path}`);
 	}
+	if (msg.questions?.length) lines.push('', ...renderQuestions(msg));
+	if (msg.answers?.length) lines.push('', ...renderAnswers(msg));
 	return lines;
+}
+
+/** The questions a message asks, with where each stands (the state is folded from the thread). */
+function renderQuestions(msg) {
+	const states = new Map((msg.questionState ?? []).map((q) => [q.id, q]));
+	const lines = ['**Questions** (an "Other" answer is always possible):'];
+	for (const q of msg.questions) {
+		const state = states.get(q.id);
+		const where = !state
+			? `waiting on ${q.waitingOn.join(', ')}`
+			: state.status === 'open'
+				? `**open**, waiting on ${q.waitingOn.join(', ')}${state.reopenReason ? ` (reopened: ${state.reopenReason})` : ''}`
+				: `**${describeAnswer(state.answer, q)}**`;
+		lines.push(`- \`${q.id}\` ${q.text} — ${where}`);
+		q.options.forEach((option, i) => {
+			const detail = option.description ? `: ${option.description}` : '';
+			lines.push(`    ${i + 1}. ${option.label}${detail}${i + 1 === q.recommend ? ' (recommended)' : ''}`);
+		});
+		for (const also of state?.also ?? []) {
+			lines.push(`    also: ${describeAnswer(also, q)}${state.conflict ? ' (differs)' : ''}`);
+		}
+	}
+	return lines;
+}
+
+/** An answer message's entries, one line. */
+function renderAnswers(msg) {
+	const said = msg.answers.map((a) => {
+		const what = a.option != null ? `option ${a.option}` : a.other != null ? `other "${a.other}"` : a.dismissed ? 'dismissed' : `reopened ("${a.reopen}")`;
+		return `${a.q} ${what}${a.by ? ` (recorded from ${a.via} by ${msg.from}: ${a.by}'s reply)` : ''}`;
+	});
+	return [`**Answers to ${msg.answers[0].ask}:** ${said.join('; ')}`];
+}
+
+const QUESTION_LIST_LIMIT = 15;
+
+/**
+ * "Questions" after the inbox: what is waiting on this member, and what they asked that is still open (with the plain
+ * replies that came in since, which they still have to record). Empty when there is nothing, so most prompts do not
+ * carry it. An answer is mail To the asker, so it also shows in the inbox; this section is the standing list.
+ */
+export async function buildQuestionsSection(member, messagingAdapter) {
+	if (typeof messagingAdapter?.listQuestions !== 'function') return [];
+	const lists = await messagingAdapter.listQuestions(member).catch(() => null);
+	if (!lists || (lists.waitingOnMe.length === 0 && lists.asked.length === 0)) return [];
+	const out = ['', '## Questions', ''];
+	const day = (iso) => (iso ?? '').slice(0, 10);
+	const more = (n) => (n > QUESTION_LIST_LIMIT ? [`- _…and ${n - QUESTION_LIST_LIMIT} more_`] : []);
+	if (lists.waitingOnMe.length > 0) {
+		out.push(
+			`**Waiting on you (${lists.waitingOnMe.length}).** Answer with \`send_message({ to: ["<asker>"], replyTo: "<ask id>", body, answers: [{ ask: "<ask id>", q: "q1", option: 1 }] })\` (\`option\` is the number of the option, \`other\` is your own words), or \`dismissed: true\` if it no longer matters. Read the options and the recommendation first.`,
+			'',
+		);
+		for (const w of lists.waitingOnMe.slice(0, QUESTION_LIST_LIMIT)) {
+			out.push(`- \`${w.q}\` of \`${w.askId}\` from ${w.asker} (${w.subject}), since ${day(w.since)}: ${w.text}${w.reopened ? ` — reopened: ${w.reopened}` : ''}`);
+		}
+		out.push(...more(lists.waitingOnMe.length), '');
+	}
+	if (lists.asked.length > 0) {
+		out.push(
+			`**You are waiting for (${lists.asked.length}).** A plain-text reply to one of these is an answer: record it with \`send_message({ to: [<the people asked>], replyTo: "<ask id>", body: "<a one-line thanks>", answers: [{ ask: "<ask id>", q: "q1", option: 1, by: "<who>", via: "<their reply id>" }] })\`. Reopen a question at most once, with a reason.`,
+			'',
+		);
+		for (const a of lists.asked.slice(0, QUESTION_LIST_LIMIT)) {
+			const replies = a.textReplies.length
+				? `; plain replies since: ${a.textReplies.map((r) => `${r.from} (\`${r.id}\`)`).join(', ')}`
+				: '';
+			out.push(`- \`${a.q}\` of \`${a.askId}\` (${a.subject}) waits on ${a.waitingOn.join(', ')} since ${day(a.since)}: ${a.text}${replies}`);
+		}
+		out.push(...more(lists.asked.length), '');
+	}
+	return out;
 }
 
 export async function buildInboxSection(member, messagingAdapter) {
@@ -74,7 +149,9 @@ export async function buildInboxSection(member, messagingAdapter) {
 
 async function pushMessages(out, summaries, messagingAdapter) {
 	for (const summary of summaries) {
-		const msg = await messagingAdapter.readMessage(summary.id, { inlineParent: true, withPaths: true }).catch(() => null);
+		const msg = await messagingAdapter
+			.readMessage(summary.id, { inlineParent: true, withPaths: true, withState: true })
+			.catch(() => null);
 		if (!msg) continue;
 
 		out.push(...renderMessage(msg, { heading: msg.subject || summary.subject || '(no subject)' }));
@@ -296,6 +373,7 @@ export async function buildCyclePrompt(member, priority, teamDir, adapters = {})
 
 	const inboxSection = await buildInboxSection(member.name, adapters.messaging);
 	parts.push(...inboxSection);
+	parts.push(...(await buildQuestionsSection(member.name, adapters.messaging)));
 
 	parts.push(...buildToolsPromptSection('cycle'));
 
