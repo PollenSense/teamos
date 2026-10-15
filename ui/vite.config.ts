@@ -22,6 +22,9 @@ export default defineConfig(async () => {
 	const { createTasksAdapter } = await import(pathToFileURL(resolve(teamosRoot, 'scripts/lib/tasks/index.mjs')).href);
 	const { ChatSessions } = await import(pathToFileURL(resolve(teamosRoot, 'scripts/lib/chat/session.mjs')).href);
 	const { createLogReader } = await import(pathToFileURL(resolve(teamosRoot, 'scripts/lib/logs.mjs')).href);
+	const { AttachmentStore } = await import(
+		pathToFileURL(resolve(teamosRoot, 'scripts/lib/messaging/attachments.mjs')).href
+	);
 
 	loadDotEnv(projectRoot);
 	const config = resolveEnvVars(await loadConfig(projectRoot));
@@ -50,6 +53,8 @@ export default defineConfig(async () => {
 				siblingDir: resolve(projectRoot, 'tess'),
 				messagingAdapter,
 				messagingAdapterName: adapterName,
+				// Images are stored by the file adapter; another adapter would bring its own.
+				attachments: adapterName === 'file' ? new AttachmentStore(teamDir) : undefined,
 				scheduleAdapter,
 				scheduleAdapterName,
 				auth: config.auth,

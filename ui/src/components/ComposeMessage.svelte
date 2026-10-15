@@ -1,5 +1,17 @@
 <script lang="ts">
+import { onDestroy, tick } from 'svelte';
 import { api } from '../lib/api.js';
+import {
+	type AttachmentLimits,
+	LONG_SIDE,
+	appendBlock,
+	insertAt,
+	pastedName,
+	placeholder,
+	prepareImage,
+	removePlaceholder,
+	swapPlaceholderRef,
+} from '../lib/attachments.js';
 import Markdown from './Markdown.svelte';
 import { identity } from '../lib/identity.svelte.js';
 import { router } from '../lib/router.svelte.js';
@@ -19,6 +31,29 @@ let subject = $state('');
 let projectCode = $state('');
 let body = $state('');
 
+/** One image on its way with this message; `ref` is what the body's placeholder says until the upload gives a token. */
+interface Attached {
+	key: string;
+	ref: string;
+	name: string;
+	size: number;
+	/** Preview for the tray (an object URL; revoked when the image leaves). */
+	url: string;
+	status: 'working' | 'ready' | 'failed';
+	token?: string;
+	error?: string;
+}
+
+let limits = $state<AttachmentLimits | null>(null);
+let attached = $state<Attached[]>([]);
+let attachNotice = $state<string | null>(null);
+let dragging = $state(false);
+let bodyEl = $state<HTMLTextAreaElement | null>(null);
+let picker = $state<HTMLInputElement | null>(null);
+let imageCounter = 0;
+
+const working = $derived(attached.some((a) => a.status === 'working'));
+
 let replyMessage = $state<Message | null>(null);
 let inboxOwner = $state<string | null>(null);
 let isReplyAll = $state(false);
@@ -35,9 +70,14 @@ $effect(() => {
 });
 
 async function load() {
-	const [m, p] = await Promise.all([api.members(), api.projects()]);
+	const [m, p, info] = await Promise.all([
+		api.members(),
+		api.projects(),
+		api.messagingInfo().catch(() => null),
+	]);
 	members = m;
 	projects = p.projects ?? [];
+	limits = info?.attachments ?? null;
 
 	const re = router.query.re;
 	const inbox = router.query.inbox;
@@ -94,7 +134,8 @@ function selectAllAI() {
 }
 
 async function send() {
-	if (to.size === 0 || !body.trim() || !from.trim()) return;
+	if (to.size === 0 || !body.trim() || !from.trim() || working) return;
+	const readyTokens = attached.flatMap((a) => (a.status === 'ready' && a.token ? [a.token] : []));
 	sending = true;
 	sendError = null;
 	try {
@@ -106,6 +147,7 @@ async function send() {
 			body: body.trim(),
 			replyTo: replyMessage?.id,
 			projectCode: projectCode || undefined,
+			attachments: readyTokens.length > 0 ? readyTokens : undefined,
 		});
 	} catch (err) {
 		sendError = err instanceof Error ? err.message : String(err);
@@ -113,12 +155,132 @@ async function send() {
 		return;
 	}
 	sending = false;
+	dropAttached();
 	if (isReply) {
 		router.navigate(backPath);
 		return;
 	}
 	sent = true;
 }
+
+// ─── Images ──────────────────────────────────────────────────────────────────
+
+function megabytes(bytes: number): string {
+	const mb = bytes / (1024 * 1024);
+	return mb >= 0.1 ? `${mb.toFixed(1)} MB` : `${Math.max(1, Math.round(bytes / 1024))} KB`;
+}
+
+function extFor(type: string): string {
+	if (type === 'image/jpeg') return 'jpg';
+	return type.split('/')[1]?.replace(/[^a-z0-9]/gi, '') || 'png';
+}
+
+/** Add images to the message: a paste puts them at the caret, a pick or a drop at the end. */
+async function addFiles(files: File[], where: 'caret' | 'end') {
+	attachNotice = null;
+	if (!limits) return;
+	let caret = where === 'caret' ? (bodyEl?.selectionStart ?? body.length) : body.length;
+	for (const file of files) {
+		const held = attached.filter((a) => a.status !== 'failed');
+		if (held.length >= limits.maxCount) {
+			attachNotice = `At most ${limits.maxCount} images per message`;
+			break;
+		}
+		const key = `pending-${++imageCounter}`;
+		const generic = !file.name || /^image\.[a-z0-9]+$/i.test(file.name);
+		const name = generic ? pastedName(new Date(), extFor(file.type), imageCounter) : file.name;
+		attached = [...attached, { key, ref: key, name, size: file.size, url: URL.createObjectURL(file), status: 'working' }];
+		const placed = where === 'caret' ? insertAt(body, caret, placeholder(name, key)) : appendBlock(body, placeholder(name, key));
+		body = placed.body;
+		caret = placed.caret;
+		void upload(key, file, name);
+	}
+	await tick();
+	if (bodyEl && where === 'caret') {
+		bodyEl.focus();
+		bodyEl.setSelectionRange(caret, caret);
+	}
+}
+
+async function upload(key: string, file: File, name: string) {
+	const find = () => attached.find((a) => a.key === key);
+	try {
+		const prepared = await prepareImage(file, limits as AttachmentLimits, name);
+		const item = find();
+		if (!item) return; // taken out while it was being prepared
+		if (prepared.reencoded) {
+			URL.revokeObjectURL(item.url);
+			item.url = URL.createObjectURL(prepared.blob);
+		}
+		item.size = prepared.blob.size;
+		const others = attached.filter((a) => a.key !== key && a.status !== 'failed').reduce((sum, a) => sum + a.size, 0);
+		if (others + prepared.blob.size > (limits as AttachmentLimits).maxTotalBytes) {
+			throw new Error(`Too much image data for one message (the limit is ${megabytes((limits as AttachmentLimits).maxTotalBytes)})`);
+		}
+		const staged = await api.uploadAttachment(prepared.blob, prepared.name, from);
+		const after = find();
+		if (!after) return;
+		after.token = staged.token;
+		after.name = staged.name;
+		after.ref = staged.token;
+		after.status = 'ready';
+		body = swapPlaceholderRef(body, key, staged.token);
+	} catch (err) {
+		const item = find();
+		if (!item) return;
+		item.status = 'failed';
+		item.error = err instanceof Error ? err.message : String(err);
+		body = removePlaceholder(body, item.ref);
+	}
+}
+
+function removeAttached(item: Attached) {
+	body = removePlaceholder(body, item.ref);
+	URL.revokeObjectURL(item.url);
+	attached = attached.filter((a) => a.key !== item.key);
+	attachNotice = null;
+}
+
+function dropAttached() {
+	for (const a of attached) URL.revokeObjectURL(a.url);
+	attached = [];
+	attachNotice = null;
+}
+
+function imagesIn(list: FileList | null | undefined): File[] {
+	return [...(list ?? [])].filter((f) => f.type.startsWith('image/') || (!f.type && /\.(heic|heif)$/i.test(f.name)));
+}
+
+function onPaste(e: ClipboardEvent) {
+	const files = imagesIn(e.clipboardData?.files);
+	if (files.length === 0 || !limits) return; // plain text paste: leave it alone
+	e.preventDefault();
+	void addFiles(files, 'caret');
+}
+
+function onDrop(e: DragEvent) {
+	dragging = false;
+	if (!limits) return;
+	const files = imagesIn(e.dataTransfer?.files);
+	if (files.length === 0) return;
+	e.preventDefault();
+	void addFiles(files, 'end');
+}
+
+function onDragOver(e: DragEvent) {
+	if (!limits || !e.dataTransfer || ![...e.dataTransfer.types].includes('Files')) return;
+	e.preventDefault();
+	dragging = true;
+}
+
+function onPick(e: Event) {
+	const input = e.currentTarget as HTMLInputElement;
+	const files = imagesIn(input.files);
+	input.value = ''; // picking the same file again must fire again
+	if (files.length > 0) void addFiles(files, 'end');
+}
+
+onDestroy(dropAttached);
 
 function reset() {
 	to = new Set();
@@ -128,6 +290,7 @@ function reset() {
 	body = '';
 	sent = false;
 	sendError = null;
+	dropAttached();
 	replyMessage = null;
 	inboxOwner = null;
 	isReplyAll = false;
@@ -232,7 +395,56 @@ function reset() {
 
 		<div class="form-group">
 			<label class="label" for="body">Message</label>
-			<textarea id="body" bind:value={body} rows="10" placeholder="Write your message (markdown supported)..."></textarea>
+			<textarea
+				id="body"
+				bind:this={bodyEl}
+				bind:value={body}
+				rows="10"
+				class:dragging
+				placeholder={limits
+					? 'Write your message (markdown supported). Paste or drop images here.'
+					: 'Write your message (markdown supported)...'}
+				onpaste={onPaste}
+				ondragover={onDragOver}
+				ondragleave={() => (dragging = false)}
+				ondrop={onDrop}
+			></textarea>
+			{#if limits}
+				<div class="attach-bar">
+					<button type="button" class="btn btn-ghost add-image" onclick={() => picker?.click()}>Add image</button>
+					<input
+						bind:this={picker}
+						type="file"
+						accept="image/*"
+						multiple
+						hidden
+						onchange={onPick}
+					/>
+					<span class="attach-hint">png, jpg, gif, webp; photos are shrunk to {LONG_SIDE}px; up to {limits.maxCount} per message, {megabytes(limits.maxBytes)} each</span>
+				</div>
+				{#if attachNotice}
+					<div class="attach-notice" role="status">{attachNotice}</div>
+				{/if}
+				{#if attached.length > 0}
+					<ul class="tray">
+						{#each attached as item (item.key)}
+							<li class="tray-item" class:failed={item.status === 'failed'}>
+								<img class="thumb" src={item.url} alt="" />
+								<span class="tray-name">{item.name}</span>
+								<span class="tray-meta">
+									{#if item.status === 'working'}Uploading...{:else if item.status === 'failed'}{item.error}{:else}{megabytes(item.size)}{/if}
+								</span>
+								<button
+									type="button"
+									class="tray-remove"
+									aria-label={`Remove ${item.name}`}
+									onclick={() => removeAttached(item)}
+								>&times;</button>
+							</li>
+						{/each}
+					</ul>
+				{/if}
+			{/if}
 		</div>
 
 		{#if sendError}
@@ -245,9 +457,9 @@ function reset() {
 			<button
 				class="btn btn-primary"
 				onclick={send}
-				disabled={to.size === 0 || !body.trim() || !from.trim() || sending || (!isReply && !subject.trim())}
+				disabled={to.size === 0 || !body.trim() || !from.trim() || sending || working || (!isReply && !subject.trim())}
 			>
-				{sending ? 'Sending...' : `Send to ${to.size} recipient${to.size !== 1 ? 's' : ''}`}
+				{sending ? 'Sending...' : working ? 'Uploading images...' : `Send to ${to.size} recipient${to.size !== 1 ? 's' : ''}`}
 			</button>
 		</div>
 	{/if}
@@ -314,6 +526,35 @@ function reset() {
 	}
 
 	.form-actions { margin-top: 1.5rem; }
+
+	textarea.dragging { outline: 2px dashed var(--primary); outline-offset: -2px; }
+	.attach-bar { display: flex; align-items: center; gap: 0.75rem; margin-top: 0.375rem; flex-wrap: wrap; }
+	.add-image {
+		padding: 0.375rem 0.75rem;
+		border: 1px solid var(--border);
+		border-radius: var(--radius);
+		font-size: 0.8rem;
+	}
+	.attach-hint { font-size: 0.75rem; color: var(--text-muted); }
+	.attach-notice { margin-top: 0.375rem; font-size: 0.8rem; color: var(--danger, #dc2626); }
+	.tray { list-style: none; margin: 0.5rem 0 0; padding: 0; display: flex; flex-direction: column; gap: 0.375rem; }
+	.tray-item {
+		display: flex;
+		align-items: center;
+		gap: 0.625rem;
+		padding: 0.375rem 0.5rem;
+		border: 1px solid var(--border);
+		border-radius: var(--radius);
+		background: var(--surface);
+		font-size: 0.8rem;
+	}
+	.tray-item.failed { border-color: var(--danger, #dc2626); }
+	.thumb { width: 40px; height: 40px; object-fit: cover; border-radius: 4px; flex: none; background: var(--bg); }
+	.tray-name { font-weight: 600; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+	.tray-meta { color: var(--text-muted); margin-left: auto; text-align: right; }
+	.tray-item.failed .tray-meta { color: var(--danger, #dc2626); }
+	.tray-remove { font-size: 1.1rem; line-height: 1; padding: 0.25rem 0.5rem; color: var(--text-muted); border-radius: var(--radius); }
+	.tray-remove:hover { background: var(--bg); color: var(--text); }
 
 	.send-error {
 		margin-top: 1rem;

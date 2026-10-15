@@ -1,3 +1,4 @@
+import type { AttachmentLimits } from './attachments.js';
 import type { LinkMap } from './linkify.js';
 
 export interface MemberSummary {
@@ -38,6 +39,8 @@ export interface Message {
 	supersedes?: string[];
 	supersededBy?: string;
 	projectCode?: string;
+	/** Names of the images stored with the message (`team/messages/attachments/<id>/`); the body shows them. */
+	attachments?: string[];
 	body: string;
 	/** Paths in `body` the server could resolve to a link (exact text -> target); see lib/linkify.ts. */
 	links?: LinkMap;
@@ -176,6 +179,8 @@ export interface ChatEvent {
 
 export interface MessagingInfo {
 	adapter: string;
+	/** Present when the dashboard can attach images; the limits the browser works to. */
+	attachments?: AttachmentLimits;
 }
 
 export interface TodoItem {

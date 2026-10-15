@@ -20,7 +20,9 @@ Only one adapter ships today: the **file adapter**, which stores messages on the
 ```
 team/
 ├── messages/
-│   └── <id>.md               # master store — one file per message
+│   ├── <id>.md               # master store — one file per message
+│   └── attachments/
+│       └── <id>/<name>.png   # images sent with that message (png, jpg, gif, webp)
 └── members/
     └── <name>/
         ├── inbox.json        # { "items": ["<id>", ...] }
@@ -74,6 +76,45 @@ Field reference:
 | `supersedes` | no | Array of prior message ids this message consolidates / replaces. Set when the message was created via `supersede_message`. |
 | `supersededBy` | no | Id of a later message that supersedes this one. Written by the adapter when `supersede_message` runs; never set by the original sender. |
 | `projectCode` | no | Optional project tag for filtering/grouping |
+| `attachments` | no | Array of image file names stored in `team/messages/attachments/<id>/`; omit if none. See [Images](#images). |
+
+### Images
+
+A message can carry images (a screenshot, a photo, a chart). They live next to the message files, in
+`team/messages/attachments/<id>/<name>`, so an image travels with its message (and with it into any sync of
+`team/`). The body shows an image with a normal markdown image whose address is relative to `team/messages/`:
+
+```markdown
+Here is the failing page: ![login error](attachments/2026-10-13T16-33-49.548Z-szrx/login-error.png)
+```
+
+so the raw `.md` stays plain text and an agent reading it sees the path (its Read tool opens the image).
+Rules, enforced by the adapter (`scripts/lib/messaging/attachments.mjs`) for every sender:
+
+- **Formats:** png, jpg, gif, webp. The type is decided by the file's first bytes, never its name or extension;
+  anything else (SVG, a document, a secrets file given by mistake) is refused.
+- **Limits:** 8 MB per image, 10 images and 25 MB per message.
+- **Names:** lowercased, only `a-z 0-9 . _ -`, the extension of the real type, `-2` / `-3` added on a clash.
+- **Atomic:** the images are written before the message file, and a refused image means no message at all, so a
+  message never points at a missing file.
+- `sendMessage` / `supersedeMessage` take `attachments: [{ path, name?, ref? }]`. A body may place an image with
+  `![caption](attachment:<ref>)` (the adapter swaps in the stored path); images the body does not place are
+  appended at the end. A placeholder whose image was not sent is an error.
+
+**Dashboard.** Compose accepts paste (at the caret), drag-and-drop and a file picker (the phone's photo library
+or camera). The browser sends each image first, as raw bytes, to `POST /api/attachments?name=` (sender enforced
+like `POST /api/messages`, kept in `team/.logs/attachments-staging/` and swept after a day), gets a token back, and
+`POST /api/messages` names the tokens in `attachments`. Photos (JPEG, HEIC and other camera formats) are redrawn
+in the browser as a JPEG no longer than 2560 px on the long side, which also drops the EXIF block (location
+included); PNG, GIF and WebP go as they are. An image is served from
+`GET /api/messages/<id>/attachments/<name>` with its sniffed type, `nosniff` and a CSP that allows nothing but the
+image. Like message text, an image is readable by anyone who can open the dashboard (there is no per-recipient
+check on reading a message).
+
+**Rendering.** An `<img>` in a message may only point at that route. A markdown image to any other address is shown
+as a plain link, and raw HTML that would fetch from elsewhere (`<img>` to another site, `srcset`, `<video>`,
+`<source>`, `<picture>`, an `<input>` that is not a task-list checkbox, `style`, `poster`, `background`) is
+stripped, and so are forms, so opening a message never makes the browser contact another site.
 
 ### Mailbox files
 
@@ -245,6 +286,8 @@ so the web dashboard reconstructs threads at read time over the same adapter:
   one conversation. Returns per-message `boxes` and `depth` so the UI can render
   the reply tree and say which mailbox each message came from.
 - `POST /api/messages/batch` — bodies for a whole conversation in one request.
+- `POST /api/attachments?name=` (raw image bytes → `{ token, name, size, mime }`) and
+  `GET /api/messages/:id/attachments/:name` — see [Images](#images).
 
 Both are dashboard-only views. They add nothing to the MCP surface, the
 supersede-collapse rule is applied exactly as `list_inbox` applies it, and an
@@ -257,6 +300,8 @@ The master store grows unbounded in v1. A later clerk pass will handle retention
 > Delete `team/messages/<id>.md` when `<id>` is absent from every member's `inbox.json`, `sent.json`, and `archives.json`.
 
 This policy is safe by construction: a message is only reachable through a mailbox reference, so an id that no member references is unreachable and can be pruned. Timed retention (e.g. "delete archived messages older than 90 days") layers on top by first removing old ids from `archives.json` and then letting the reference-count sweep reclaim the store files.
+
+An id's images go with it: the sweep that removes `team/messages/<id>.md` removes `team/messages/attachments/<id>/` too.
 
 Retention is deliberately deferred — the protocol works correctly without it, and teams can add pruning at whatever cadence fits their volume.
 
