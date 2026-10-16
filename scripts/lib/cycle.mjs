@@ -43,6 +43,10 @@ function renderMessage(msg, { heading, headingLevel = '###' }) {
 	if (msg.replyTo) lines.push(`**In reply to:** ${msg.replyTo}`);
 	lines.push('');
 	lines.push(msg.body || '');
+	if (msg.attachmentPaths?.length) {
+		lines.push('', '**Attached images** (open one with your Read tool to see it):');
+		for (const path of msg.attachmentPaths) lines.push(`- ${path}`);
+	}
 	return lines;
 }
 
@@ -70,7 +74,7 @@ export async function buildInboxSection(member, messagingAdapter) {
 
 async function pushMessages(out, summaries, messagingAdapter) {
 	for (const summary of summaries) {
-		const msg = await messagingAdapter.readMessage(summary.id, { inlineParent: true }).catch(() => null);
+		const msg = await messagingAdapter.readMessage(summary.id, { inlineParent: true, withPaths: true }).catch(() => null);
 		if (!msg) continue;
 
 		out.push(...renderMessage(msg, { heading: msg.subject || summary.subject || '(no subject)' }));

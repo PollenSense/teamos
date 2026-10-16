@@ -9,7 +9,8 @@ and written so they could be sent upstream as pull requests. Every change gets o
 | 2026-10-09 | main | Fork created; this file. | So the AI team's dashboard can be fixed without waiting on upstream. | n/a |
 | 2026-10-12 | `ps/dashboard-markdown-and-chat-scope` (PR #2, supersedes PR #1) | Sender identity enforced on messages and chat start; chat transcripts visible only to the human who opened them (or an `admin` role); message bodies, reply quotes and member chat replies render as markdown by default with a Raw toggle (`marked` + DOMPurify). | Impersonation (found 2026-10-08), Sagun's chat-privacy request, and Van's ask that markdown messages read as rendered text. | worth sending |
 | 2026-10-13 | `ps/linkify` (PR #3, merged 2026-10-13, `c5ac468`) | Paths and ids in messages become links: Drive files, code in GitHub repos, and the dashboard's own pages (member State/Todos/Schedule, messages). Documented in `docs/links.md`. The server resolves paths into a `links` map per message; the markdown renderer applies it, so the Raw view is untouched and code blocks and existing links are skipped. Driven by a `links` block in `teamos.config.json`; Drive and repo links exist only where configured. | Van's ask: when a member tells someone to look at something, it should be clickable (Kris starts 2026-10-13 and is told "see PollenBot/..."). | worth sending |
-| 2026-10-13 | `ps/attachments` (not merged yet; PR 1 of 2: the dashboard) | Images in messages: paste, drop or pick in Compose (phone and desktop), shown inline, click for full size; stored in `team/messages/attachments/<id>/`. Browser-shrunk photos, type from content, 8 MB / 10 / 25 MB limits. Message HTML can no longer fetch from other sites. Documented in `docs/messages.md` (Images). PR 2 adds the agent side (MCP tools). | Kris and Van work from phones; screenshots say more than a paragraph; agents can read and attach images. | Possible; the hardening part (no external fetch) is the most generally useful. |
+| 2026-10-15 | `ps/attachments` (PR #5, merged 2026-10-15, `a76230e`; PR 1 of 2: the dashboard) | Images in messages: paste, drop or pick in Compose (phone and desktop), shown inline, click for full size; stored in `team/messages/attachments/<id>/`. Browser-shrunk photos, type from content, 8 MB / 10 / 25 MB limits. Message HTML can no longer fetch from other sites. Documented in `docs/messages.md` (Images). PR 2 adds the agent side (MCP tools). | Kris and Van work from phones; screenshots say more than a paragraph; agents can read and attach images. | Possible; the hardening part (no external fetch) is the most generally useful. |
+| 2026-10-13 | `ps/attachments-agents` (not merged yet; PR 2 of 2, on top of merged PR #5) | Images in messages for agents: `send_message` / `supersede_message` take `attachments: [paths]`; `read_message` returns `attachmentPaths`; the cycle prompt lists "Attached images" with absolute paths; a rule in `agent-rules/cycle.md`. | Agents can read a screenshot with their Read tool and attach a chart or a Playwright screenshot. | Possible. |
 
 ## Done, pending merge (PR #2)
 
@@ -48,3 +49,10 @@ and written so they could be sent upstream as pull requests. Every change gets o
    Chromium against a throwaway project (paste, drop, picker, send, render, hostile HTML, phone width).
 6. **Known, not changed here:** at 390 px the member page (`#/member/<name>`) already overflows sideways (header
    buttons and tabs), unrelated to images.
+
+## Images in messages, PR 2: agents (`ps/attachments-agents`)
+
+`mcp-server.mjs` (`attachments` on the two send tools, paths resolved from the working directory, positions are the
+placeholders), `file.mjs` (`readMessage(id, { withPaths })` adds `attachmentPaths`, off for the dashboard so browsers
+never see server paths), `cycle.mjs` (an "Attached images" list per message), `agent-rules/cycle.md` (Images
+paragraph). Tests: `scripts/lib/messaging/agent-attachments.test.mjs` drives the real MCP server over stdio.

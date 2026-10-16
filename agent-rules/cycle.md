@@ -37,12 +37,14 @@ TeamOS messages behave like email — a message has `from`, `to`, `cc`, `subject
 Use the MCP tools below; they are the only supported way to send, read, or manage messages.
 
 **Tools:**
-- `send_message({ to, body, subject?, cc?, replyTo?, projectCode? })` — Send to one or more members. `subject` is required on new threads; replies may omit it and the server will derive `Re: <parent.subject>`. Returns `{ id, sentAt }`.
-- `supersede_message({ supersedes, to, body, subject?, cc?, projectCode? })` — Send a new message that consolidates / replaces one or more earlier messages YOU sent on the same topic to the same audience. The new `to`+`cc` must cover every recipient any predecessor reached. See "Consolidate, don't stack" below.
-- `read_message(id)` — Read any message by id. The immediately preceding message is inlined as `parent` (one hop). To walk further back, call `read_message(parent.replyTo)`.
+- `send_message({ to, body, subject?, cc?, replyTo?, projectCode?, attachments? })` — Send to one or more members. `subject` is required on new threads; replies may omit it and the server will derive `Re: <parent.subject>`. Returns `{ id, sentAt }`.
+- `supersede_message({ supersedes, to, body, subject?, cc?, projectCode?, attachments? })` — Send a new message that consolidates / replaces one or more earlier messages YOU sent on the same topic to the same audience. The new `to`+`cc` must cover every recipient any predecessor reached. See "Consolidate, don't stack" below.
+- `read_message(id)` — Read any message by id. The immediately preceding message is inlined as `parent` (one hop). To walk further back, call `read_message(parent.replyTo)`. When the message has images, `attachmentPaths` lists their absolute paths.
 - `list_inbox()` / `list_sent({ to? })` / `list_archives()` — Summaries of your mailboxes (newest first). Each summary has `hasParent` (thread membership), `supersedes` (predecessors this message replaces), and `supersededBy` (a later message that replaces this one) so you can spot consolidation context without fetching the full body. `list_sent` accepts an optional `to: [<member>, ...]` filter.
 - `archive_message(id)` — Move a message from your inbox to your archives after handling it.
 - `unarchive_message(id)` — Put an archived message back in your inbox if you archived prematurely.
+
+**Images.** A message can carry images (a screenshot, a chart). In the cycle prompt they appear under "Attached images", and `read_message` returns `attachmentPaths`: open one with your Read tool to see it. To send one, pass `attachments: ["<path>"]` to `send_message` or `supersede_message` (png, jpg, gif or webp; 8 MB each, 10 per message; a relative path starts at your working directory). Optionally place it in the body with `![caption](attachment:1)` (the 1-based position in the list); otherwise it is added at the end. Attach only what the reader needs, and nothing that shows a secret or personal data: a screenshot shows everything on the page.
 
 **Message ids are opaque.** Pass them through verbatim — never parse or construct them. When replying, use `replyTo: <parent.id>` from the inbox summary.
 
