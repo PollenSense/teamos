@@ -1,6 +1,6 @@
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { mkdir, readFile, unlink, writeFile } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { pathExists } from '../util.mjs';
 import { applyAttachmentsToBody, isAttachmentName, prepareAttachments, removeAttachments, writeAttachments } from './attachments.mjs';
 
@@ -445,13 +445,28 @@ export class FileMessagingAdapter {
 	 * the immediately preceding message (replyTo target) is inlined as `parent`,
 	 * one level deep. Deeper history is reached by calling read_message again.
 	 */
-	async readMessage(id, { inlineParent = true } = {}) {
+	async readMessage(id, { inlineParent = true, withPaths = false } = {}) {
 		const msg = await this._readRawMessage(id);
 		if (inlineParent && msg.replyTo) {
 			const parent = await this._readRawMessage(msg.replyTo).catch(() => null);
 			if (parent) msg.parent = parent;
 		}
+		if (withPaths) {
+			this._addAttachmentPaths(msg);
+			if (msg.parent) this._addAttachmentPaths(msg.parent);
+		}
 		return msg;
+	}
+
+	/**
+	 * For agents: `attachmentPaths` lists each image's absolute path, so the Read tool can open it
+	 * (the body only has the path relative to `team/messages/`). Opt-in because the dashboard serves
+	 * these messages to browsers and has no use for the server's directory layout.
+	 */
+	_addAttachmentPaths(msg) {
+		if (msg.attachments?.length) {
+			msg.attachmentPaths = msg.attachments.map((name) => resolve(this.messagesDir, 'attachments', msg.id, name));
+		}
 	}
 
 	async _summariesFromIds(ids) {
