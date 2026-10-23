@@ -1355,6 +1355,9 @@ export function teamosApi(opts: ApiOptions): Plugin {
 					if (answersMatch && method === 'POST') {
 						const askId = decodeURIComponent(answersMatch[1]);
 						const input = JSON.parse(await readBody(req));
+						if (!input || typeof input !== 'object' || Array.isArray(input)) {
+							return json(res, { error: 'Send a JSON object with an answers list' }, 400);
+						}
 						const who = await enforceSender(req, input.from);
 						if ('error' in who) return json(res, { error: who.error }, 403);
 						const ask = await messagingAdapter.readMessage(askId, { inlineParent: false }).catch(() => null);
@@ -1362,6 +1365,14 @@ export function teamosApi(opts: ApiOptions): Plugin {
 						if (!ask.questions?.length) return json(res, { error: 'That message asks no questions' }, 400);
 						if (!Array.isArray(input.answers) || input.answers.length === 0) {
 							return json(res, { error: 'No answers given' }, 400);
+						}
+						const malformed = input.answers.findIndex((a: unknown) => {
+							if (!a || typeof a !== 'object' || Array.isArray(a)) return true;
+							const e = a as Record<string, unknown>;
+							return typeof e.q !== 'string' || (e.option != null && !Number.isInteger(e.option)) || (e.other != null && typeof e.other !== 'string');
+						});
+						if (malformed >= 0) {
+							return json(res, { error: `answer ${malformed + 1} is malformed: give q and one of option (a number), other (text) or dismissed` }, 400);
 						}
 						const entries = input.answers.map((a: Record<string, unknown>) => ({
 							ask: askId,

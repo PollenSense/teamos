@@ -66,7 +66,7 @@ paragraph). Tests: `scripts/lib/messaging/agent-attachments.test.mjs` drives the
 rewrite, validation and answer checks on send, `readMessage({ withState })`, `listQuestions`, summaries with counts),
 `mcp-server.mjs`, `cycle.mjs`, `agent-rules/cycle.md` (the nine rules Van approved 2026-10-13), `docs/messages.md`
 (Questions). Tests: `questions.test.mjs` (the fold and every refusal), `questions-adapter.test.mjs` (files, supersede,
-cache), `questions-agent.test.mjs` (the real MCP server over stdio, the prompt). Plan: `pollen-bot/docs/teamos-question-cards-plan.md`.
+cache), `questions-agent.test.mjs` (the real MCP server over stdio, the prompt). Reading is defensive: `readQuestions` / `readAnswers` drop any stored entry that is not well formed, so a file edited by hand cannot stop a runner or the dashboard. Plan: `pollen-bot/docs/teamos-question-cards-plan.md`.
 
 ## Question cards, PR B: dashboard (`ps/questions-ui`)
 

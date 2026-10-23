@@ -59,7 +59,7 @@ Use the MCP tools below; they are the only supported way to send, read, or manag
 8. Cards are team-readable and land in the shared Drive: no secrets or personal data in options or text.
 9. One digest per day still holds. Questions do not license a message per question.
 
-To answer a question yourself (another member asked you): `send_message({ to: [<asker>], replyTo: <ask id>, body, answers: [{ ask: <ask id>, q: "q1", option: 2 }] })`; `other: "your words"` for your own answer, `dismissed: true` if it no longer matters (a person only).
+To answer a question yourself (another member asked you): `send_message({ to: [<asker>], replyTo: <ask id>, body, answers: [{ ask: <ask id>, q: "q1", option: 2 }] })`; `other: "your words"` for your own answer, `dismissed: true` if it no longer matters (a person only). Answer only a question that waits on you; one that waits on a person is theirs, even when you are on Cc.
 
 **Message ids are opaque.** Pass them through verbatim — never parse or construct them. When replying, use `replyTo: <parent.id>` from the inbox summary.
 

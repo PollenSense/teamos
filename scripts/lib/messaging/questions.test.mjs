@@ -9,6 +9,8 @@ import {
 	ensureQuestionsInBody,
 	foldAsk,
 	parseAnswers,
+	readAnswers,
+	readQuestions,
 	validateQuestions,
 	waitingCounts,
 	waitingOn,
@@ -216,7 +218,15 @@ test('reopen: only the asker, with a reason, once, and only after it was closed'
 });
 
 test('the asker records a text reply with by and via; each condition is checked', () => {
-	const lookup = (id) => ({ M1: { from: 'alton', sentAt: '2026-10-13T10:03:00.000Z' }, EARLY: { from: 'alton', sentAt: '2026-10-13T09:00:00.000Z' }, VAN: { from: 'van', sentAt: '2026-10-13T10:03:00.000Z' } })[id] ?? null;
+	const lookup = (id) =>
+		({
+			M1: { from: 'alton', sentAt: '2026-10-13T10:03:00.000Z', replyTo: 'A1' },
+			F1: { from: 'ivy', sentAt: '2026-10-13T10:04:00.000Z', replyTo: 'A1' },
+			M2: { from: 'alton', sentAt: '2026-10-13T10:05:00.000Z', replyTo: 'F1' },
+			ELSEWHERE: { from: 'alton', sentAt: '2026-10-13T10:06:00.000Z' },
+			EARLY: { from: 'alton', sentAt: '2026-10-13T09:00:00.000Z', replyTo: 'A1' },
+			VAN: { from: 'van', sentAt: '2026-10-13T10:03:00.000Z', replyTo: 'A1' },
+		})[id] ?? null;
 	const record = (extra, from = 'ivy') => reply(from, [{ q: 'q1', option: 1, by: 'alton', via: 'M1', ...extra }], 8);
 	const status = (r) => foldAsk(ask(), [r], { lookup }).questions[0];
 
@@ -228,6 +238,8 @@ test('the asker records a text reply with by and via; each condition is checked'
 	assert.equal(status(record({ via: 'NOPE' })).status, 'open', 'via must be a real message');
 	assert.equal(status(record({ via: 'VAN' })).status, 'open', 'via must be from by');
 	assert.equal(status(record({ via: 'EARLY' })).status, 'open', 'via must be after the question');
+	assert.equal(status(record({ via: 'ELSEWHERE' })).status, 'open', 'via must be a reply in the thread of the question');
+	assert.equal(status(record({ via: 'M2' })).status, 'answered', 'a reply to a follow-up is still in the thread');
 	assert.equal(status(record({ by: 'nate' })).status, 'open', 'by must be someone asked');
 	assert.equal(status(record({ by: 'ivy', via: 'M1' })).status, 'open', 'the asker is not a by');
 	assert.equal(foldAsk(ask(), [record({})]).questions[0].status, 'open', 'no lookup, no record');
@@ -306,4 +318,31 @@ test('waitingCounts totals open questions per member, skipping closed and supers
 	const b = foldAsk(ask({ id: 'A2', supersededBy: 'A3' }), []);
 	assert.deepEqual(waitingCounts([a, b]), { kris: 1, van: 1 });
 	assert.deepEqual(waitingCounts([]), {});
+});
+
+test('an agent answers only a question that waits on it; people answer the rest', () => {
+	const isHuman = (name) => name !== 'cy';
+	const wait = (waitingOn) => ask({ to: ['kris'], cc: ['cy'], questions: validateQuestions([{ ...one(), waitingOn }], { to: ['kris'], cc: ['cy'] }) });
+	const run = (a, sender) => checkEntry({ q: 'q1', option: 1 }, { ask: a, sender, state: foldAsk(a, []).questions[0], ctx: { isHuman } });
+	assert.match(run(wait(['kris']), 'cy').reason, /an agent can answer only a question that waits on it/);
+	assert.deepEqual(run(wait(['kris', 'cy']), 'cy'), { ok: true, by: 'cy' });
+	assert.deepEqual(run(wait(['kris']), 'kris'), { ok: true, by: 'kris' });
+});
+
+test('you cannot wait on yourself', () => {
+	const input = [{ ...one(), waitingOn: ['kris', 'ivy'] }];
+	assert.throws(() => validateQuestions(input, { to: ['kris'], cc: ['ivy'], from: 'ivy' }), /cannot wait on yourself/);
+	assert.equal(validateQuestions(input, { to: ['kris'], cc: ['ivy'], from: 'cy' })[0].waitingOn.length, 2);
+});
+
+test('stored questions and answers that are malformed are dropped, never thrown on', () => {
+	const good = validateQuestions([one()], { to: ['kris'] })[0];
+	assert.deepEqual(readQuestions([good, { id: 'q1', text: 'x' }, null, 'q', [], { ...good, id: 'q9', waitingOn: 'kris' }, { ...good, options: [{ label: 5 }, { label: 'b' }] }, { ...good }]), [good], 'malformed and duplicate-id entries go');
+	assert.deepEqual(readQuestions('nope'), []);
+	assert.deepEqual(readQuestions(undefined), []);
+	const ok = [{ ask: 'A1', q: 'q1', option: 1 }, { ask: 'A1', q: 'q1', other: 'x' }, { ask: 'A1', q: 'q2', dismissed: true }, { ask: 'A1', q: 'q1', reopen: 'why' }, { ask: 'A1', q: 'q1', option: 1, by: 'kris', via: 'M1' }];
+	assert.deepEqual(readAnswers(ok), ok);
+	const bad = [{ ask: 'A1', q: 'q1' }, { ask: 'A1', q: 'q1', reopen: 5 }, { ask: 'A1', q: 'q1', option: 0 }, { ask: 'A1', q: 'q1', option: 1, other: 'x' }, { ask: 'A1', q: 'q1', dismissed: false }, { ask: 'A1', q: 'q1', option: 1, by: 'kris' }, { ask: 'A1', q: 'q1', dismissed: true, by: 'kris', via: 'M1' }, { ask: 'A1', q: 'one', option: 1 }, { q: 'q1', option: 1 }, null, 7];
+	assert.deepEqual(readAnswers(bad), []);
+	assert.deepEqual(readAnswers({}), []);
 });

@@ -148,10 +148,19 @@ export class QuestionIndex {
 
 	/** What `member` owes and what `member` is waiting for: `{ waitingOnMe, asked }`. */
 	async lists(member, opts) {
-		const { entries, folded } = await this.snapshot(opts);
+		const { entries, byId, folded } = await this.snapshot(opts);
+		// A plain reply counts for the question it answers even when it answers a follow-up (at most 12 hops up).
+		const askOf = (entry) => {
+			let current = entry;
+			for (let hops = 0; current && hops < 12; hops++) {
+				if (current.replyTo && folded.has(current.replyTo)) return current.replyTo;
+				current = current.replyTo ? byId.get(current.replyTo) : null;
+			}
+			return entry.replyTo;
+		};
 		const textReplies = entries
 			.filter((e) => e.replyTo && !(e.answers?.length))
-			.map((e) => ({ id: e.id, askId: e.replyTo, from: e.from, sentAt: e.sentAt }));
+			.map((e) => ({ id: e.id, askId: askOf(e), from: e.from, sentAt: e.sentAt }));
 		const asks = [...folded.values()];
 		return { waitingOnMe: waitingOn(member, asks), asked: askedBy(member, asks, textReplies) };
 	}

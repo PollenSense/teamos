@@ -277,3 +277,43 @@ test('the cache file is a plain optimization: a new process reuses it, garbage i
 		await rm(join(dir, 'messages', `${id}.md`));
 		assert.deepEqual((await new FileMessagingAdapter(dir).listQuestions('kris')).waitingOnMe, []);
 	}));
+
+test('a message file edited by hand with malformed questions or answers never breaks a listing', () =>
+	withAdapter(async (adapter, dir) => {
+		const { id: goodId } = await adapter.sendMessage({ from: 'ivy', to: ['kris'], subject: 'ok', body: 'Ship Friday?', questions: [ship] });
+		const head = (id, minute, extra) =>
+			`---\nid: ${id}\nfrom: ivy\nto: [kris]\nsubject: Hand edited\nsentAt: 2026-10-23T10:${minute}:00.000Z\n${extra}\n---\nbody\n`;
+		const missing = '2026-10-23T10-01-00.000Z-bad1';
+		const reopen = '2026-10-23T10-02-00.000Z-bad2';
+		await writeFile(join(dir, 'messages', `${missing}.md`), head(missing, '01', 'questions: [{"id":"q1","text":"x"}]'));
+		await writeFile(join(dir, 'messages', `${reopen}.md`), head(reopen, '02', `replyTo: ${goodId}\nanswers: [{"ask":"${goodId}","q":"q1","reopen":5}]`));
+		await writeFile(join(dir, 'members', 'kris', 'inbox.json'), JSON.stringify({ items: [goodId, missing, reopen] }));
+
+		assert.equal((await adapter.listInbox('kris')).length, 3);
+		const lists = await adapter.listQuestions('kris');
+		assert.deepEqual(lists.waitingOnMe.map((w) => w.askId), [goodId], 'only the well-formed question is listed');
+		assert.equal((await adapter.readMessage(missing, { withState: true })).questionState, undefined, 'a message whose only question is malformed has none');
+		assert.equal((await adapter.listQuestions('ivy')).asked.length, 1);
+	}));
+
+test('an agent on Cc cannot close a question that waits on a person', () =>
+	withAdapter(async (adapter) => {
+		const { id } = await adapter.sendMessage({ from: 'ivy', to: ['kris'], cc: ['cy'], subject: 'q', body: 'Ship Friday?', questions: [ship] });
+		await assert.rejects(answer(adapter, 'cy', id, [{ q: 'q1', option: 1 }]), /an agent can answer only a question that waits on it/);
+		assert.equal((await statesOf(adapter, id)).q1, 'open');
+		await assert.rejects(
+			adapter.sendMessage({ from: 'ivy', to: ['kris'], cc: ['ivy'], subject: 'q2', body: 'Ship Friday?', questions: [{ ...ship, waitingOn: ['ivy'] }] }),
+			/cannot wait on yourself/,
+		);
+		await answer(adapter, 'kris', id, [{ q: 'q1', option: 1 }]);
+		assert.equal((await statesOf(adapter, id)).q1, 'answered');
+	}));
+
+test('a plain reply to a follow-up still shows up for the asker as a reply to the question', () =>
+	withAdapter(async (adapter) => {
+		const { id } = await adapter.sendMessage({ from: 'ivy', to: ['kris'], subject: 'q', body: 'Which palette: "Meadow" or Sky? (ünïcode ✓)', questions: [palette] });
+		const followUp = await adapter.sendMessage({ from: 'ivy', to: ['kris'], replyTo: id, body: 'any thoughts?' });
+		const reply = await adapter.sendMessage({ from: 'kris', to: ['ivy'], replyTo: followUp.id, body: 'meadow please' });
+		const { asked } = await adapter.listQuestions('ivy');
+		assert.deepEqual(asked[0].textReplies.map((r) => r.id), [reply.id]);
+	}));

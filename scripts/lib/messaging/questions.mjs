@@ -46,7 +46,7 @@ function text(value, where, max, { required = true } = {}) {
  * the message's To list and limited to people on the message, and a recommendation that must name one of the
  * options. Throws an error with `status: 400` and a sentence that says what to change.
  */
-export function validateQuestions(input, { to = [], cc = [] } = {}) {
+export function validateQuestions(input, { to = [], cc = [], from } = {}) {
 	if (input == null) return undefined;
 	if (!Array.isArray(input) || input.length === 0) throw bad('questions must be a non-empty list');
 	if (input.length > MAX_QUESTIONS) {
@@ -79,6 +79,7 @@ export function validateQuestions(input, { to = [], cc = [] } = {}) {
 			waitingOn = [...new Set(raw.waitingOn)];
 			const stranger = waitingOn.find((name) => !onMessage.has(name));
 			if (stranger) throw bad(`${where}: cannot wait on ${stranger}, who is not on this message (To or Cc)`);
+			if (from && waitingOn.includes(from)) throw bad(`${where}: you cannot wait on yourself; leave ${from} out of waitingOn`);
 		}
 		return { id: `q${index + 1}`, text: questionText, options, recommend: raw.recommend, waitingOn };
 	});
@@ -142,6 +143,60 @@ export function parseAnswers(input) {
 	});
 }
 
+// ─── Reading what is stored ──────────────────────────────────────────────────
+
+const isText = (value) => typeof value === 'string';
+const isPlainObject = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
+
+function wellFormedQuestion(q) {
+	return (
+		isPlainObject(q) &&
+		isText(q.id) &&
+		/^q\d+$/.test(q.id) &&
+		isText(q.text) &&
+		Array.isArray(q.options) &&
+		q.options.length >= MIN_OPTIONS &&
+		q.options.length <= MAX_OPTIONS &&
+		q.options.every((o) => isPlainObject(o) && isText(o.label) && (o.description == null || isText(o.description))) &&
+		Number.isInteger(q.recommend) &&
+		q.recommend >= 1 &&
+		q.recommend <= q.options.length &&
+		Array.isArray(q.waitingOn) &&
+		q.waitingOn.every(isText)
+	);
+}
+
+function wellFormedAnswer(a) {
+	if (!isPlainObject(a) || !isText(a.ask) || !isText(a.q) || !/^q\d+$/.test(a.q)) return false;
+	const present = ['option', 'other', 'dismissed', 'reopen'].filter((k) => a[k] != null && a[k] !== false);
+	if (present.length !== 1) return false;
+	const kind = present[0];
+	if (kind === 'option' && !(Number.isInteger(a.option) && a.option >= 1)) return false;
+	if (kind === 'other' && !isText(a.other)) return false;
+	if (kind === 'dismissed' && a.dismissed !== true) return false;
+	if (kind === 'reopen' && !(isText(a.reopen) && a.reopen.trim())) return false;
+	if (a.by != null || a.via != null) {
+		if (!isText(a.by) || !isText(a.via) || (kind !== 'option' && kind !== 'other')) return false;
+	}
+	return true;
+}
+
+/**
+ * The `questions` of a stored message, as many as are well formed (the same shape `validateQuestions` produces).
+ * A file edited by hand or written by something else must not stop a runner or the dashboard, so anything else
+ * is dropped here, once, at the door; the fold and the renderers can then trust their input.
+ */
+export function readQuestions(value) {
+	if (!Array.isArray(value)) return [];
+	const seen = new Set();
+	return value.filter((q) => wellFormedQuestion(q) && !seen.has(q.id) && seen.add(q.id));
+}
+
+/** The `answers` of a stored message that are well formed (the same shape `parseAnswers` produces); see `readQuestions`. */
+export function readAnswers(value) {
+	return Array.isArray(value) ? value.filter(wellFormedAnswer) : [];
+}
+
 // ─── The state of a question, folded from the thread ─────────────────────────
 
 const bySentAt = (a, b) => (a.sentAt || '').localeCompare(b.sentAt || '') || (a.id || '').localeCompare(b.id || '');
@@ -163,7 +218,7 @@ export function checkEntry(entry, { ask, sender, state, ctx = {} }) {
 	const onThread = new Set([...(ask.to ?? []), ...(ask.cc ?? [])]);
 	if (entry.reopen != null) {
 		if (sender !== ask.from) return no('only the person who asked can reopen a question');
-		if (!entry.reopen.trim()) return no('a reopen needs a reason');
+		if (typeof entry.reopen !== 'string' || !entry.reopen.trim()) return no('a reopen needs a reason');
 		if (state.status === 'open') return no(`${entry.q} is still open`);
 		if (state.reopens >= 1) return no(`${entry.q} was already reopened once; ask again in a new message`);
 		return { ok: true };
@@ -184,11 +239,25 @@ export function checkEntry(entry, { ask, sender, state, ctx = {} }) {
 		if (!via) return no(`via ${entry.via} is not a message I can find`);
 		if (via.from !== entry.by) return no(`via ${entry.via} was not sent by ${entry.by}`);
 		if ((via.sentAt || '') <= (ask.sentAt || '')) return no(`via ${entry.via} was sent before the question`);
+		if (!inThread(via, ask.id, ctx.lookup)) return no(`via ${entry.via} is not a reply in the thread of this question`);
 		return { ok: true, by: entry.by, recordedBy: sender, via: entry.via };
 	}
 	if (sender === ask.from) return no('the asker cannot answer their own question; to record someone\'s reply, add by and via');
 	if (!onThread.has(sender)) return no('only someone the message was sent to (To or Cc) can answer');
+	if (ctx.isHuman && !ctx.isHuman(sender) && !(state.waitingOn ?? []).includes(sender)) {
+		return no('an agent can answer only a question that waits on it; people answer the rest');
+	}
 	return { ok: true, by: sender };
+}
+
+/** Whether `message` replies, directly or through other replies (at most 12 hops), to the message `askId`. */
+function inThread(message, askId, lookup) {
+	let current = message;
+	for (let hops = 0; current && hops < 12; hops++) {
+		if (current.replyTo === askId) return true;
+		current = current.replyTo && lookup ? lookup(current.replyTo) : null;
+	}
+	return false;
 }
 
 function no(reason) {

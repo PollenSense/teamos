@@ -153,8 +153,8 @@ plain-words body. Each entry has `ask`, `q` and exactly one of:
 
 | Entry | Meaning | Who may send it |
 | --- | --- | --- |
-| `option: N` or `other: "text"` | an answer | anyone on the ask's `to` or `cc`, not only the person it waits on; not the asker |
-| the same plus `by` and `via` | the asker records someone's plain-text reply | the asker only; `by` must be asked, `via` must be a message from `by` sent after the ask |
+| `option: N` or `other: "text"` | an answer | anyone on the ask's `to` or `cc`, not only the person it waits on; not the asker. An agent only for a question that waits on it (people answer the rest) |
+| the same plus `by` and `via` | the asker records someone's plain-text reply | the asker only; `by` must be asked, `via` must be a reply from `by` in the ask's thread (its `replyTo` chain reaches the ask), sent after it |
 | `dismissed: true` | "no longer needed" | a person on the message, not the asker (an asker withdraws a question by superseding) |
 | `reopen: "reason"` | the asker still needs it | the asker, once per question, a reason is required, only after it was closed |
 

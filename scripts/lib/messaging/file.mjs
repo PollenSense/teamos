@@ -4,7 +4,7 @@ import { dirname, join, resolve } from 'node:path';
 import { pathExists } from '../util.mjs';
 import { applyAttachmentsToBody, isAttachmentName, prepareAttachments, removeAttachments, writeAttachments } from './attachments.mjs';
 import { QuestionIndex } from './question-index.mjs';
-import { checkEntry, countQuestions, ensureQuestionsInBody, parseAnswers, validateQuestions, waitingCounts } from './questions.mjs';
+import { checkEntry, countQuestions, ensureQuestionsInBody, parseAnswers, readAnswers, readQuestions, validateQuestions, waitingCounts } from './questions.mjs';
 
 /**
  * File-based messaging adapter.
@@ -99,16 +99,14 @@ function normalizeMessage(metadata, body) {
 			typeof metadata.supersededBy === 'string' && metadata.supersededBy ? metadata.supersededBy : undefined,
 		projectCode: typeof metadata.projectCode === 'string' && metadata.projectCode ? metadata.projectCode : undefined,
 		attachments: (Array.isArray(metadata.attachments) ? metadata.attachments : []).filter(isAttachmentName),
-		...objectList('questions', metadata.questions),
-		...objectList('answers', metadata.answers),
+		...nonEmpty('questions', readQuestions(metadata.questions)),
+		...nonEmpty('answers', readAnswers(metadata.answers)),
 		body,
 	};
 }
 
-/** `{ [key]: list }` when `value` is a list of objects (JSON in the frontmatter); otherwise nothing. */
-function objectList(key, value) {
-	if (!Array.isArray(value)) return {};
-	const list = value.filter((v) => v && typeof v === 'object' && !Array.isArray(v));
+/** `{ [key]: list }` when the list has anything in it; otherwise nothing (so plain messages carry no extra keys). */
+function nonEmpty(key, list) {
 	return list.length > 0 ? { [key]: list } : {};
 }
 
@@ -356,7 +354,7 @@ export class FileMessagingAdapter {
 		// Images are checked and read before anything is written, so a bad one
 		// leaves no half-sent message behind.
 		const prepared = await prepareAttachments(attachments);
-		const checkedQuestions = validateQuestions(questions, { to, cc: cc ?? [] });
+		const checkedQuestions = validateQuestions(questions, { to, cc: cc ?? [], from });
 		const checkedAnswers = parseAnswers(answers);
 		if (checkedAnswers) await this._checkAnswers(checkedAnswers, { from, replyTo });
 
@@ -477,7 +475,7 @@ export class FileMessagingAdapter {
 		}
 
 		const prepared = await prepareAttachments(attachments);
-		const checkedQuestions = validateQuestions(questions, { to, cc: cc ?? [] });
+		const checkedQuestions = validateQuestions(questions, { to, cc: cc ?? [], from });
 		const checkedAnswers = parseAnswers(answers);
 		if (checkedAnswers) await this._checkAnswers(checkedAnswers, { from, replyTo });
 
