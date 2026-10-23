@@ -393,6 +393,12 @@ function reset() {
 			</div>
 		{/if}
 
+		{#if replyMessage?.questionState?.some((q) => q.status === 'open')}
+			<div class="question-hint" role="note">
+				The message you are answering has open questions. Answer them with the cards in the message, or type here and the sender will record your reply.
+			</div>
+		{/if}
+
 		<div class="form-group">
 			<label class="label" for="body">Message</label>
 			<textarea
@@ -527,6 +533,15 @@ function reset() {
 
 	.form-actions { margin-top: 1.5rem; }
 
+	.question-hint {
+		margin-bottom: 0.75rem;
+		padding: 0.5rem 0.75rem;
+		border-radius: var(--radius);
+		border: 1px solid #d97706;
+		background: rgba(217, 119, 6, 0.08);
+		font-size: 0.8rem;
+		color: #b45309;
+	}
 	textarea.dragging { outline: 2px dashed var(--primary); outline-offset: -2px; }
 	.attach-bar { display: flex; align-items: center; gap: 0.75rem; margin-top: 0.375rem; flex-wrap: wrap; }
 	.add-image {

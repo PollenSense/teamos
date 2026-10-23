@@ -14,8 +14,10 @@ import type {
 	SiblingInfo,
 	Thread,
 	TicketCounts,
+	WaitingLists,
 } from './types.js';
 import type { LogChunk, LogEntry } from './logs.js';
+import type { AnswerInput } from './questions.js';
 
 /** A failed request, with its status and, for a chat that has ended, what happened to it. */
 export class ApiError extends Error {
@@ -192,6 +194,10 @@ export const api = {
 	/** Bodies for a whole thread in one request. */
 	messagesBatch: (ids: string[]) => post<Message[]>('/api/messages/batch', { ids }),
 	sendMessage: (msg: SendMessageArgs) => post<{ id: string; sentAt: string }>('/api/messages', msg),
+	/** Card taps: answers (or dismissals) to the questions of message `askId`. The reply goes to the asker only. */
+	answerQuestions: (askId: string, answers: AnswerInput[], from: string) =>
+		post<{ id: string; sentAt: string }>(`/api/messages/${encodeURIComponent(askId)}/answers`, { from, answers }),
+	waiting: (name: string) => get<WaitingLists>(`/api/members/${encodeURIComponent(name)}/waiting`),
 	/** Raw bytes, not JSON; `from` is replaced by the signed-in member when the dashboard knows who that is. */
 	uploadAttachment: async (blob: Blob, name: string, from: string): Promise<StagedAttachment> => {
 		const res = await fetch(`/api/attachments?name=${encodeURIComponent(name)}&from=${encodeURIComponent(from)}`, {

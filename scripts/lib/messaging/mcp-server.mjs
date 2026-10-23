@@ -144,6 +144,61 @@ const ATTACHMENTS_DESCRIPTION =
 	'images the body does not place are added at its end. A file that is not one of those image types is refused and nothing is sent. ' +
 	'Recipients who are agents open an image with their Read tool; people see it in the dashboard.';
 
+const QUESTIONS_SCHEMA = {
+	type: 'array',
+	description:
+		'Decisions you need, shown to people as cards with tap targets. At most 5 (three or four is better), only for choices that shape your work. ' +
+		'Each: text, 2 to 4 options (a real choice each, with its consequence in `description`), and `recommend` (REQUIRED: the 1-based number of the option you recommend; say why in the body). ' +
+		'An "Other" answer is always possible. `waitingOn` (default: the To list) names who the question waits on; they must be on the message. ' +
+		'Write the questions in the body too, numbered, so nobody needs the card to understand the message (if you do not, they are appended). ' +
+		'A question clears when anyone on the message answers; see the Messaging rules.',
+	items: {
+		type: 'object',
+		properties: {
+			text: { type: 'string', description: 'The question, at most 300 characters.' },
+			options: {
+				type: 'array',
+				items: {
+					type: 'object',
+					properties: {
+						label: { type: 'string', description: 'At most 60 characters.' },
+						description: { type: 'string', description: 'At most 160 characters; the consequence of choosing it.' },
+					},
+					required: ['label'],
+				},
+				description: '2 to 4 options.',
+			},
+			recommend: { type: 'integer', description: 'The 1-based number of the option you recommend.' },
+			waitingOn: { type: 'array', items: { type: 'string' }, description: 'Who it waits on; default the To list.' },
+		},
+		required: ['text', 'options', 'recommend'],
+	},
+};
+
+const ANSWERS_SCHEMA = {
+	type: 'array',
+	description:
+		'Answers to questions, sent as a reply: `replyTo` is the message that asked and every entry\'s `ask` is that same id. ' +
+		'Each entry has `ask`, `q` (q1, q2, ...) and exactly one of: `option` (the option number), `other` (your own words), `dismissed: true` (a person only: no longer matters), ' +
+		'or `reopen` (the asker only, once per question, with the reason: still need it). ' +
+		'To record someone\'s plain-text reply to your own question, send `option` or `other` with `by` (who) and `via` (the id of their reply). ' +
+		'Anyone on the message may answer; the first answer wins and later ones are shown beside it.',
+	items: {
+		type: 'object',
+		properties: {
+			ask: { type: 'string' },
+			q: { type: 'string' },
+			option: { type: 'integer' },
+			other: { type: 'string' },
+			dismissed: { type: 'boolean' },
+			reopen: { type: 'string' },
+			by: { type: 'string' },
+			via: { type: 'string' },
+		},
+		required: ['ask', 'q'],
+	},
+};
+
 /** `attachments` argument -> adapter items; the position in the list is the placeholder (`attachment:1`). */
 function attachmentItems(args) {
 	if (args.attachments == null) return undefined;
@@ -176,6 +231,8 @@ const BASE_TOOLS = [
 					items: { type: 'string' },
 					description: ATTACHMENTS_DESCRIPTION,
 				},
+				questions: QUESTIONS_SCHEMA,
+				answers: ANSWERS_SCHEMA,
 			},
 			required: ['to', 'body'],
 		},
@@ -216,6 +273,7 @@ const BASE_TOOLS = [
 					items: { type: 'string' },
 					description: ATTACHMENTS_DESCRIPTION,
 				},
+				questions: QUESTIONS_SCHEMA,
 			},
 			required: ['supersedes', 'to', 'body'],
 		},
@@ -223,7 +281,7 @@ const BASE_TOOLS = [
 	{
 		name: 'read_message',
 		description:
-			'Read a message by id from the master store. Returns the full message; when replyTo is set, the immediate parent is inlined as `parent` (one hop). To walk further back, call read_message again with parent.replyTo. When the message has images, `attachmentPaths` lists their absolute paths: open one with your Read tool to see it.',
+			'Read a message by id from the master store. Returns the full message; when replyTo is set, the immediate parent is inlined as `parent` (one hop). To walk further back, call read_message again with parent.replyTo. When the message has images, `attachmentPaths` lists their absolute paths: open one with your Read tool to see it. When it asks questions, `questionState` gives each one\'s status (open, answered, dismissed) with who answered what.',
 		inputSchema: {
 			type: 'object',
 			properties: {
@@ -231,6 +289,12 @@ const BASE_TOOLS = [
 			},
 			required: ['id'],
 		},
+	},
+	{
+		name: 'list_questions',
+		description:
+			'The questions that wait on you (`waitingOnMe`: answer them, see the Messaging rules) and the open questions you asked (`asked`: who each waits on, since when, and the plain-text replies that came in since, which you should record with `answers` using `by` and `via`). Derived from the messages; it never changes a mailbox.',
+		inputSchema: { type: 'object', properties: {} },
 	},
 	{
 		name: 'list_inbox',
@@ -574,8 +638,8 @@ function textResult(payload) {
 async function handleToolCall(name, args) {
 	switch (name) {
 		case 'send_message': {
-			const { to, subject, body, cc, replyTo, projectCode } = args;
-			const { id, sentAt } = await adapter.sendMessage({
+			const { to, subject, body, cc, replyTo, projectCode, questions, answers } = args;
+			const { id, sentAt, questionsAppended } = await adapter.sendMessage({
 				from: resolveMember(args),
 				to,
 				cc,
@@ -584,12 +648,22 @@ async function handleToolCall(name, args) {
 				replyTo,
 				projectCode,
 				attachments: attachmentItems(args),
+				questions,
+				answers,
 			});
-			return textResult({ id, sentAt, to, cc: cc ?? [] });
+			return textResult({
+				id,
+				sentAt,
+				to,
+				cc: cc ?? [],
+				...(questionsAppended
+					? { note: 'The body did not contain every question, so a numbered "Questions" block was appended.' }
+					: {}),
+			});
 		}
 
 		case 'supersede_message': {
-			const { supersedes, to, subject, body, cc, replyTo, projectCode } = args;
+			const { supersedes, to, subject, body, cc, replyTo, projectCode, questions } = args;
 			const result = await adapter.supersedeMessage({
 				from: resolveMember(args),
 				supersedes,
@@ -600,15 +674,19 @@ async function handleToolCall(name, args) {
 				replyTo,
 				projectCode,
 				attachments: attachmentItems(args),
+				questions,
 			});
 			return textResult(result);
 		}
 
 		case 'read_message': {
 			const { id } = args;
-			const msg = await adapter.readMessage(id, { inlineParent: true, withPaths: true });
+			const msg = await adapter.readMessage(id, { inlineParent: true, withPaths: true, withState: true });
 			return textResult(msg);
 		}
+
+		case 'list_questions':
+			return textResult(await adapter.listQuestions(resolveMember(args)));
 
 		case 'list_inbox':
 			return textResult(await adapter.listInbox(resolveMember(args)));

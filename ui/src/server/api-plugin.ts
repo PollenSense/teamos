@@ -36,6 +36,8 @@ interface ThreadMessage {
 	boxes: MailBox[];
 	/** Reply distance from the root of its own chain. */
 	depth: number;
+	/** Set when the message asks questions: how many are still open. */
+	questions?: { open: number; total: number };
 }
 
 interface Thread {
@@ -52,7 +54,63 @@ interface Thread {
 	lastAt: string;
 	lastFrom: string;
 	preview: string;
+	/** Set when any message in the thread asks questions (the latest versions only): who is still being waited on. */
+	questions?: { open: number; total: number; waitingOn: string[] };
 	messages: ThreadMessage[];
+}
+
+/** A question as a sender wrote it (see scripts/lib/messaging/questions.mjs). */
+interface Question {
+	id: string;
+	text: string;
+	options: { label: string; description?: string }[];
+	recommend: number;
+	waitingOn: string[];
+}
+
+/** One answer or dismissal as folded from the thread. */
+interface QuestionAnswer {
+	kind: 'option' | 'other' | 'dismissed';
+	option?: number;
+	other?: string;
+	by: string;
+	recordedBy?: string;
+	via?: string;
+	at: string;
+	messageId: string;
+}
+
+interface QuestionState extends Question {
+	status: 'open' | 'answered' | 'dismissed';
+	answer: QuestionAnswer | null;
+	also: QuestionAnswer[];
+	earlier: QuestionAnswer[];
+	reopens: number;
+	reopenReason: string | null;
+	reopenedAt: string | null;
+	conflict: boolean;
+}
+
+/** What `foldAsk` returns for one asking message. */
+interface FoldedAsk {
+	askId: string;
+	asker: string;
+	subject: string;
+	sentAt: string;
+	superseded: boolean;
+	questions: QuestionState[];
+}
+
+interface WaitingItem {
+	askId: string;
+	q: string;
+	text: string;
+	asker: string;
+	subject: string;
+	since: string;
+	reopened?: string;
+	options: { label: string; description?: string }[];
+	recommend: number;
 }
 
 interface Message {
@@ -67,6 +125,12 @@ interface Message {
 	supersededBy?: string;
 	projectCode?: string;
 	body: string;
+	/** Names of the images stored with the message. */
+	attachments?: string[];
+	questions?: Question[];
+	answers?: { ask: string; q: string; option?: number; other?: string; dismissed?: boolean; reopen?: string; by?: string; via?: string }[];
+	/** Each question as folded from the thread. Added on the way out, never stored. */
+	questionState?: QuestionState[];
 	/** Paths in `body` that resolve to a link (see lib/linkify.ts). Added on the way out, never stored. */
 	links?: Record<string, { href: string; title?: string; external: boolean }>;
 	parent?: Message;
@@ -82,6 +146,7 @@ interface MessagingAdapter {
 		body: string;
 		replyTo?: string;
 		projectCode?: string;
+		answers?: { ask: string; q: string; option?: number; other?: string; dismissed?: boolean }[];
 	}): Promise<{ id: string; sentAt: string }>;
 	supersedeMessage(args: {
 		from: string;
@@ -101,6 +166,10 @@ interface MessagingAdapter {
 	unarchiveMessage(member: string, id: string): Promise<void>;
 	deleteInboxMessage(member: string, id: string): Promise<void>;
 	deleteArchivedMessage(member: string, id: string): Promise<void>;
+	/** Questions on messages (the file adapter has them; an adapter without them leaves the dashboard as it was). */
+	questionStates?(): Promise<Map<string, FoldedAsk>>;
+	listQuestions?(member: string): Promise<{ waitingOnMe: WaitingItem[]; asked: unknown[] }>;
+	waitingCounts?(): Promise<Record<string, number>>;
 }
 
 interface ScheduleEvent {
@@ -436,6 +505,20 @@ function updateFrontmatterFields(content: string, patch: ProfileFields & { body?
 	return `---\n${fm}\n---\n\n${trimmedBody}${trimmedBody.endsWith('\n') ? '' : '\n'}`;
 }
 
+/** The plain-words body of an answers reply: one line per entry ("Q1 (Which palette?): option 2, Sky."). */
+function answersBody(ask: Message, entries: { q: string; option?: number; other?: string; dismissed?: boolean }[]): string {
+	const lines = entries.map((e) => {
+		const question = ask.questions?.find((q) => q.id === e.q);
+		const label = e.q.toUpperCase();
+		const text = question ? ` (${question.text})` : '';
+		if (e.dismissed) return `${label}${text}: not needed (dismissed).`;
+		if (e.other != null) return `${label}${text}: other: ${e.other}`;
+		const option = question?.options[(e.option ?? 0) - 1];
+		return `${label}${text}: option ${e.option}${option ? `, ${option.label}` : ''}.`;
+	});
+	return lines.join('\n');
+}
+
 /**
  * Read a raw request body, giving up as soon as it passes `maxBytes`. `readBody`
  * above has no cap; an upload must not be able to fill memory with a body the
@@ -473,12 +556,24 @@ export function teamosApi(opts: ApiOptions): Plugin {
 		links: opts.links,
 	});
 
-	/** A copy of the message with the paths in its body (and its parent's) resolved to links. */
-	async function withLinks(msg: Message): Promise<Message> {
+	/** The folded questions of the store, or null when no message is asking anything or the adapter has none. */
+	async function foldedAsks(wanted: Message[]): Promise<Map<string, FoldedAsk> | null> {
+		if (!messagingAdapter.questionStates) return null;
+		const asking = (m: Message | undefined): boolean => !!m && (!!m.questions?.length || asking(m.parent));
+		return wanted.some((m) => asking(m)) ? messagingAdapter.questionStates() : null;
+	}
+
+	/**
+	 * A copy of the message with the paths in its body (and its parent's) resolved to links, and, when it asks
+	 * questions, each one's state folded from the thread (`asks` comes from `foldedAsks`).
+	 */
+	async function withLinks(msg: Message, asks: Map<string, FoldedAsk> | null = null): Promise<Message> {
 		const links = await linker.linksFor(msg.body);
 		const out: Message = { ...msg };
 		if (Object.keys(links).length > 0) out.links = links;
-		if (msg.parent) out.parent = await withLinks(msg.parent);
+		const folded = msg.questions?.length ? asks?.get(msg.id) : undefined;
+		if (folded) out.questionState = folded.questions;
+		if (msg.parent) out.parent = await withLinks(msg.parent, asks);
 		return out;
 	}
 
@@ -552,6 +647,7 @@ export function teamosApi(opts: ApiOptions): Plugin {
 
 	async function getMemberSummaries() {
 		const manifest = await readJson(join(teamDir, 'members.json'), { members: [] });
+		const waiting = messagingAdapter.waitingCounts ? await messagingAdapter.waitingCounts().catch(() => ({})) : {};
 		return Promise.all(
 			manifest.members.map(async (m: Record<string, unknown>) => {
 				const dir = join(teamDir, 'members', m.name as string);
@@ -562,6 +658,7 @@ export function teamosApi(opts: ApiOptions): Plugin {
 				return {
 					...m,
 					inboxCount: inboxSummaries.length,
+					waitingCount: (waiting as Record<string, number>)[m.name as string] ?? 0,
 					todoCount: items.length,
 					blockedCount: items.filter((t: any) => t.status === 'blocked').length,
 					eventCount: events.length,
@@ -709,6 +806,7 @@ export function teamosApi(opts: ApiOptions): Plugin {
 			else groups.set(key, [id]);
 		}
 
+		const asks = await foldedAsks([...loaded.values()]);
 		const threads: Thread[] = [];
 		for (const ids of groups.values()) {
 			const msgs = ids
@@ -725,6 +823,26 @@ export function teamosApi(opts: ApiOptions): Plugin {
 				if (m.projectCode && !projectCodes.includes(m.projectCode)) projectCodes.push(m.projectCode);
 			}
 			const boxCount = (box: MailBox) => msgs.filter((m) => boxesById.get(m.id)?.includes(box)).length;
+			// Questions: only the live version of each ask counts (a superseded one is replaced by its successor).
+			const counts = (m: Message) => {
+				const folded = m.questions?.length ? asks?.get(m.id) : undefined;
+				if (!folded) return undefined;
+				return { open: folded.questions.filter((q) => q.status === 'open').length, total: folded.questions.length };
+			};
+			const live = msgs.filter((m) => !m.supersededBy && counts(m));
+			const questions = live.length
+				? {
+						open: live.reduce((n, m) => n + (counts(m)?.open ?? 0), 0),
+						total: live.reduce((n, m) => n + (counts(m)?.total ?? 0), 0),
+						waitingOn: [
+							...new Set(
+								live.flatMap((m) =>
+									(asks?.get(m.id)?.questions ?? []).filter((q) => q.status === 'open').flatMap((q) => q.waitingOn),
+								),
+							),
+						],
+					}
+				: undefined;
 			threads.push({
 				id: msgs[0].id,
 				subject: normalizeSubject(msgs[0].subject) || msgs[0].subject || '(no subject)',
@@ -738,6 +856,7 @@ export function teamosApi(opts: ApiOptions): Plugin {
 				lastAt: latest.sentAt,
 				lastFrom: latest.from,
 				preview: previewOf(latest.body),
+				questions,
 				messages: msgs.map((m) => ({
 					id: m.id,
 					from: m.from,
@@ -751,6 +870,7 @@ export function teamosApi(opts: ApiOptions): Plugin {
 					supersededBy: m.supersededBy,
 					boxes: boxesById.get(m.id) ?? [],
 					depth: resolve(m.id).depth,
+					questions: counts(m),
 				})),
 			});
 		}
@@ -1226,17 +1346,71 @@ export function teamosApi(opts: ApiOptions): Plugin {
 						return res.end(file.bytes);
 					}
 
+					// A card tap: answers (or dismissals) to the questions of message :id. The answerer is the
+					// signed-in member whatever the body says; the reply goes to the asker only (the cards and
+					// lists show everyone the state); the plain-words body is written here so a reader of the bare
+					// message, or an agent, sees what was chosen. The adapter checks who may answer and refuses a
+					// bad entry with the reason (400).
+					const answersMatch = path.match(/^\/api\/messages\/([^/]+)\/answers$/);
+					if (answersMatch && method === 'POST') {
+						const askId = decodeURIComponent(answersMatch[1]);
+						const input = JSON.parse(await readBody(req));
+						if (!input || typeof input !== 'object' || Array.isArray(input)) {
+							return json(res, { error: 'Send a JSON object with an answers list' }, 400);
+						}
+						const who = await enforceSender(req, input.from);
+						if ('error' in who) return json(res, { error: who.error }, 403);
+						const ask = await messagingAdapter.readMessage(askId, { inlineParent: false }).catch(() => null);
+						if (!ask) return json(res, { error: 'Not found' }, 404);
+						if (!ask.questions?.length) return json(res, { error: 'That message asks no questions' }, 400);
+						if (!Array.isArray(input.answers) || input.answers.length === 0) {
+							return json(res, { error: 'No answers given' }, 400);
+						}
+						const malformed = input.answers.findIndex((a: unknown) => {
+							if (!a || typeof a !== 'object' || Array.isArray(a)) return true;
+							const e = a as Record<string, unknown>;
+							return typeof e.q !== 'string' || (e.option != null && !Number.isInteger(e.option)) || (e.other != null && typeof e.other !== 'string');
+						});
+						if (malformed >= 0) {
+							return json(res, { error: `answer ${malformed + 1} is malformed: give q and one of option (a number), other (text) or dismissed` }, 400);
+						}
+						const entries = input.answers.map((a: Record<string, unknown>) => ({
+							ask: askId,
+							q: a.q,
+							...(a.option != null ? { option: a.option } : {}),
+							...(a.other != null ? { other: a.other } : {}),
+							...(a.dismissed === true ? { dismissed: true } : {}),
+						}));
+						const sent = await messagingAdapter.sendMessage({
+							from: who.name,
+							to: [ask.from],
+							replyTo: askId,
+							body: answersBody(ask, entries),
+							answers: entries,
+						});
+						return json(res, sent, 201);
+					}
+
+					// What waits on a member (and what they are waiting for), derived from the messages.
+					const waitingMatch = path.match(/^\/api\/members\/([^/]+)\/waiting$/);
+					if (waitingMatch && method === 'GET') {
+						const member = decodeURIComponent(waitingMatch[1]);
+						if (!messagingAdapter.listQuestions) return json(res, { waitingOnMe: [], asked: [] });
+						return json(res, await messagingAdapter.listQuestions(member));
+					}
+
 					// Bodies for a whole thread in one round trip — the dashboard opens
 					// threads, not single messages.
 					if (path === '/api/messages/batch' && method === 'POST') {
 						const { ids } = JSON.parse(await readBody(req));
 						const wanted: string[] = Array.isArray(ids) ? ids.slice(0, 500).map(String) : [];
-						const out: Message[] = [];
+						const read: Message[] = [];
 						for (const id of wanted) {
 							const msg = await readCachedMessage(id);
-							if (msg) out.push(await withLinks(msg));
+							if (msg) read.push(msg);
 						}
-						return json(res, out);
+						const asks = await foldedAsks(read);
+						return json(res, await Promise.all(read.map((msg) => withLinks(msg, asks))));
 					}
 
 					let match = path.match(/^\/api\/messages\/([^/]+)$/);
@@ -1244,7 +1418,7 @@ export function teamosApi(opts: ApiOptions): Plugin {
 						const id = decodeURIComponent(match[1]);
 						try {
 							const msg = await messagingAdapter.readMessage(id, { inlineParent: true });
-							return json(res, await withLinks(msg));
+							return json(res, await withLinks(msg, await foldedAsks([msg])));
 						} catch {
 							return json(res, { error: 'Not found' }, 404);
 						}
