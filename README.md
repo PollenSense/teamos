@@ -740,9 +740,12 @@ people — a working inbox is ninety rows of `Re: ...` whose parents sit in
   ancestors are pulled in even when they live in none of *your* mailboxes, and
   shown greyed as context — then chains sharing a root subject fold into one
   conversation. Nate's 91-message inbox reads as 38 conversations.
-- **Inbox / Sent / Archived / All** filter the same conversation list; the chip
-  counts are conversations, the tab badge is unhandled inbox messages. A
-  conversation you sent *and* received in appears in both, whole either way.
+- **Needs you / FYI / Done / Sent** cut the same conversation list (see
+  `docs/messages.md`, Inbox sections): Needs you holds what has an open question
+  for you, a reply the sender asked for, or your pin; FYI the rest of the inbox;
+  Done the archive. Needs you counts messages (the member card and the Messages
+  tab show the same number), the other lists count conversations. A conversation
+  you sent *and* received in appears in both, whole either way.
 - **The reply tree is the reading order.** Replies indent under what they
   answer; a collapsed row shows sender, your role (`to you` / `cc you` /
   `you sent`), and either a body snippet or — when a reply renamed the subject

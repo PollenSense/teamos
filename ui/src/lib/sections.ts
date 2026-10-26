@@ -41,17 +41,22 @@ export function sectionOf(t: Counted): Section | null {
 }
 
 export interface SectionCounts {
+	/** Messages that need the member: the one number on the Needs you segment, the member card and the Messages tab. */
 	needs: number;
+	/** Conversations, like the other lists (one row each). */
 	fyi: number;
 	done: number;
 	sent: number;
-	/** Messages that need the member: the one number on the member card and the Messages tab. */
 	needsMessages: number;
 }
 
+/**
+ * Needs you counts messages, so its number is the same on the segment, the member card and the Messages tab (a row
+ * that holds three of them says "3 need you"); FYI, Done and Sent count conversations, one row each.
+ */
 export function sectionCounts(threads: Counted[]): SectionCounts {
 	return {
-		needs: threads.filter((t) => inSection(t, 'needs')).length,
+		needs: threads.reduce((n, t) => n + t.needsCount, 0),
 		fyi: threads.filter((t) => inSection(t, 'fyi')).length,
 		done: threads.filter((t) => inSection(t, 'done')).length,
 		sent: threads.filter((t) => inSection(t, 'sent')).length,

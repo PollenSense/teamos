@@ -6,7 +6,7 @@ import { applyAttachmentsToBody, isAttachmentName, prepareAttachments, removeAtt
 import { inboxStatePath, readInboxState, updateInboxState } from './inbox-state.mjs';
 import { classifyInbox, countNeeds, readMarks, repliedIds, textMatches, validateMarks } from './inbox-rules.mjs';
 import { QuestionIndex } from './question-index.mjs';
-import { checkEntry, countQuestions, ensureQuestionsInBody, parseAnswers, readAnswers, readQuestions, validateQuestions, waitingCounts } from './questions.mjs';
+import { checkEntry, countQuestions, ensureQuestionsInBody, parseAnswers, readAnswers, readQuestions, validateQuestions, waitingCounts, waitingOn } from './questions.mjs';
 
 /**
  * File-based messaging adapter.
@@ -126,6 +126,8 @@ function recipientsOf(msg) {
 export class FileMessagingAdapter {
 	constructor(teamDir) {
 		this.teamDir = teamDir;
+		/** id -> `{ replyTo, sentAt }`. Neither ever changes after a message is written, so it is kept for the process's life. */
+		this._replyMeta = new Map();
 		this.messagesDir = join(teamDir, 'messages');
 		this._questions = new QuestionIndex(
 			this.messagesDir,
@@ -522,7 +524,10 @@ export class FileMessagingAdapter {
 			await writeFile(this._messagePath(prev.id), serializeMessage(updated), 'utf-8');
 			for (const recipient of recipientsOf(prev)) {
 				const removed = await this._removeFromMailbox(recipient, 'inbox', prev.id);
-				if (removed) unreadRemoved++;
+				if (removed) {
+					unreadRemoved++;
+					this._unpin(recipient, prev.id);
+				}
 				else stillReachable.push({ id: prev.id, recipient });
 			}
 		}
@@ -769,25 +774,32 @@ export class FileMessagingAdapter {
 		this._unpin(member, id);
 	}
 
+	/** `{ replyTo, sentAt }` of a message, read once; null when the message is not in the store. */
+	async _replyMetaOf(id) {
+		let meta = this._replyMeta.get(id);
+		if (!meta) {
+			const msg = await this._readRawMessage(id).catch(() => null);
+			if (!msg) return null;
+			meta = { replyTo: msg.replyTo, sentAt: msg.sentAt || '' };
+			this._replyMeta.set(id, meta);
+		}
+		return meta;
+	}
+
 	/**
 	 * The ids `member` has replied to, among `candidates` (inbox messages that ask for a reply): every ancestor,
 	 * through `replyTo`, of a message they sent after the oldest candidate. Reads messages only when there is a
-	 * candidate, so a mailbox without `expectsReply` mail costs nothing.
+	 * candidate, so a mailbox without `expectsReply` mail costs nothing, and each message at most once per process.
 	 */
 	async _repliedAmong(member, candidates) {
 		if (candidates.length === 0) return new Set();
 		const oldest = candidates.reduce((min, c) => ((c.sentAt || '') < min ? c.sentAt || '' : min), candidates[0].sentAt || '');
-		const parents = new Map();
-		const parentOf = async (id) => {
-			if (!parents.has(id)) parents.set(id, (await this._readRawMessage(id).catch(() => null))?.replyTo);
-			return parents.get(id);
-		};
 		const sent = [];
 		for (const id of await this._readMailbox(member, 'sent')) {
-			const msg = await this._readRawMessage(id).catch(() => null);
-			if (msg && msg.replyTo && (msg.sentAt || '') > oldest) sent.push({ id: msg.id, replyTo: msg.replyTo });
+			const meta = await this._replyMetaOf(id);
+			if (meta?.replyTo && meta.sentAt > oldest) sent.push({ id, replyTo: meta.replyTo });
 		}
-		return repliedIds(sent, parentOf);
+		return repliedIds(sent, async (id) => (await this._replyMetaOf(id))?.replyTo);
 	}
 
 	/**
@@ -810,23 +822,25 @@ export class FileMessagingAdapter {
 	 * The member's inbox cut into sections: `{ inbox, needs, needsCount }`.
 	 *   - `inbox`: what `listInbox` returns;
 	 *   - `needs`: `{ [id]: reasons }` for every message that needs the member (`card`, `reply`, `pin`; see
-	 *     inbox-rules.mjs). A message with an open question for the member counts wherever it sits, inbox or
-	 *     archive, because the asker is waiting on it; the other two reasons need the message in the inbox;
+	 *     inbox-rules.mjs). A message with an open question for the member counts wherever it is (inbox, archive,
+	 *     or deleted from both), because the asker is still waiting; the other two reasons need it in the inbox;
 	 *   - `needsCount`: the size of `needs`.
-	 * Everything in `inbox` that is not in `needs` is FYI.
+	 * Everything in `inbox` that is not in `needs` is FYI. `opts.folded` is `questionStates()`: pass it when
+	 * sectioning many members so the questions are folded once.
 	 */
-	async inboxSections(member) {
+	async inboxSections(member, { folded } = {}) {
 		const inbox = await this.listInbox(member);
 		const archived = new Set(await this._readMailbox(member, 'archives'));
-		const waitingAsks = new Set((await this.listQuestions(member)).waitingOnMe.map((w) => w.askId));
+		const waitingAsks = new Set(waitingOn(member, [...(folded ?? (await this.questionStates())).values()]).map((w) => w.askId));
 		const inInbox = new Set(inbox.map((m) => m.id));
 		const pinned = new Set(Object.keys(readInboxState(this._statePath(member)).pinned));
-		const asks = inbox.filter((m) => m.expectsReply && m.from !== member && m.to?.includes(member) && !pinned.has(m.id) && !waitingAsks.has(m.id));
+		const asks = inbox.filter((m) => m.expectsReply && m.from !== member && m.to?.includes(member));
 		const replied = await this._repliedAmong(member, asks);
-		const facts = { cards: waitingAsks, replied, pinned };
-		const classified = classifyInbox(inbox, member, facts);
-		// An open question waits on the member even if they archived the message.
-		for (const id of waitingAsks) if (!inInbox.has(id) && archived.has(id)) classified.set(id, ['card']);
+		const classified = classifyInbox(inbox, member, { cards: waitingAsks, replied, pinned });
+		for (const id of waitingAsks) {
+			if (inInbox.has(id)) continue;
+			if (archived.has(id) || (await this._readRawMessage(id).catch(() => null))) classified.set(id, ['card']);
+		}
 		const needs = {};
 		for (const [id, reasons] of classified) if (reasons.length > 0) needs[id] = reasons;
 		return { inbox, needs, needsCount: countNeeds(classified) };

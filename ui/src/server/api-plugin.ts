@@ -182,7 +182,10 @@ interface MessagingAdapter {
 	listQuestions?(member: string): Promise<{ waitingOnMe: WaitingItem[]; asked: unknown[] }>;
 	waitingCounts?(): Promise<Record<string, number>>;
 	/** Inbox sections and pins (the file adapter has them; without them every inbox message is FYI). */
-	inboxSections?(member: string): Promise<{ inbox: MessageSummary[]; needs: Record<string, string[]>; needsCount: number }>;
+	inboxSections?(
+		member: string,
+		opts?: { folded?: Map<string, FoldedAsk> },
+	): Promise<{ inbox: MessageSummary[]; needs: Record<string, string[]>; needsCount: number }>;
 	pinMessage?(member: string, id: string): Promise<void>;
 	unpinMessage?(member: string, id: string): Promise<void>;
 	searchArchives?(member: string, query: string, opts?: { limit?: number }): Promise<string[]>;
@@ -662,9 +665,9 @@ export function teamosApi(opts: ApiOptions): Plugin {
 	}
 
 	/** The inbox cut into sections; an adapter without sections has everything in FYI. */
-	async function inboxSectionsOf(member: string) {
+	async function inboxSectionsOf(member: string, folded?: Map<string, FoldedAsk>) {
 		if (messagingAdapter.inboxSections) {
-			const found = await messagingAdapter.inboxSections(member).catch(() => null);
+			const found = await messagingAdapter.inboxSections(member, { folded }).catch(() => null);
 			if (found) return found;
 		}
 		const inbox = await messagingAdapter.listInbox(member).catch(() => [] as MessageSummary[]);
@@ -674,10 +677,12 @@ export function teamosApi(opts: ApiOptions): Plugin {
 	async function getMemberSummaries() {
 		const manifest = await readJson(join(teamDir, 'members.json'), { members: [] });
 		const waiting = messagingAdapter.waitingCounts ? await messagingAdapter.waitingCounts().catch(() => ({})) : {};
+		// One fold of the questions for every member, not one per member.
+		const folded = messagingAdapter.questionStates ? await messagingAdapter.questionStates().catch(() => undefined) : undefined;
 		return Promise.all(
 			manifest.members.map(async (m: Record<string, unknown>) => {
 				const dir = join(teamDir, 'members', m.name as string);
-				const sections = await inboxSectionsOf(m.name as string);
+				const sections = await inboxSectionsOf(m.name as string, folded);
 				const todos = await readJson(join(dir, 'todo.json'), { items: [] });
 				const items: any[] = todos.items ?? [];
 				const events = await scheduleAdapter.listEvents(m.name as string).catch(() => []);
@@ -782,7 +787,9 @@ export function teamosApi(opts: ApiOptions): Plugin {
 
 		// Every mailbox message, plus every ancestor reachable from one.
 		const loaded = new Map<string, Message>();
-		const pending = [...boxesById.keys()];
+		// A message with an open question for the member counts even if it is in none of their mailboxes (they
+		// deleted it, the asker still waits): it is pulled in as context so the thread can be opened and answered.
+		const pending = [...new Set([...boxesById.keys(), ...Object.keys(sections.needs)])];
 		while (pending.length > 0) {
 			const id = pending.pop() as string;
 			if (loaded.has(id)) continue;
@@ -851,8 +858,7 @@ export function teamosApi(opts: ApiOptions): Plugin {
 				if (m.projectCode && !projectCodes.includes(m.projectCode)) projectCodes.push(m.projectCode);
 			}
 			const boxCount = (box: MailBox) => msgs.filter((m) => boxesById.get(m.id)?.includes(box)).length;
-			// A message needs the member when the sections say so, but only if it is one of their messages here.
-			const needsCount = msgs.filter((m) => sections.needs[m.id] && boxesById.has(m.id)).length;
+			const needsCount = msgs.filter((m) => sections.needs[m.id]).length;
 			// Questions: only the live version of each ask counts (a superseded one is replaced by its successor).
 			const counts = (m: Message) => {
 				const folded = m.questions?.length ? asks?.get(m.id) : undefined;
@@ -904,7 +910,7 @@ export function teamosApi(opts: ApiOptions): Plugin {
 					questions: counts(m),
 					...(m.fyi ? { fyi: true } : {}),
 					...(m.expectsReply ? { expectsReply: true } : {}),
-					...(sections.needs[m.id] && boxesById.has(m.id) ? { needs: sections.needs[m.id] } : {}),
+					...(sections.needs[m.id] ? { needs: sections.needs[m.id] } : {}),
 				})),
 			});
 		}

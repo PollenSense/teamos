@@ -163,3 +163,66 @@ test('sections of an empty mailbox, and of a member with no files at all', () =>
 	withAdapter(async (adapter) => {
 		assert.deepEqual(await adapter.inboxSections('cy'), { inbox: [], needs: {}, needsCount: 0 });
 	}));
+
+// ─── review findings (2026-10-26) ───────────────────────────────────────────
+
+test('a pinned or card-bearing ask the member already answered does not still say "reply"', () =>
+	withAdapter(async (adapter) => {
+		const ask = await send(adapter, { subject: 'ask', expectsReply: true });
+		const card = await send(adapter, {
+			subject: 'ask with card',
+			expectsReply: true,
+			body: '1. Which?',
+			questions: [{ text: 'Which?', options: ['A', 'B'], recommend: 1 }],
+		});
+		await tick();
+		await adapter.pinMessage('van', ask.id);
+		await adapter.sendMessage({ from: 'van', to: ['ivy'], replyTo: ask.id, body: 'done' });
+		await adapter.sendMessage({ from: 'van', to: ['ivy'], replyTo: card.id, body: 'in words' });
+		const { needs } = await adapter.inboxSections('van');
+		assert.deepEqual(needs[ask.id], ['pin'], 'answered and pinned: only the pin');
+		assert.deepEqual(needs[card.id], ['card'], 'a text reply ends the reply reason even with an open card');
+	}));
+
+test('an open question still counts after the message was deleted, and the dashboard can show it', () =>
+	withAdapter(async (adapter) => {
+		const card = await send(adapter, { subject: 'pick', body: '1. Which?', questions: [{ text: 'Which?', options: ['A', 'B'], recommend: 1 }] });
+		await adapter.deleteInboxMessage('van', card.id);
+		const s = await adapter.inboxSections('van');
+		assert.deepEqual(s.needs, { [card.id]: ['card'] }, 'the asker is still waiting');
+		assert.equal(s.needsCount, 1);
+		assert.equal((await adapter.listQuestions('van')).waitingOnMe.length, 1);
+	}));
+
+test('inboxSections takes folded questions from the caller, so many members cost one fold', () =>
+	withAdapter(async (adapter) => {
+		const card = await send(adapter, { subject: 'pick', body: '1. Which?', questions: [{ text: 'Which?', options: ['A', 'B'], recommend: 1 }] });
+		const folded = await adapter.questionStates();
+		let asked = 0;
+		const original = adapter.listQuestions.bind(adapter);
+		adapter.listQuestions = async (...args) => (asked++, original(...args));
+		const s = await adapter.inboxSections('van', { folded });
+		assert.deepEqual(s.needs, { [card.id]: ['card'] });
+		assert.equal(asked, 0, 'no per-member question snapshot');
+		assert.deepEqual((await adapter.inboxSections('nate', { folded })).needs, {});
+	}));
+
+test('an unreadable inbox-state.json is kept as .bad when the next pin replaces it', () =>
+	withAdapter(async (adapter, dir) => {
+		const m = await send(adapter, { subject: 'a' });
+		const path = inboxStatePath(dir, 'van');
+		await writeFile(path, '{"pinned": {"x": "2026-01-01T00:00:00Z"', 'utf-8'); // truncated
+		assert.deepEqual((await adapter.inboxSections('van')).needs, {}, 'reads as no pins');
+		await adapter.pinMessage('van', m.id);
+		assert.equal(await readFile(`${path}.bad`, 'utf-8'), '{"pinned": {"x": "2026-01-01T00:00:00Z"', 'the damaged file is still there to recover from');
+		assert.deepEqual(Object.keys(JSON.parse(await readFile(path, 'utf-8')).pinned), [m.id]);
+	}));
+
+test('superseding a pinned message clears the pin with it', () =>
+	withAdapter(async (adapter, dir) => {
+		const first = await send(adapter, { subject: 'a' });
+		await adapter.pinMessage('van', first.id);
+		await tick();
+		await adapter.supersedeMessage({ from: 'ivy', supersedes: [first.id], to: ['van'], body: 'better' });
+		assert.deepEqual(JSON.parse(await readFile(inboxStatePath(dir, 'van'), 'utf-8')).pinned, {});
+	}));

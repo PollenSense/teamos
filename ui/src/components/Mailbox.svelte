@@ -521,6 +521,9 @@ function roleOf(msg: ThreadMessage): string {
 								{@const chip = threadChip(thread.questions, identity.name)}
 								{#if chip}<span class="row-badge q-{chip.tone}">{chip.label}</span>{/if}
 							{/if}
+							{#if thread.needsCount > 1}
+								<span class="row-badge needs-soft">{thread.needsCount} need you</span>
+							{/if}
 							{#each rowReasons(thread) as reason}
 								<span class="row-badge needs-soft">{reasonWord(reason)}</span>
 							{/each}

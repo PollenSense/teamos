@@ -40,9 +40,9 @@ describe('sections', () => {
 		assert.equal(inSection(t, 'fyi'), false);
 	});
 
-	it('counts are conversations, plus the number of messages that need me', () => {
+	it('Needs you counts messages (the same number as the member card); the other lists count conversations', () => {
 		const c = sectionCounts([counts(3, 2), counts(1), counts(1), counts(0, 0, 1), counts(0, 0, 0, 2), counts(2, 1, 1, 1)]);
-		assert.deepEqual(c, { needs: 2, fyi: 2, done: 2, sent: 2, needsMessages: 3 });
+		assert.deepEqual(c, { needs: 3, fyi: 2, done: 2, sent: 2, needsMessages: 3 });
 		assert.deepEqual(sectionCounts([]), { needs: 0, fyi: 0, done: 0, sent: 0, needsMessages: 0 });
 	});
 

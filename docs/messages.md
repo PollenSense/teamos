@@ -185,7 +185,7 @@ else sees the state read-only. When one question is open a tap sends at once; wi
 "Send N answers" button sends them as ONE reply to the asker. "Not needed" dismisses (a person on the message).
 A thread row carries a chip ("2 waiting on kris", "waiting on you", "answered"), a pinned "Waiting on you (N)" strip
 sits above the thread list (on another member's page: "Waiting on kris (N)"; a row opens the thread at the card),
-member cards show "N waiting", and composing a reply to a message with open questions shows a hint. Humans do not
+member cards show "N need you" (see [Inbox sections](#inbox-sections)), and composing a reply to a message with open questions shows a hint. Humans do not
 compose questions yet (agents ask; the API already accepts them), and a chat has no cards.
 
 **Where it shows.** `read_message` returns `questionState` (each question with its status and answers); `list_inbox`,
@@ -212,7 +212,7 @@ A message from the inbox needs the member (`needs` lists the reasons) when
   reply), and they have not sent a message in the thread since (a message of theirs anywhere below it in the
   `replyTo` chain counts);
 - `pin`: they pinned it ("Needs me"). A pin lives in the member's `inbox-state.json` and is cleared when the
-  message leaves the inbox (archive or delete); moving it back does not restore it.
+  message leaves the inbox (archive, delete, or replaced by `supersede_message`); moving it back does not restore it.
 Everything else in the inbox is FYI. `fyi: true` is the sender saying so; mail with neither mark and no card is
 unmarked and counts as FYI (the mark matters once messages clear automatically, which this version does not do).
 
@@ -224,13 +224,16 @@ marks as `fyi: true` / `expectsReply: true` on the summary, only when set.
 
 **State.** `team/members/<name>/inbox-state.json` is `{ "pinned": { "<id>": "<ISO time>" } }`, written through a
 temp file and a rename like the mailboxes and read defensively (an unreadable or odd file reads as "no pins";
-keys it does not know are kept when it is rewritten). Only the member's own pins are stored; whether a message
+keys it does not know are kept when it is rewritten; a file that cannot be read is moved to `inbox-state.json.bad`
+when the next change replaces it). Only the member's own pins are stored; whether a message
 needs them is always derived.
 
 **Dashboard.** Segments `Needs you N | FYI N | Done | Sent` replace the Inbox / Sent / Archived / All chips. A thread
 is listed in Needs you when any of its messages needs the viewed member (and then not in FYI), in FYI when it has
-inbox mail and nothing needs them, in Done when it has an archived message, in Sent when it has a sent one. The
-member card and the Messages tab show one number: how many messages need the member. Typing in the search box
+inbox mail and nothing needs them, in Done when it has an archived message, in Sent when it has a sent one. Needs
+you counts messages, so its number is the same on the segment, the member card and the Messages tab (a row that
+holds three of them says "3 need you"); FYI, Done and Sent count conversations. An open question for the member
+whose message they deleted still counts and is shown as a greyed context thread, so it can be answered. Typing in the search box
 looks through all four lists at once (each row says which one it is in) and also through the text of the member's
 archived messages (`GET /api/members/:name/search?q=`, at least two characters, that member's archive only).
 
