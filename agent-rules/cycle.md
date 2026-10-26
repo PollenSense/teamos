@@ -37,8 +37,8 @@ TeamOS messages behave like email — a message has `from`, `to`, `cc`, `subject
 Use the MCP tools below; they are the only supported way to send, read, or manage messages.
 
 **Tools:**
-- `send_message({ to, body, subject?, cc?, replyTo?, projectCode?, attachments?, questions?, answers? })` — Send to one or more members. `subject` is required on new threads; replies may omit it and the server will derive `Re: <parent.subject>`. Returns `{ id, sentAt }`.
-- `supersede_message({ supersedes, to, body, subject?, cc?, projectCode?, attachments?, questions? })` — Send a new message that consolidates / replaces one or more earlier messages YOU sent on the same topic to the same audience. The new `to`+`cc` must cover every recipient any predecessor reached. See "Consolidate, don't stack" below.
+- `send_message({ to, body, subject?, cc?, replyTo?, projectCode?, attachments?, questions?, answers?, fyi?, expectsReply? })` — Send to one or more members. `subject` is required on new threads; replies may omit it and the server will derive `Re: <parent.subject>`. Returns `{ id, sentAt }`.
+- `supersede_message({ supersedes, to, body, subject?, cc?, projectCode?, attachments?, questions?, fyi?, expectsReply? })` — Send a new message that consolidates / replaces one or more earlier messages YOU sent on the same topic to the same audience. The new `to`+`cc` must cover every recipient any predecessor reached. See "Consolidate, don't stack" below.
 - `read_message(id)` — Read any message by id. The immediately preceding message is inlined as `parent` (one hop). To walk further back, call `read_message(parent.replyTo)`. When the message has images, `attachmentPaths` lists their absolute paths. When it asks questions, `questionState` gives each one's status.
 - `list_inbox()` / `list_sent({ to? })` / `list_archives()` — Summaries of your mailboxes (newest first). Each summary has `hasParent` (thread membership), `supersedes` (predecessors this message replaces), and `supersededBy` (a later message that replaces this one) so you can spot consolidation context without fetching the full body. `list_sent` accepts an optional `to: [<member>, ...]` filter.
 - `list_questions()` — `waitingOnMe`: questions asked of you; `asked`: your own open questions, who each waits on, and the plain replies that came in since (to record).
@@ -60,6 +60,8 @@ Use the MCP tools below; they are the only supported way to send, read, or manag
 9. One digest per day still holds. Questions do not license a message per question.
 
 To answer a question yourself (another member asked you): `send_message({ to: [<asker>], replyTo: <ask id>, body, answers: [{ ask: <ask id>, q: "q1", option: 2 }] })`; `other: "your words"` for your own answer, `dismissed: true` if it no longer matters (a person only). Answer only a question that waits on you; one that waits on a person is theirs, even when you are on Cc.
+
+**Marks (what a message needs from a person).** A person's inbox has a **Needs you** section and an **FYI** section. A message is in Needs you when it has an open question for them, when you marked it `expectsReply: true` and they have not replied, or when they pinned it. So say which kind of message you are writing: a choice is a question card; an open-ended ask that is not choice-shaped is `expectsReply: true` (to the people you need an answer from, in To, not Cc); a message that only informs (a status, a thanks, a finished job, a correction) is `fyi: true`. Never both. The marks change only how a person's inbox is sorted: they do not change what an agent sees or when it is woken.
 
 **Message ids are opaque.** Pass them through verbatim — never parse or construct them. When replying, use `replyTo: <parent.id>` from the inbox summary.
 

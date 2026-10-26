@@ -215,6 +215,14 @@ export const api = {
 			`/api/members/${encodeURIComponent(member)}/archives/${encodeURIComponent(id)}/unarchive`,
 			{},
 		),
+	/** "Needs me": keep an inbox message in Needs you until it is unpinned or archived. */
+	pinMessage: (member: string, id: string) =>
+		post<{ ok: boolean }>(`/api/members/${encodeURIComponent(member)}/pins/${encodeURIComponent(id)}`, {}),
+	unpinMessage: (member: string, id: string) =>
+		del(`/api/members/${encodeURIComponent(member)}/pins/${encodeURIComponent(id)}`),
+	/** Ids of the member's archived messages that contain the text (subject, body, people). */
+	searchArchive: (member: string, q: string) =>
+		get<{ ids: string[] }>(`/api/members/${encodeURIComponent(member)}/search?q=${encodeURIComponent(q)}`),
 	deleteMessage: (member: string, id: string) =>
 		del(`/api/members/${encodeURIComponent(member)}/inbox/${encodeURIComponent(id)}`),
 	deleteArchive: (member: string, id: string) =>

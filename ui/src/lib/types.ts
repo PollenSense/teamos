@@ -11,6 +11,8 @@ export interface MemberSummary {
 	notes?: string;
 	email?: string;
 	inboxCount: number;
+	/** Inbox messages that need this member (an open question, a wanted reply or a pin), and open questions on archived mail. */
+	needsCount?: number;
 	todoCount: number;
 	blockedCount: number;
 	eventCount: number;
@@ -29,6 +31,8 @@ export interface MessageSummary {
 	hasParent: boolean;
 	supersedes?: string[];
 	supersededBy?: string;
+	fyi?: boolean;
+	expectsReply?: boolean;
 }
 
 export interface Message {
@@ -42,6 +46,9 @@ export interface Message {
 	supersedes?: string[];
 	supersededBy?: string;
 	projectCode?: string;
+	/** The sender's marks: nothing needed (`fyi`), or a written answer wanted (`expectsReply`). */
+	fyi?: boolean;
+	expectsReply?: boolean;
 	/** Names of the images stored with the message (`team/messages/attachments/<id>/`); the body shows them. */
 	attachments?: string[];
 	/** Questions the message asks (see lib/questions.ts) and, on the way out, where each one stands. */
@@ -73,7 +80,13 @@ export interface ThreadMessage {
 	depth: number;
 	/** Set when the message asks questions: how many are still open. */
 	questions?: { open: number; total: number };
+	fyi?: boolean;
+	expectsReply?: boolean;
+	/** Why it needs the viewed member: `card`, `reply`, `pin`. Absent when it does not (FYI, or not theirs). */
+	needs?: NeedsReason[];
 }
+
+export type NeedsReason = 'card' | 'reply' | 'pin';
 
 /** Messages sharing a subject, with their reply chains resolved through the master store. */
 export interface Thread {
@@ -85,6 +98,8 @@ export interface Thread {
 	inboxCount: number;
 	sentCount: number;
 	archiveCount: number;
+	/** How many of its messages need the viewed member. */
+	needsCount: number;
 	firstAt: string;
 	lastAt: string;
 	lastFrom: string;
@@ -94,13 +109,13 @@ export interface Thread {
 	messages: ThreadMessage[];
 }
 
-/** Thread counts per mailbox filter, plus the raw inbox message count for the tab badge. */
+/** Thread counts per section, plus the number of messages that need the member, for the tab badge. */
 export interface MailboxCounts {
-	inbox: number;
+	needs: number;
+	fyi: number;
+	done: number;
 	sent: number;
-	archives: number;
-	all: number;
-	inboxMessages: number;
+	needsMessages: number;
 }
 
 /** One thing said in a chat session, by the human or by the member. */

@@ -7,7 +7,22 @@ import { identity } from '../lib/identity.svelte.js';
 import type { LinkMap } from '../lib/linkify.js';
 import { threadChip, waitingTitle } from '../lib/questions.js';
 import { router } from '../lib/router.svelte.js';
-import type { MailBox, MailboxCounts, Message, Thread, ThreadMessage, WaitingLists } from '../lib/types.js';
+import {
+	SECTIONS,
+	SECTION_LABEL,
+	type Section,
+	defaultSection,
+	inSection,
+	markBadge,
+	matchesSearch,
+	reasonWord,
+	reasonsText,
+	rowReasons,
+	sectionCounts,
+	sectionOf,
+	storedSection,
+} from '../lib/sections.js';
+import type { MailboxCounts, Message, Thread, ThreadMessage, WaitingLists } from '../lib/types.js';
 
 const {
 	name,
@@ -17,10 +32,10 @@ const {
 	oncounts?: (counts: MailboxCounts) => void;
 } = $props();
 
-type Filter = MailBox | 'all';
+type Filter = Section;
 
 /**
- * The filter the user last clicked. This component remounts on every tab
+ * The section the user last clicked. This component remounts on every tab
  * switch and every Reply round trip through compose, so state alone would
  * drop the pick back to the default each time.
  */
@@ -43,12 +58,11 @@ function toggleMdPreview() {
 		// private mode: the choice lasts for this page only
 	}
 }
-const FILTERS: readonly Filter[] = ['inbox', 'sent', 'archives', 'all'];
 
 function storedFilter(): Filter | null {
 	try {
-		const v = localStorage.getItem(FILTER_KEY);
-		return FILTERS.includes(v as Filter) ? (v as Filter) : null;
+		// An older pick (Inbox, Archived, All) maps to its nearest section; All means no pick.
+		return storedSection(localStorage.getItem(FILTER_KEY));
 	} catch {
 		return null;
 	}
@@ -67,8 +81,10 @@ const picked = storedFilter();
 
 let threads = $state<Thread[]>([]);
 let loading = $state(true);
-let filter = $state<Filter>(picked ?? 'inbox');
+let filter = $state<Filter>(picked ?? 'needs');
 let search = $state('');
+/** Archived messages whose text contains the search (the server looks; threads and people match locally). */
+let archiveHits = $state<ReadonlySet<string>>(new Set());
 let selectedId = $state<string | null>(null);
 let expanded = $state<Set<string>>(new Set());
 let bodies = $state<Record<string, string>>({});
@@ -84,38 +100,43 @@ let busy = $state<string | null>(null);
 let scrollTarget = $state<string | null>(null);
 let paneEl = $state<HTMLDivElement | null>(null);
 
-// Chip counts are conversations, not messages — they label rows the filter shows.
-const counts = $derived<MailboxCounts>({
-	inbox: threads.filter((t) => t.inboxCount > 0).length,
-	sent: threads.filter((t) => t.sentCount > 0).length,
-	archives: threads.filter((t) => t.archiveCount > 0).length,
-	all: threads.length,
-	inboxMessages: threads.reduce((n, t) => n + t.inboxCount, 0),
-});
+// Segment counts are conversations, not messages — they label rows the segment shows. `needsMessages` is the
+// one number the member card and the Messages tab show: how many messages need this member.
+const counts = $derived<MailboxCounts>(sectionCounts(threads));
 
 $effect(() => {
 	oncounts?.(counts);
 });
 
-function matchesFilter(t: Thread, f: Filter): boolean {
-	if (f === 'all') return true;
-	if (f === 'inbox') return t.inboxCount > 0;
-	if (f === 'sent') return t.sentCount > 0;
-	return t.archiveCount > 0;
+/** Typing in the search box looks through every list at once; the rows say which list each one is in. */
+const searching = $derived(search.trim().length > 0);
+
+function listed(t: Thread): boolean {
+	return searching ? matchesSearch(t, search, archiveHits) : inSection(t, filter);
 }
 
-function matchesSearch(t: Thread, q: string): boolean {
-	if (!q) return true;
-	const needle = q.toLowerCase();
-	return (
-		t.subject.toLowerCase().includes(needle) ||
-		t.preview.toLowerCase().includes(needle) ||
-		t.participants.some((p) => p.toLowerCase().includes(needle)) ||
-		t.projectCodes.some((p) => p.toLowerCase().includes(needle))
-	);
-}
+// The server reads the archived messages for the text (debounced; the newest answer wins).
+let searchSeq = 0;
+$effect(() => {
+	const q = search.trim();
+	const who = name;
+	const seq = ++searchSeq;
+	if (q.length < 2) {
+		archiveHits = new Set();
+		return;
+	}
+	const timer = setTimeout(async () => {
+		try {
+			const { ids } = await api.searchArchive(who, q);
+			if (seq === searchSeq) archiveHits = new Set(ids);
+		} catch {
+			if (seq === searchSeq) archiveHits = new Set();
+		}
+	}, 250);
+	return () => clearTimeout(timer);
+});
 
-const visible = $derived(threads.filter((t) => matchesFilter(t, filter) && matchesSearch(t, search)));
+const visible = $derived(threads.filter(listed));
 const selected = $derived(threads.find((t) => t.id === selectedId) ?? null);
 
 /**
@@ -170,12 +191,10 @@ async function load(keepSelection = true) {
 	if (!keepSelection || !fresh.some((t) => t.id === selectedId)) {
 		selectedId = null;
 	}
-	// Landing on an empty Inbox when there is history to read is a dead end, so
-	// the first load of a member falls back to All. A filter the user picked is
-	// never overridden.
-	if (!keepSelection && !picked && filter === 'inbox' && fresh.length > 0 && !fresh.some((t) => t.inboxCount > 0)) {
-		filter = 'all';
-	}
+	// Landing on an empty list when there is mail to read is a dead end, so the
+	// first load of a member starts on the first list with something in it. A
+	// section the user picked is never overridden.
+	if (!keepSelection && !picked) filter = defaultSection(fresh);
 	const deepLink = router.query.msg;
 	if (deepLink) {
 		// A deep link is honored once, then dropped from the URL. Left in place,
@@ -185,13 +204,13 @@ async function load(keepSelection = true) {
 		router.replace(router.path);
 		const owner = fresh.find((t) => t.messages.some((m) => m.id === deepLink));
 		if (owner) {
-			if (!matchesFilter(owner, filter)) filter = 'all';
+			if (!inSection(owner, filter)) filter = sectionOf(owner) ?? filter;
 			await openThread(owner, [deepLink]);
 			scrollTarget = deepLink;
 		}
 	}
 	if (!selectedId) {
-		const first = fresh.find((t) => matchesFilter(t, filter) && matchesSearch(t, search));
+		const first = fresh.find(listed);
 		if (first) await openThread(first);
 	}
 }
@@ -211,6 +230,13 @@ $effect(() => {
 	scrollTarget = null;
 	tick().then(() => document.getElementById(`msg-${id}`)?.scrollIntoView({ block: 'start' }));
 });
+
+const EMPTY_TEXT: Record<Section, string> = {
+	needs: 'Nothing needs you',
+	fyi: 'No FYI mail',
+	done: 'Nothing done yet',
+	sent: 'Nothing sent',
+};
 
 /** How many unhandled inbox messages open on their own before the thread is folded instead. */
 const AUTO_EXPAND_LIMIT = 5;
@@ -279,7 +305,7 @@ async function refreshQuestions() {
 async function openAsk(askId: string) {
 	const owner = threads.find((t) => t.messages.some((m) => m.id === askId));
 	if (!owner) return;
-	if (!matchesFilter(owner, filter)) pickFilter('all');
+	if (!inSection(owner, filter)) filter = sectionOf(owner) ?? filter;
 	await openThread(owner, [askId]);
 	scrollTarget = askId;
 }
@@ -313,6 +339,30 @@ async function unarchiveMessage(id: string) {
 	busy = id;
 	try {
 		await api.unarchiveMessage(name, id);
+		await load();
+	} finally {
+		busy = null;
+	}
+}
+
+/** "Needs me" / "Unpin": the member's own mark that a message still needs them. */
+async function setPin(id: string, pinned: boolean) {
+	busy = id;
+	try {
+		if (pinned) await api.pinMessage(name, id);
+		else await api.unpinMessage(name, id);
+		await load();
+	} finally {
+		busy = null;
+	}
+}
+
+async function moveThreadBack(thread: Thread) {
+	const ids = thread.messages.filter((m) => m.boxes.includes('archives')).map((m) => m.id);
+	if (ids.length === 0) return;
+	busy = thread.id;
+	try {
+		for (const id of ids) await api.unarchiveMessage(name, id);
 		await load();
 	} finally {
 		busy = null;
@@ -401,20 +451,25 @@ function roleOf(msg: ThreadMessage): string {
 
 <div class="toolbar">
 	<div class="filters" role="tablist" aria-label="Mailbox">
-		{#each [['inbox', 'Inbox', counts.inbox], ['sent', 'Sent', counts.sent], ['archives', 'Archived', counts.archives], ['all', 'All', counts.all]] as const as [key, label, n]}
+		{#each SECTIONS as key}
 			<button
 				class="filter"
-				class:active={filter === key}
+				class:active={!searching && filter === key}
 				role="tab"
-				aria-selected={filter === key}
-				onclick={() => pickFilter(key as Filter)}
+				aria-selected={!searching && filter === key}
+				onclick={() => {
+					search = '';
+					pickFilter(key);
+				}}
 			>
-				{label}
-				<span class="filter-count">{n}</span>
+				{SECTION_LABEL[key]}
+				{#if key === 'needs' || key === 'fyi'}
+					<span class="filter-count" class:alert={key === 'needs' && counts.needs > 0}>{counts[key]}</span>
+				{/if}
 			</button>
 		{/each}
 	</div>
-	<input class="search" type="search" placeholder="Search subject, people, text..." bind:value={search} />
+	<input class="search" type="search" placeholder="Search everything, including Done text..." bind:value={search} />
 </div>
 
 {#if loading}
@@ -422,7 +477,7 @@ function roleOf(msg: ThreadMessage): string {
 {:else}
 	<div class="panes">
 		<div class="thread-list">
-			{#if waiting.waitingOnMe.length > 0}
+			{#if filter === 'needs' && !searching && waiting.waitingOnMe.length > 0}
 				<div class="waiting-strip" role="region" aria-label="Waiting">
 					<div class="strip-title">{waitingTitle(name, identity.name, waiting.waitingOnMe.length)}</div>
 					{#each waiting.waitingOnMe.slice(0, 6) as w (w.askId + w.q)}
@@ -438,13 +493,13 @@ function roleOf(msg: ThreadMessage): string {
 				</div>
 			{/if}
 			{#if visible.length === 0}
-				<div class="empty small">{search ? 'Nothing matches that search' : 'Nothing here'}</div>
+				<div class="empty small">{searching ? 'Nothing matches that search' : EMPTY_TEXT[filter]}</div>
 			{:else}
 				{#each visible as thread (thread.id)}
 					<button
 						class="thread-row"
 						class:selected={thread.id === selectedId}
-						class:unhandled={thread.inboxCount > 0}
+						class:unhandled={thread.inboxCount > 0 || thread.needsCount > 0}
 						onclick={() => openThread(thread)}
 					>
 						<div class="row-top">
@@ -456,18 +511,24 @@ function roleOf(msg: ThreadMessage): string {
 							{#if thread.messageCount > 1}
 								<span class="row-count">{thread.messageCount}</span>
 							{/if}
-							{#if thread.inboxCount > 0}
+							{#if searching}
+								{@const tag = sectionOf(thread)}
+								{#if tag}<span class="row-badge tag">{SECTION_LABEL[tag]}</span>{/if}
+							{:else if thread.inboxCount > 0 && (filter === 'done' || filter === 'sent')}
 								<span class="row-badge inbox">{thread.inboxCount} in inbox</span>
 							{/if}
 							{#if threadChip(thread.questions, identity.name)}
 								{@const chip = threadChip(thread.questions, identity.name)}
 								{#if chip}<span class="row-badge q-{chip.tone}">{chip.label}</span>{/if}
 							{/if}
+							{#each rowReasons(thread) as reason}
+								<span class="row-badge needs-soft">{reasonWord(reason)}</span>
+							{/each}
 							{#each thread.projectCodes as code}
 								<span class="row-badge project">{code}</span>
 							{/each}
-						</div>
-						<div class="row-preview">{thread.preview}</div>
+							</div>
+							<div class="row-preview">{thread.preview}</div>
 					</button>
 				{/each}
 			{/if}
@@ -497,6 +558,15 @@ function roleOf(msg: ThreadMessage): string {
 								Archive thread ({selected.inboxCount})
 							</button>
 						{/if}
+						{#if selected.archiveCount > 0}
+							<button
+								class="action-btn archive"
+								disabled={busy === selected.id}
+								onclick={() => moveThreadBack(selected)}
+							>
+								Move thread back to inbox ({selected.archiveCount})
+							</button>
+						{/if}
 						<button class="action-btn plain" onclick={expandAll}>Expand all</button>
 						<button class="action-btn plain" onclick={collapseAll}>Collapse all</button>
 					</div>
@@ -517,8 +587,14 @@ function roleOf(msg: ThreadMessage): string {
 								<span class="msg-toggle">{isOpen ? '▾' : '▸'}</span>
 								<span class="msg-from">{msg.from}</span>
 								<span class="msg-role" class:mine={msg.from === name}>{roleOf(msg)}</span>
-								{#if msg.boxes.includes('inbox')}
+								{#if msg.needs}
+									<span class="row-badge needs" title={reasonsText(msg.needs)}>needs you</span>
+								{:else if msg.boxes.includes('inbox')}
 									<span class="row-badge inbox">inbox</span>
+								{/if}
+								{#if markBadge(msg)}
+									{@const mark = markBadge(msg)}
+									{#if mark}<span class="row-badge mark" title={mark.title}>{mark.label}</span>{/if}
 								{/if}
 								{#if msg.supersededBy}
 									<span class="row-badge muted">superseded</span>
@@ -558,6 +634,16 @@ function roleOf(msg: ThreadMessage): string {
 											<a class="action-btn reply" href={replyHref(msg, true)}>Reply All</a>
 										{/if}
 										{#if msg.boxes.includes('inbox')}
+											{@const pinned = !!msg.needs?.includes('pin')}
+											<button
+												class="action-btn pin"
+												class:on={pinned}
+												disabled={busy === msg.id}
+												title={pinned ? 'Take this out of Needs you' : 'Keep this in Needs you until you unpin or archive it'}
+												onclick={() => setPin(msg.id, !pinned)}
+											>
+												{pinned ? 'Unpin' : 'Needs me'}
+											</button>
 											<button
 												class="action-btn archive"
 												disabled={busy === msg.id}
@@ -572,7 +658,7 @@ function roleOf(msg: ThreadMessage): string {
 												disabled={busy === msg.id}
 												onclick={() => unarchiveMessage(msg.id)}
 											>
-												Unarchive
+												Move back to inbox
 											</button>
 										{/if}
 										{#if msg.boxes.some((b) => b === 'inbox' || b === 'archives')}
@@ -632,6 +718,19 @@ function roleOf(msg: ThreadMessage): string {
 		color: var(--text-muted);
 	}
 	.filter.active .filter-count { background: var(--primary-subtle); color: var(--primary); }
+	.filter-count.alert { background: #d97706; color: #fff; }
+	.row-badge.needs { background: #d97706; color: #fff; }
+	.row-badge.needs-soft { background: rgba(217, 119, 6, 0.14); color: #b45309; }
+	.row-badge.tag { background: var(--bg); color: var(--text-muted); border: 1px solid var(--border); }
+	.row-badge.mark { background: var(--bg); color: var(--text-muted); border: 1px solid var(--border); }
+	.action-btn.pin { background: var(--bg); color: var(--text-muted); border: 1px solid var(--border); }
+	.action-btn.pin.on { background: rgba(217, 119, 6, 0.14); color: #b45309; border-color: #d97706; }
+	/* Phone: one row of four equal segments, each a full-size tap target; the search box takes its own line. */
+	@media (max-width: 640px) {
+		.filters { display: grid; grid-template-columns: repeat(4, 1fr); width: 100%; }
+		.filter { justify-content: center; min-height: 44px; padding: 0.3rem 0.15rem; gap: 0.2rem; font-size: 0.74rem; white-space: nowrap; }
+		.search { flex-basis: 100%; min-width: 0; min-height: 44px; }
+	}
 	.search {
 		flex: 1;
 		min-width: 200px;

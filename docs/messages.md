@@ -27,7 +27,8 @@ team/
     └── <name>/
         ├── inbox.json        # { "items": ["<id>", ...] }
         ├── sent.json         # { "items": ["<id>", ...] }
-        └── archives.json     # { "items": ["<id>", ...] }
+        ├── archives.json     # { "items": ["<id>", ...] }
+        └── inbox-state.json  # { "pinned": { "<id>": "<ISO time>" } } — the member's own pins; see Inbox sections
 ```
 
 ### Message ID format
@@ -79,6 +80,8 @@ Field reference:
 | `questions` | no | One line of JSON: a list of questions the sender needs decided; see [Questions](#questions). |
 | `answers` | no | One line of JSON: answers to the questions of the message this replies to; see [Questions](#questions). |
 | `attachments` | no | Array of image file names stored in `team/messages/attachments/<id>/`; omit if none. See [Images](#images). |
+| `fyi` | no | `true` when nothing is needed from the recipients; omit otherwise. See [Inbox sections](#inbox-sections). |
+| `expectsReply` | no | `true` when the sender needs a written answer that is not a choice between options; omit otherwise. Never together with `fyi`. See [Inbox sections](#inbox-sections). |
 
 ### Images
 
@@ -196,6 +199,41 @@ mtime, in memory and in `team/.logs/questions-index.json` (outside the Drive syn
 is valid). Measured on a synthetic 5,000-message store: first pass with no cache file 0.5 s, a fresh process with the
 cache file and a warm call about 70 ms.
 
+### Inbox sections
+
+A person's inbox is cut into **Needs you** and **FYI** when it is displayed; the archive is **Done**. Nothing moves
+on disk because of this: the sections are a view over `inbox.json`, and the rules are in
+`scripts/lib/messaging/inbox-rules.mjs` (pure, no I/O), applied by `FileMessagingAdapter.inboxSections(member)`.
+
+A message from the inbox needs the member (`needs` lists the reasons) when
+- `card`: an open question on it waits on them (the Questions rules; this holds even after they archive the
+  message, because the asker is still waiting);
+- `reply`: the sender marked it `expectsReply`, they are one of its **To** recipients (a Cc is not asked to
+  reply), and they have not sent a message in the thread since (a message of theirs anywhere below it in the
+  `replyTo` chain counts);
+- `pin`: they pinned it ("Needs me"). A pin lives in the member's `inbox-state.json` and is cleared when the
+  message leaves the inbox (archive or delete); moving it back does not restore it.
+Everything else in the inbox is FYI. `fyi: true` is the sender saying so; mail with neither mark and no card is
+unmarked and counts as FYI (the mark matters once messages clear automatically, which this version does not do).
+
+**Marks.** A sender writes at most one, with the same argument on `send_message` and `supersede_message`:
+`fyi: true` (nothing needed, read if you like) or `expectsReply: true` (an open-ended ask). A choice is a question
+card, not a mark. Both at once, or a non-boolean, is refused (400). A hand-edited file with both marks reads as
+`expectsReply`, so an ask is never taken for "nothing needed". `list_inbox` and the other listings carry the
+marks as `fyi: true` / `expectsReply: true` on the summary, only when set.
+
+**State.** `team/members/<name>/inbox-state.json` is `{ "pinned": { "<id>": "<ISO time>" } }`, written through a
+temp file and a rename like the mailboxes and read defensively (an unreadable or odd file reads as "no pins";
+keys it does not know are kept when it is rewritten). Only the member's own pins are stored; whether a message
+needs them is always derived.
+
+**Dashboard.** Segments `Needs you N | FYI N | Done | Sent` replace the Inbox / Sent / Archived / All chips. A thread
+is listed in Needs you when any of its messages needs the viewed member (and then not in FYI), in FYI when it has
+inbox mail and nothing needs them, in Done when it has an archived message, in Sent when it has a sent one. The
+member card and the Messages tab show one number: how many messages need the member. Typing in the search box
+looks through all four lists at once (each row says which one it is in) and also through the text of the member's
+archived messages (`GET /api/members/:name/search?q=`, at least two characters, that member's archive only).
+
 ### Mailbox files
 
 Each member has three json files, all with the same shape:
@@ -227,6 +265,8 @@ send_message({
   attachments?: string[], // optional — paths of image files; see Images
   questions?: object[],  // optional — see Questions
   answers?: object[],    // optional — answers to the message replyTo points at; see Questions
+  fyi?: boolean,         // optional — nothing needed from the recipients; see Inbox sections
+  expectsReply?: boolean, // optional — a written answer is wanted (not with fyi); see Inbox sections
 }) → { id: string, sentAt: string }
 ```
 
@@ -243,6 +283,8 @@ supersede_message({
   cc?: string[],         // optional
   replyTo?: string,      // optional — usually omit
   projectCode?: string,  // optional
+  fyi?: boolean,         // optional — see Inbox sections
+  expectsReply?: boolean, // optional — see Inbox sections
 }) → { id, sentAt, supersededIds, unreadRemoved, alreadyDelivered }
 ```
 
@@ -294,7 +336,7 @@ list_inbox() → InboxEntry[]
 Returns summaries for every id in the caller's `inbox.json`, newest first:
 
 ```
-{ id, from, to, cc, subject, sentAt, projectCode, hasParent, supersedes?, supersededBy? }
+{ id, from, to, cc, subject, sentAt, projectCode, hasParent, supersedes?, supersededBy?, fyi?, expectsReply? }
 ```
 
 `hasParent` is `true` when `replyTo` is set, so the UI or agent can indicate "this is part of a thread" without fetching the full message. `supersedes` (when present) lists the predecessor ids that this message consolidates; `supersededBy` (when present) is the id of a later message that consolidates this one.
@@ -378,6 +420,11 @@ so the web dashboard reconstructs threads at read time over the same adapter:
 - Message reads (`/api/messages/batch`, `/api/messages/:id`) carry `questionState` for a message that asks questions;
   thread groups carry `questions: { open, total, waitingOn }` per thread and per message; member summaries carry
   `waitingCount`.
+- Inbox sections (see [Inbox sections](#inbox-sections)): thread groups carry `needsCount` per thread and `needs`
+  (`card`, `reply`, `pin`) plus the sender's `fyi` / `expectsReply` marks per message; member summaries carry
+  `needsCount`. `POST` and `DELETE /api/members/:name/pins/:id` pin and unpin an inbox message (404 when it is not in
+  that inbox). `GET /api/members/:name/search?q=` returns `{ ids }`, the member's archived messages that contain the
+  text.
 - `POST /api/attachments?name=` (raw image bytes → `{ token, name, size, mime }`) and
   `GET /api/messages/:id/attachments/:name` — see [Images](#images).
 
