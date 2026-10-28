@@ -14,6 +14,7 @@ import {
 } from '../lib/attachments.js';
 import Markdown from './Markdown.svelte';
 import { identity } from '../lib/identity.svelte.js';
+import { activeTag, completeTag, insertAtSign, previewTags, suggestions } from '../lib/mentions.js';
 import { router } from '../lib/router.svelte.js';
 import type { MemberSummary, Message, Project } from '../lib/types.js';
 
@@ -22,6 +23,8 @@ let projects = $state<Project[]>([]);
 let loading = $state(true);
 let sending = $state(false);
 let sent = $state(false);
+/** Who the server added to Cc because the body tagged them (from the send result). */
+let addedToCc = $state<string[]>([]);
 let sendError = $state<string | null>(null);
 
 let to = $state<Set<string>>(new Set());
@@ -51,6 +54,66 @@ let dragging = $state(false);
 let bodyEl = $state<HTMLTextAreaElement | null>(null);
 let picker = $state<HTMLInputElement | null>(null);
 let imageCounter = 0;
+
+// ─── @tags ───────────────────────────────────────────────────────────────────
+// Typing `@` shows the matching members as tap targets above the box. The server decides who a message tags
+// (lib/mentions.ts repeats its rule for this preview); a tagged member who is not on the message is added to Cc.
+let caret = $state(0);
+let pick = $state(0);
+/** The `@` index whose strip the person closed with Esc; the strip stays shut for that tag only. */
+let closedAt = $state<number | null>(null);
+
+const tag = $derived(activeTag(body, caret));
+const options = $derived(tag ? suggestions(tag.query, members, { sender: from, limit: 14 }) : []);
+const stripOpen = $derived(!!tag && options.length > 0 && closedAt !== tag.start);
+const tagged = $derived(previewTags(body, members, { sender: from, to: [...to], cc: [...cc] }));
+
+$effect(() => {
+	void tag?.query;
+	pick = 0;
+});
+$effect(() => {
+	if (!tag) closedAt = null;
+});
+
+function syncCaret() {
+	caret = bodyEl?.selectionStart ?? body.length;
+}
+
+async function chooseTag(name: string) {
+	if (!tag) return;
+	const done = completeTag(body, tag, name);
+	body = done.text;
+	await tick();
+	bodyEl?.focus();
+	bodyEl?.setSelectionRange(done.caret, done.caret);
+	caret = done.caret;
+}
+
+/** The "@ Tag" button: for keyboards where `@` is a page away. */
+async function typeAt() {
+	const done = insertAtSign(body, bodyEl?.selectionStart ?? body.length);
+	body = done.text;
+	closedAt = null;
+	await tick();
+	bodyEl?.focus();
+	bodyEl?.setSelectionRange(done.caret, done.caret);
+	caret = done.caret;
+}
+
+function onBodyKey(e: KeyboardEvent) {
+	if (!stripOpen) return;
+	if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+		e.preventDefault();
+		pick = (pick + (e.key === 'ArrowDown' ? 1 : options.length - 1)) % options.length;
+	} else if (e.key === 'Enter' || e.key === 'Tab') {
+		e.preventDefault();
+		void chooseTag(options[Math.min(pick, options.length - 1)].name);
+	} else if (e.key === 'Escape' && tag) {
+		e.preventDefault();
+		closedAt = tag.start;
+	}
+}
 
 const working = $derived(attached.some((a) => a.status === 'working'));
 
@@ -139,7 +202,7 @@ async function send() {
 	sending = true;
 	sendError = null;
 	try {
-		await api.sendMessage({
+		const result = await api.sendMessage({
 			from,
 			to: [...to],
 			cc: cc.size > 0 ? [...cc] : undefined,
@@ -149,6 +212,7 @@ async function send() {
 			projectCode: projectCode || undefined,
 			attachments: readyTokens.length > 0 ? readyTokens : undefined,
 		});
+		addedToCc = result.addedToCc ?? [];
 	} catch (err) {
 		sendError = err instanceof Error ? err.message : String(err);
 		sending = false;
@@ -288,6 +352,8 @@ function reset() {
 	subject = '';
 	projectCode = '';
 	body = '';
+	caret = 0;
+	addedToCc = [];
 	sent = false;
 	sendError = null;
 	dropAttached();
@@ -307,6 +373,9 @@ function reset() {
 		<div class="sent-confirmation">
 			<div class="sent-icon">&#10003;</div>
 			<p>Message sent to {[...to].join(', ')}</p>
+			{#if addedToCc.length > 0}
+				<p class="sent-tagged">Tagged and added to Cc: {addedToCc.join(', ')}</p>
+			{/if}
 			<div class="sent-actions">
 				<button class="btn btn-primary" onclick={reset}>Compose Another</button>
 				<button class="btn btn-ghost" onclick={() => router.navigate(backPath)}>
@@ -351,6 +420,9 @@ function reset() {
 						{member.name}
 					</button>
 				{/each}
+				{#each tagged.addedToCc as name (name)}
+					<span class="recipient tagged-chip" title="Tagged in the message: added to Cc when you send">+ {name} (tagged)</span>
+				{/each}
 			</div>
 		</div>
 
@@ -389,7 +461,7 @@ function reset() {
 						<span class="reply-subject">{replyMessage.subject}</span>
 					{/if}
 				</div>
-				<div class="reply-body"><Markdown source={replyMessage.body} links={replyMessage.links} /></div>
+				<div class="reply-body"><Markdown source={replyMessage.body} links={replyMessage.links} mentions={replyMessage.mentions} /></div>
 			</div>
 		{/if}
 
@@ -401,10 +473,33 @@ function reset() {
 
 		<div class="form-group">
 			<label class="label" for="body">Message</label>
+			{#if stripOpen}
+				<div class="tag-strip" role="listbox" aria-label="Tag a member" data-testid="tag-strip">
+					{#each options as option, i (option.name)}
+						<button
+							type="button"
+							class="tag-option"
+							class:picked={i === pick}
+							role="option"
+							aria-selected={i === pick}
+							onmousedown={(e) => e.preventDefault()}
+							onclick={() => chooseTag(option.name)}
+						>
+							<span class="tag-name">@{option.name}</span>
+							{#if option.title}<span class="tag-title">{option.title}</span>{/if}
+						</button>
+					{/each}
+				</div>
+			{/if}
 			<textarea
 				id="body"
 				bind:this={bodyEl}
 				bind:value={body}
+				onkeydown={onBodyKey}
+				onkeyup={syncCaret}
+				onclick={syncCaret}
+				oninput={syncCaret}
+				onfocus={syncCaret}
 				rows="10"
 				class:dragging
 				placeholder={limits
@@ -415,8 +510,9 @@ function reset() {
 				ondragleave={() => (dragging = false)}
 				ondrop={onDrop}
 			></textarea>
-			{#if limits}
-				<div class="attach-bar">
+			<div class="attach-bar">
+				<button type="button" class="btn btn-ghost add-image tag-button" onclick={typeAt} onmousedown={(e) => e.preventDefault()}>@ Tag</button>
+				{#if limits}
 					<button type="button" class="btn btn-ghost add-image" onclick={() => picker?.click()}>Add image</button>
 					<input
 						bind:this={picker}
@@ -427,7 +523,16 @@ function reset() {
 						onchange={onPick}
 					/>
 					<span class="attach-hint">png, jpg, gif, webp; photos are shrunk to {LONG_SIDE}px; up to {limits.maxCount} per message, {megabytes(limits.maxBytes)} each</span>
+				{/if}
+			</div>
+			{#if tagged.mentioned.length > 0}
+				<div class="tag-note" role="status" data-testid="tag-note">
+					Tagged {tagged.mentioned.map((n) => `@${n}`).join(', ')}.
+					{#if tagged.addedToCc.length > 0}{tagged.addedToCc.join(', ')} will be added to Cc.{/if}
+					They see it in Needs you until they reply.
 				</div>
+			{/if}
+			{#if limits}
 				{#if attachNotice}
 					<div class="attach-notice" role="status">{attachNotice}</div>
 				{/if}
@@ -551,6 +656,43 @@ function reset() {
 		font-size: 0.8rem;
 	}
 	.attach-hint { font-size: 0.75rem; color: var(--text-muted); }
+
+	/* @tags: the members to tap sit in a scrolling row above the box, so the phone keyboard never covers them. */
+	.tag-strip {
+		display: flex;
+		gap: 0.375rem;
+		overflow-x: auto;
+		padding-bottom: 0.375rem;
+		margin-bottom: 0.125rem;
+		-webkit-overflow-scrolling: touch;
+	}
+	.tag-option {
+		flex: none;
+		display: flex;
+		flex-direction: column;
+		align-items: flex-start;
+		min-height: 44px;
+		padding: 0.3rem 0.75rem;
+		border: 1px solid var(--border);
+		border-radius: var(--radius);
+		background: var(--surface);
+		text-align: left;
+	}
+	.tag-option.picked, .tag-option:hover { border-color: var(--primary); background: var(--primary-subtle); }
+	.tag-name { font-size: 0.85rem; font-weight: 600; color: var(--text); }
+	.tag-title { font-size: 0.7rem; color: var(--text-muted); white-space: nowrap; }
+	.tag-button { font-weight: 600; color: var(--primary); }
+	.tag-note {
+		margin-top: 0.375rem;
+		padding: 0.375rem 0.625rem;
+		border-radius: var(--radius);
+		border: 1px dashed var(--primary);
+		background: var(--primary-subtle);
+		font-size: 0.8rem;
+		color: var(--text);
+	}
+	.recipient.tagged-chip { border-style: dashed; color: var(--primary); cursor: default; }
+	.sent-tagged { font-size: 0.9rem; color: var(--text-muted); margin-top: -1rem; }
 	.attach-notice { margin-top: 0.375rem; font-size: 0.8rem; color: var(--danger, #dc2626); }
 	.tray { list-style: none; margin: 0.5rem 0 0; padding: 0; display: flex; flex-direction: column; gap: 0.375rem; }
 	.tray-item {

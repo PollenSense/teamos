@@ -193,7 +193,8 @@ export const api = {
 	threads: (name: string) => get<Thread[]>(`/api/members/${encodeURIComponent(name)}/threads`),
 	/** Bodies for a whole thread in one request. */
 	messagesBatch: (ids: string[]) => post<Message[]>('/api/messages/batch', { ids }),
-	sendMessage: (msg: SendMessageArgs) => post<{ id: string; sentAt: string }>('/api/messages', msg),
+	sendMessage: (msg: SendMessageArgs) =>
+		post<{ id: string; sentAt: string; mentioned?: string[]; addedToCc?: string[] }>('/api/messages', msg),
 	/** Card taps: answers (or dismissals) to the questions of message `askId`. The reply goes to the asker only. */
 	answerQuestions: (askId: string, answers: AnswerInput[], from: string) =>
 		post<{ id: string; sentAt: string }>(`/api/messages/${encodeURIComponent(askId)}/answers`, { from, answers }),

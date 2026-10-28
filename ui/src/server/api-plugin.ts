@@ -18,6 +18,8 @@ interface MessageSummary {
 	supersededBy?: string;
 	fyi?: boolean;
 	expectsReply?: boolean;
+	/** Members the body tags with @name (see scripts/lib/messaging/mentions.mjs). */
+	mentions?: string[];
 }
 
 type MailBox = 'inbox' | 'sent' | 'archives';
@@ -43,7 +45,9 @@ interface ThreadMessage {
 	/** The sender's marks: nothing needed (`fyi`) or a written answer wanted (`expectsReply`). */
 	fyi?: boolean;
 	expectsReply?: boolean;
-	/** Why this message needs the viewed member (`card`, `reply`, `pin`); absent when it does not. */
+	/** Members the body tags with @name. */
+	mentions?: string[];
+	/** Why this message needs the viewed member (`card`, `reply`, `mention`, `pin`); absent when it does not. */
 	needs?: string[];
 }
 
@@ -135,6 +139,8 @@ interface Message {
 	projectCode?: string;
 	fyi?: boolean;
 	expectsReply?: boolean;
+	/** Members the body tags with @name. */
+	mentions?: string[];
 	body: string;
 	/** Names of the images stored with the message. */
 	attachments?: string[];
@@ -910,6 +916,7 @@ export function teamosApi(opts: ApiOptions): Plugin {
 					questions: counts(m),
 					...(m.fyi ? { fyi: true } : {}),
 					...(m.expectsReply ? { expectsReply: true } : {}),
+					...(m.mentions?.length ? { mentions: m.mentions } : {}),
 					...(sections.needs[m.id] ? { needs: sections.needs[m.id] } : {}),
 				})),
 			});

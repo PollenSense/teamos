@@ -78,12 +78,14 @@ describe('sections', () => {
 	});
 
 	it('a row says why it needs me, except for cards (the question chip does that)', () => {
-		const m = (needs?: ('card' | 'reply' | 'pin')[]) => ({ id: 'x', needs }) as never;
+		const m = (needs?: ('card' | 'reply' | 'mention' | 'pin')[]) => ({ id: 'x', needs }) as never;
 		assert.deepEqual(rowReasons({ messages: [m(['card']), m(), m(['pin', 'reply'])] }), ['reply', 'pin']);
+		assert.deepEqual(rowReasons({ messages: [m(['pin']), m(['mention'])] }), ['mention', 'pin']);
 		assert.deepEqual(rowReasons({ messages: [m(['card'])] }), []);
 		assert.deepEqual(rowReasons({ messages: [] }), []);
 		assert.equal(reasonWord('reply'), 'reply wanted');
 		assert.equal(reasonWord('pin'), 'pinned');
+		assert.equal(reasonWord('mention'), 'tagged you');
 	});
 
 	it('labels: the member card number, the reasons, the sender marks', () => {
@@ -92,6 +94,7 @@ describe('sections', () => {
 		assert.equal(needsLabel('nate', 'van', 1), '1 needs nate');
 		assert.equal(needsLabel('nate', null, 3), '3 need nate');
 		assert.equal(reasonsText(['card', 'pin']), 'open question, pinned');
+		assert.equal(reasonsText(['mention', 'pin']), 'tagged you, pinned');
 		assert.equal(reasonsText(undefined), '');
 		assert.equal(markBadge({ fyi: true })?.label, 'FYI');
 		assert.equal(markBadge({ expectsReply: true })?.label, 'reply wanted');

@@ -33,6 +33,8 @@ export interface MessageSummary {
 	supersededBy?: string;
 	fyi?: boolean;
 	expectsReply?: boolean;
+	/** Members the body tags with @name. */
+	mentions?: string[];
 }
 
 export interface Message {
@@ -49,6 +51,8 @@ export interface Message {
 	/** The sender's marks: nothing needed (`fyi`), or a written answer wanted (`expectsReply`). */
 	fyi?: boolean;
 	expectsReply?: boolean;
+	/** Members the body tags with @name; the viewer highlights them and each was added to Cc if needed. */
+	mentions?: string[];
 	/** Names of the images stored with the message (`team/messages/attachments/<id>/`); the body shows them. */
 	attachments?: string[];
 	/** Questions the message asks (see lib/questions.ts) and, on the way out, where each one stands. */
@@ -82,11 +86,12 @@ export interface ThreadMessage {
 	questions?: { open: number; total: number };
 	fyi?: boolean;
 	expectsReply?: boolean;
-	/** Why it needs the viewed member: `card`, `reply`, `pin`. Absent when it does not (FYI, or not theirs). */
+	mentions?: string[];
+	/** Why it needs the viewed member: `card`, `reply`, `mention`, `pin`. Absent when it does not (FYI, or not theirs). */
 	needs?: NeedsReason[];
 }
 
-export type NeedsReason = 'card' | 'reply' | 'pin';
+export type NeedsReason = 'card' | 'reply' | 'mention' | 'pin';
 
 /** Messages sharing a subject, with their reply chains resolved through the master store. */
 export interface Thread {
