@@ -122,3 +122,43 @@ describe('insertAtSign', () => {
 		assert.deepEqual(activeTag(r.text, r.caret), { start: 12, end: 13, query: '' });
 	});
 });
+
+describe('parity with the server rule', () => {
+	// A seeded generator of messy markdown: every disagreement between this file and mentions.mjs would show here.
+	const pieces = ['@', '@nate', '@van', '@Sal', '@old', 'nate', ' ', '  ', '    ', '\t', '\n', '\n\n', '\r\n', '`', '``', '```', '~~~', '>', '> ', '-', '- ', '1. ', '#', '# ', '[', ']', '(', ')', '![', '](', '/', '.', '_', 'x', 'a@nate', '**', '<', '"', ',', '!'];
+	function* bodies(count: number) {
+		let seed = 20261028;
+		const rand = () => {
+			seed = (seed + 0x6d2b79f5) | 0;
+			let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+			t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+			return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+		};
+		for (let i = 0; i < count; i++) {
+			const n = 1 + Math.floor(rand() * 24);
+			let body = '';
+			for (let j = 0; j < n; j++) body += pieces[Math.floor(rand() * pieces.length)];
+			yield body;
+		}
+	}
+
+	it('finds the same tags and masks the same text as scripts/lib/messaging/mentions.mjs on 6000 random bodies', async () => {
+		const server = await import(new URL('../../scripts/lib/messaging/mentions.mjs', import.meta.url).href);
+		for (const body of bodies(6000)) {
+			assert.equal(maskNonProse(body), server.maskNonProse(body), JSON.stringify(body));
+			assert.deepEqual(findMentions(body, table.roster, { sender: 'kris' }), server.findMentions(body, table.roster, { sender: 'kris' }), JSON.stringify(body));
+		}
+	});
+});
+
+describe('long input', () => {
+	it('is read in time proportional to its length', () => {
+		for (const piece of ['`', '[', '@', '[a](', '``a`', '> ', '- ', '    ', '```\n']) {
+			const body = `x${piece.repeat(Math.ceil(300000 / piece.length))}`;
+			const t = Date.now();
+			findMentions(body, roster);
+			activeTag(body, body.length);
+			assert.ok(Date.now() - t < 2500, `${JSON.stringify(piece)} took ${Date.now() - t} ms`);
+		}
+	});
+});

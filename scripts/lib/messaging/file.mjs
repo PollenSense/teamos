@@ -64,21 +64,29 @@ function parseFrontmatter(content) {
 	return { metadata, body: match[2].trim() };
 }
 
+/**
+ * A frontmatter value on one line. A line break in a subject, a project code or a name would start a new
+ * frontmatter line (`mentions: [..]`, `fyi: true`), so a caller could write fields the server alone is meant to set.
+ */
+function oneLine(value) {
+	return String(value ?? '').replace(/[\r\n\u2028\u2029]+/g, ' ');
+}
+
 function serializeMessage(msg) {
 	const lines = ['---'];
-	lines.push(`id: ${msg.id}`);
-	lines.push(`from: ${msg.from}`);
-	lines.push(`to: [${(msg.to ?? []).join(', ')}]`);
-	if (msg.cc?.length) lines.push(`cc: [${msg.cc.join(', ')}]`);
-	lines.push(`subject: ${msg.subject ?? ''}`);
-	lines.push(`sentAt: ${msg.sentAt}`);
-	if (msg.replyTo) lines.push(`replyTo: ${msg.replyTo}`);
-	if (msg.supersedes?.length) lines.push(`supersedes: [${msg.supersedes.join(', ')}]`);
-	if (msg.supersededBy) lines.push(`supersededBy: ${msg.supersededBy}`);
-	if (msg.projectCode) lines.push(`projectCode: ${msg.projectCode}`);
+	lines.push(`id: ${oneLine(msg.id)}`);
+	lines.push(`from: ${oneLine(msg.from)}`);
+	lines.push(`to: [${(msg.to ?? []).map(oneLine).join(', ')}]`);
+	if (msg.cc?.length) lines.push(`cc: [${msg.cc.map(oneLine).join(', ')}]`);
+	lines.push(`subject: ${oneLine(msg.subject)}`);
+	lines.push(`sentAt: ${oneLine(msg.sentAt)}`);
+	if (msg.replyTo) lines.push(`replyTo: ${oneLine(msg.replyTo)}`);
+	if (msg.supersedes?.length) lines.push(`supersedes: [${msg.supersedes.map(oneLine).join(', ')}]`);
+	if (msg.supersededBy) lines.push(`supersededBy: ${oneLine(msg.supersededBy)}`);
+	if (msg.projectCode) lines.push(`projectCode: ${oneLine(msg.projectCode)}`);
 	if (msg.fyi) lines.push('fyi: true');
 	if (msg.expectsReply) lines.push('expectsReply: true');
-	if (msg.mentions?.length) lines.push(`mentions: [${msg.mentions.join(', ')}]`);
+	if (msg.mentions?.length) lines.push(`mentions: [${msg.mentions.map(oneLine).join(', ')}]`);
 	if (msg.attachments?.length) lines.push(`attachments: [${msg.attachments.join(', ')}]`);
 	if (msg.questions?.length) lines.push(`questions: ${JSON.stringify(msg.questions)}`);
 	if (msg.answers?.length) lines.push(`answers: ${JSON.stringify(msg.answers)}`);

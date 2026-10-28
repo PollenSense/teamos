@@ -62,6 +62,8 @@ let caret = $state(0);
 let pick = $state(0);
 /** The `@` index whose strip the person closed with Esc; the strip stays shut for that tag only. */
 let closedAt = $state<number | null>(null);
+/** The arrow keys moved the highlight: only then does Enter or Tab on a bare `@` take a name instead of its usual job. */
+let navigated = $state(false);
 
 const tag = $derived(activeTag(body, caret));
 const options = $derived(tag ? suggestions(tag.query, members, { sender: from, limit: 14 }) : []);
@@ -71,6 +73,7 @@ const tagged = $derived(previewTags(body, members, { sender: from, to: [...to], 
 $effect(() => {
 	void tag?.query;
 	pick = 0;
+	navigated = false;
 });
 $effect(() => {
 	if (!tag) closedAt = null;
@@ -102,11 +105,14 @@ async function typeAt() {
 }
 
 function onBodyKey(e: KeyboardEvent) {
-	if (!stripOpen) return;
+	// An input method composing text (pinyin, Safari) owns Enter; Shift+Tab, Ctrl/Meta/Alt+Enter keep their usual jobs.
+	if (!stripOpen || e.isComposing) return;
+	const plain = !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey;
 	if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
 		e.preventDefault();
+		navigated = true;
 		pick = (pick + (e.key === 'ArrowDown' ? 1 : options.length - 1)) % options.length;
-	} else if (e.key === 'Enter' || e.key === 'Tab') {
+	} else if ((e.key === 'Enter' || e.key === 'Tab') && plain && (navigated || (tag?.query ?? '') !== '')) {
 		e.preventDefault();
 		void chooseTag(options[Math.min(pick, options.length - 1)].name);
 	} else if (e.key === 'Escape' && tag) {
@@ -263,6 +269,7 @@ async function addFiles(files: File[], where: 'caret' | 'end') {
 	if (bodyEl && where === 'caret') {
 		bodyEl.focus();
 		bodyEl.setSelectionRange(caret, caret);
+		syncCaret();
 	}
 }
 
@@ -362,6 +369,8 @@ function reset() {
 	isReplyAll = false;
 }
 </script>
+
+<svelte:document onselectionchange={() => { if (bodyEl && document.activeElement === bodyEl) syncCaret(); }} />
 
 <div class="compose">
 	<div class="compose-header">
@@ -511,7 +520,7 @@ function reset() {
 				ondrop={onDrop}
 			></textarea>
 			<div class="attach-bar">
-				<button type="button" class="btn btn-ghost add-image tag-button" onclick={typeAt} onmousedown={(e) => e.preventDefault()}>@ Tag</button>
+				<button type="button" class="btn btn-ghost tag-button" onclick={typeAt} onmousedown={(e) => e.preventDefault()}>@ Tag</button>
 				{#if limits}
 					<button type="button" class="btn btn-ghost add-image" onclick={() => picker?.click()}>Add image</button>
 					<input
@@ -681,7 +690,14 @@ function reset() {
 	.tag-option.picked, .tag-option:hover { border-color: var(--primary); background: var(--primary-subtle); }
 	.tag-name { font-size: 0.85rem; font-weight: 600; color: var(--text); }
 	.tag-title { font-size: 0.7rem; color: var(--text-muted); white-space: nowrap; }
-	.tag-button { font-weight: 600; color: var(--primary); }
+	.tag-button {
+		padding: 0.375rem 0.75rem;
+		border: 1px solid var(--border);
+		border-radius: var(--radius);
+		font-size: 0.8rem;
+		font-weight: 600;
+		color: var(--primary);
+	}
 	.tag-note {
 		margin-top: 0.375rem;
 		padding: 0.375rem 0.625rem;

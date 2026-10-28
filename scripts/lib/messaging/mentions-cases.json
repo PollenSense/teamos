@@ -1,39 +1,292 @@
 {
 	"roster": [
-		{ "name": "kris", "active": true },
-		{ "name": "nate", "active": true },
-		{ "name": "van", "active": true },
-		{ "name": "sal", "active": true },
-		{ "name": "cy", "active": true },
-		{ "name": "devon", "active": true },
-		{ "name": "jonathon", "active": true },
-		{ "name": "old", "active": false }
+		{
+			"name": "kris",
+			"active": true
+		},
+		{
+			"name": "nate",
+			"active": true
+		},
+		{
+			"name": "van",
+			"active": true
+		},
+		{
+			"name": "sal",
+			"active": true
+		},
+		{
+			"name": "cy",
+			"active": true
+		},
+		{
+			"name": "devon",
+			"active": true
+		},
+		{
+			"name": "jonathon",
+			"active": true
+		},
+		{
+			"name": "old",
+			"active": false
+		}
 	],
 	"cases": [
-		{ "name": "a plain tag", "body": "@nate can you look at this?", "expect": ["nate"] },
-		{ "name": "case does not matter, the canonical spelling comes back", "body": "Thanks @Nate and @VAN.", "expect": ["nate", "van"] },
-		{ "name": "order of first appearance, no repeats", "body": "@van then @nate then @van again", "expect": ["van", "nate"] },
-		{ "name": "after a bracket, a quote mark, a comma or a bold mark", "body": "(@nate) \"@kris\" ok,@devon **@cy**", "expect": ["nate", "kris", "devon", "cy"] },
-		{ "name": "at the start of a later line", "body": "Hello\n@nate please", "expect": ["nate"] },
-		{ "name": "end of a sentence", "body": "Ask @sal. Or @kris!", "expect": ["sal", "kris"] },
-		{ "name": "an email address is not a tag", "body": "mail van@pollensense.com and nate@pollensense.com", "expect": [] },
-		{ "name": "a URL path is not a tag", "body": "see https://example.com/@nate and https://x.dev/path/@van", "expect": [] },
-		{ "name": "a longer word is not a tag", "body": "the @salary field and @vanilla and @cyber", "expect": [] },
-		{ "name": "joined by a hyphen, a dot or an underscore to more word is not a tag", "body": "@sal-ary @sal.smith @sal_x", "expect": [] },
-		{ "name": "a possessive still tags", "body": "@nate's decision", "expect": ["nate"] },
-		{ "name": "not a member", "body": "@types/node and @someone and @all", "expect": [] },
-		{ "name": "an inactive member cannot be tagged", "body": "@old is gone", "expect": [] },
-		{ "name": "inside an inline code span", "body": "run `echo @nate` now, but @kris", "expect": ["kris"] },
-		{ "name": "inside a double-backtick span", "body": "``a `@nate` b`` and @van", "expect": ["van"] },
-		{ "name": "inside a fenced code block", "body": "before\n```\n@nate\n```\nafter @kris", "expect": ["kris"] },
-		{ "name": "inside a tilde fence with a language", "body": "~~~sh\n@nate\n~~~\n@van", "expect": ["van"] },
-		{ "name": "an unclosed fence hides the rest", "body": "@kris\n```\n@nate\n@van", "expect": ["kris"] },
-		{ "name": "a quote line is not a tag, the next line is", "body": "> @nate wrote this\n@van replies", "expect": ["van"] },
-		{ "name": "a lone backtick does not hide the text", "body": "it`s @nate", "expect": ["nate"] },
-		{ "name": "the sender tagging themself is ignored", "body": "I (@cy) asked @nate", "sender": "cy", "expect": ["nate"] },
-		{ "name": "two tags in a row", "body": "@nate @kris", "expect": ["nate", "kris"] },
-		{ "name": "a tag at the very start and a trailing at-sign", "body": "@jonathon @", "expect": ["jonathon"] },
-		{ "name": "digits after the name make it another word", "body": "@nate2 and @van1", "expect": [] },
-		{ "name": "empty and missing bodies", "body": "", "expect": [] }
+		{
+			"name": "a plain tag",
+			"body": "@nate can you look at this?",
+			"expect": [
+				"nate"
+			]
+		},
+		{
+			"name": "case does not matter, the canonical spelling comes back",
+			"body": "Thanks @Nate and @VAN.",
+			"expect": [
+				"nate",
+				"van"
+			]
+		},
+		{
+			"name": "order of first appearance, no repeats",
+			"body": "@van then @nate then @van again",
+			"expect": [
+				"van",
+				"nate"
+			]
+		},
+		{
+			"name": "after a bracket, a quote mark, a comma or a bold mark",
+			"body": "(@nate) \"@kris\" ok,@devon **@cy**",
+			"expect": [
+				"nate",
+				"kris",
+				"devon",
+				"cy"
+			]
+		},
+		{
+			"name": "at the start of a later line",
+			"body": "Hello\n@nate please",
+			"expect": [
+				"nate"
+			]
+		},
+		{
+			"name": "end of a sentence",
+			"body": "Ask @sal. Or @kris!",
+			"expect": [
+				"sal",
+				"kris"
+			]
+		},
+		{
+			"name": "an email address is not a tag",
+			"body": "mail van@pollensense.com and nate@pollensense.com",
+			"expect": []
+		},
+		{
+			"name": "a URL path is not a tag",
+			"body": "see https://example.com/@nate and https://x.dev/path/@van",
+			"expect": []
+		},
+		{
+			"name": "a longer word is not a tag",
+			"body": "the @salary field and @vanilla and @cyber",
+			"expect": []
+		},
+		{
+			"name": "joined by a hyphen, a dot or an underscore to more word is not a tag",
+			"body": "@sal-ary @sal.smith @sal_x",
+			"expect": []
+		},
+		{
+			"name": "a possessive still tags",
+			"body": "@nate's decision",
+			"expect": [
+				"nate"
+			]
+		},
+		{
+			"name": "not a member",
+			"body": "@types/node and @someone and @all",
+			"expect": []
+		},
+		{
+			"name": "an inactive member cannot be tagged",
+			"body": "@old is gone",
+			"expect": []
+		},
+		{
+			"name": "inside an inline code span",
+			"body": "run `echo @nate` now, but @kris",
+			"expect": [
+				"kris"
+			]
+		},
+		{
+			"name": "inside a double-backtick span",
+			"body": "``a `@nate` b`` and @van",
+			"expect": [
+				"van"
+			]
+		},
+		{
+			"name": "inside a fenced code block",
+			"body": "before\n```\n@nate\n```\nafter @kris",
+			"expect": [
+				"kris"
+			]
+		},
+		{
+			"name": "inside a tilde fence with a language",
+			"body": "~~~sh\n@nate\n~~~\n@van",
+			"expect": [
+				"van"
+			]
+		},
+		{
+			"name": "an unclosed fence hides the rest",
+			"body": "@kris\n```\n@nate\n@van",
+			"expect": [
+				"kris"
+			]
+		},
+		{
+			"name": "a quote line is not a tag, nor the line that continues it; a line after a blank is",
+			"body": "> @nate wrote this\n@van still in the quote\n\n@kris after the quote",
+			"expect": [
+				"kris"
+			]
+		},
+		{
+			"name": "a lone backtick does not hide the text",
+			"body": "it`s @nate",
+			"expect": [
+				"nate"
+			]
+		},
+		{
+			"name": "the sender tagging themself is ignored",
+			"body": "I (@cy) asked @nate",
+			"sender": "cy",
+			"expect": [
+				"nate"
+			]
+		},
+		{
+			"name": "two tags in a row",
+			"body": "@nate @kris",
+			"expect": [
+				"nate",
+				"kris"
+			]
+		},
+		{
+			"name": "a tag at the very start and a trailing at-sign",
+			"body": "@jonathon @",
+			"expect": [
+				"jonathon"
+			]
+		},
+		{
+			"name": "digits after the name make it another word",
+			"body": "@nate2 and @van1",
+			"expect": []
+		},
+		{
+			"name": "empty and missing bodies",
+			"body": "",
+			"expect": []
+		},
+		{
+			"name": "a list item or a heading ends a quote",
+			"body": "> @nate\n- @van\n> @kris\n# @sal",
+			"expect": [
+				"van",
+				"sal"
+			]
+		},
+		{
+			"name": "an indented code block is not a tag",
+			"body": "Example:\n\n    @nate in code\n\n@van",
+			"expect": [
+				"van"
+			]
+		},
+		{
+			"name": "an indented line that continues a paragraph is prose",
+			"body": "para\n    @nate",
+			"expect": [
+				"nate"
+			]
+		},
+		{
+			"name": "a nested list item is prose",
+			"body": "- item\n    - @nate",
+			"expect": [
+				"nate"
+			]
+		},
+		{
+			"name": "a paragraph inside a list item is prose",
+			"body": "- item\n\n    @nate please",
+			"expect": [
+				"nate"
+			]
+		},
+		{
+			"name": "a fence indented four spaces still hides its content",
+			"body": "    ```\n    @nate\n    ```\n@van",
+			"expect": [
+				"van"
+			]
+		},
+		{
+			"name": "a code span can run across lines",
+			"body": "a `x\n@nate y` @van",
+			"expect": [
+				"van"
+			]
+		},
+		{
+			"name": "a quote inside a list item is not a tag",
+			"body": "- > @nate\n- @van",
+			"expect": [
+				"van"
+			]
+		},
+		{
+			"name": "link text, image text and addresses are not tags",
+			"body": "[@nate](http://x) and ![@kris shot](a.png) then @van",
+			"expect": [
+				"van"
+			]
+		},
+		{
+			"name": "an unclosed bracket does not hide the rest",
+			"body": "[@nate and @van",
+			"expect": [
+				"nate",
+				"van"
+			]
+		},
+		{
+			"name": "CRLF line endings",
+			"body": "@nate\r\n\r\n> @kris\r\n\r\n@van",
+			"expect": [
+				"nate",
+				"van"
+			]
+		},
+		{
+			"name": "a heading is prose",
+			"body": "# @nate",
+			"expect": [
+				"nate"
+			]
+		}
 	]
 }

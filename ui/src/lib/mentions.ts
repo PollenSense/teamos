@@ -17,25 +17,159 @@ export interface Roster {
 const BEFORE_OK = new Set([...' \t(["\'<{*_~,;:!?—–‘“-']);
 const WORD = /^[A-Za-z0-9_]$/;
 
-/** The body with fenced code blocks, inline code spans and `>` quote lines blanked out (same length). */
+/** `text` with every character but the line breaks replaced by a space (same length, so positions line up). */
+const blanked = (text: string) => text.replace(/[^\n]/g, ' ');
+
+/**
+ * Blank `from..to` of `chars` (an array of single characters), keeping line breaks.
+ */
+function blankRange(chars: string[], from: number, to: number): void {
+	for (let i = from; i < to; i++) if (chars[i] !== '\n') chars[i] = ' ';
+}
+
+/**
+ * Inline code spans (a run of backticks up to the next run of the same length, across lines of one paragraph) and
+ * markdown links and images (`[text](address)`, text and address both) blanked out. One pass over the text with
+ * cached lookups, so a long run of backticks or brackets costs time in proportion to its length, not its square.
+ */
+function maskInline(text: string): string {
+	const chars = [...text];
+	// Code spans. A run with no later run of the same length is plain text.
+	const runs: { start: number; len: number }[] = [];
+	for (let i = 0; i < chars.length; ) {
+		if (chars[i] !== '`') {
+			i++;
+			continue;
+		}
+		let j = i;
+		while (chars[j] === '`') j++;
+		runs.push({ start: i, len: j - i });
+		i = j;
+	}
+	const byLen = new Map<number, number[]>();
+	runs.forEach((run, index) => {
+		if (!byLen.has(run.len)) byLen.set(run.len, []);
+		byLen.get(run.len)?.push(index);
+	});
+	const seen = new Map<number, number>();
+	for (let r = 0; r < runs.length; ) {
+		const same = byLen.get(runs[r].len) as number[];
+		let p = seen.get(runs[r].len) ?? 0;
+		while (p < same.length && same[p] <= r) p++;
+		seen.set(runs[r].len, p);
+		if (p < same.length) {
+			const close = runs[same[p]];
+			blankRange(chars, runs[r].start, close.start + close.len);
+			r = same[p] + 1;
+		} else {
+			r++;
+		}
+	}
+	// Links and images, outside the code spans just blanked. `close` caches the next `]`; `parenGone` the fact
+	// that no `)` is left anywhere, so an unclosed `[a](` repeated many times is not searched for each time.
+	let close = -2;
+	let parenGone = false;
+	for (let i = 0; i < chars.length; ) {
+		const open = chars[i] === '[' ? i : chars[i] === '!' && chars[i + 1] === '[' ? i + 1 : -1;
+		if (open < 0) {
+			i++;
+			continue;
+		}
+		if (close < open) {
+			close = chars.indexOf(']', open);
+			if (close === -1) break;
+		}
+		if (chars[close + 1] === '(' && !parenGone) {
+			const end = chars.indexOf(')', close + 2);
+			if (end === -1) parenGone = true;
+			else {
+				blankRange(chars, i, end + 1);
+				i = end + 1;
+				continue;
+			}
+		}
+		i = open + 1;
+	}
+	return chars.join('');
+}
+
+const FENCE = /^\s*(`{3,}|~{3,})/;
+const QUOTE = /^\s*(?:(?:[-*+]|\d+[.)])\s+)*>/;
+const LIST_ITEM = /^\s*(?:[-*+]|\d+[.)])\s/;
+const BLOCK_START = /^\s*(?:#{1,6}\s|[-*+]\s|\d+[.)]\s|(?:-{3,}|\*{3,}|_{3,})\s*$)/;
+
+/**
+ * The body with everything a tag may not live in blanked out (same length, so positions line up): fenced code blocks
+ * (at any indent), indented code blocks, quote lines (also inside a list item, and the lazy lines that continue a
+ * quote), inline code spans, and the text and address of markdown links and images. This follows what a markdown
+ * renderer shows as code, quote or link, because the dashboard highlights a tag only where it shows as plain text;
+ * where the two could disagree the rule skips, since a tag that is not made is visible on Send and one that is made
+ * by accident is not.
+ */
 export function maskNonProse(body: string): string {
-	let fence: string | null = null;
-	return String(body ?? '')
-		.split('\n')
-		.map((line) => {
-			const open = line.match(/^\s{0,3}(`{3,}|~{3,})/);
-			if (fence) {
-				if (open && open[1][0] === fence[0] && open[1].length >= fence.length && line.trim() === open[1]) fence = null;
-				return ' '.repeat(line.length);
-			}
-			if (open) {
-				fence = open[1];
-				return ' '.repeat(line.length);
-			}
-			if (/^\s{0,3}>/.test(line)) return ' '.repeat(line.length);
-			return line.replace(/(`+)(?:(?!\1)[\s\S])*?\1(?!`)/g, (span) => ' '.repeat(span.length));
-		})
-		.join('\n');
+	const lines = String(body ?? '').split('\n');
+	const kept: string[] = [];
+	let fence: string | null = null; // the fence characters that opened the block we are in
+	let inQuote = false;
+	let afterBlank = true;
+	let afterList = false; // inside list content: indented lines there are not code
+	let afterCode = false;
+	for (const line of lines) {
+		const open = line.match(FENCE);
+		if (fence) {
+			if (open && open[1][0] === fence[0] && open[1].length >= fence.length && line.trim() === open[1]) fence = null;
+			kept.push(blanked(line));
+			continue;
+		}
+		if (open) {
+			fence = open[1];
+			kept.push(blanked(line));
+			inQuote = false;
+			afterBlank = false;
+			continue;
+		}
+		if (line.trim() === '') {
+			kept.push(line);
+			inQuote = false;
+			afterBlank = true;
+			afterCode = false;
+			continue;
+		}
+		const quoted = QUOTE.test(line);
+		const blockStart = BLOCK_START.test(line);
+		const indented = /^(?: {4}|\t)/.test(line);
+		if (quoted || (inQuote && !blockStart && !indented)) {
+			kept.push(blanked(line));
+			inQuote = true;
+			afterBlank = false;
+			continue;
+		}
+		inQuote = false;
+		if (indented && (afterBlank || afterCode) && !afterList) {
+			kept.push(blanked(line));
+			afterCode = true;
+			afterBlank = false;
+			continue;
+		}
+		afterCode = false;
+		afterBlank = false;
+		if (LIST_ITEM.test(line)) afterList = true;
+		else if (!indented) afterList = false;
+		kept.push(line);
+	}
+	// Inline code and links within each paragraph (consecutive lines that were kept as text).
+	const out: string[] = [];
+	for (let i = 0; i < kept.length; ) {
+		if (kept[i].trim() === '') {
+			out.push(kept[i++]);
+			continue;
+		}
+		let j = i;
+		while (j < kept.length && kept[j].trim() !== '') j++;
+		out.push(...maskInline(kept.slice(i, j).join('\n')).split('\n'));
+		i = j;
+	}
+	return out.join('\n');
 }
 
 function canonicalNames(roster: readonly (Roster | string)[] | undefined): Map<string, string> {

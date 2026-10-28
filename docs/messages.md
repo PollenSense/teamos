@@ -250,8 +250,12 @@ for the preview, and both are tested against the same table (`scripts/lib/messag
 - **What is a tag.** `@name` where `name` is an *active* member of `members.json` (case-insensitive; the canonical
   spelling is stored), the `@` starts a line or follows a space or an opening or separating mark (so `van@host.com` and
   `https://host/@nate` are not tags), the name is not joined to more word (`@salary` is not `@sal`; `@sal-ary` and
-  `@sal.smith` are not either, `@sal.` at a sentence end is), the text is not in a code span, a fenced block or a `>`
-  quote line, and the sender never tags themself. `@all` and inactive members are not tags.
+  `@sal.smith` are not either, `@sal.` at a sentence end is), the text is not code, a quote or a link (fenced and
+  indented code blocks, inline code spans also across lines, `>` quote lines with the lines that continue them, the
+  text and address of `[text](address)` and `![alt](address)`), and the sender never tags themself. `@all` and
+  inactive members are not tags. The rule follows what a markdown renderer shows as code, quote or link, because the
+  dashboard highlights a tag only where it shows as plain text; where the two could disagree it skips, since a tag that
+  is not made shows on Send (the result and the preview) and one made by accident does not.
 - **What a tag does.** The tagged names are stored as `mentions: [..]` in the frontmatter (only when there are any;
   old messages have none and nothing migrates). A tagged member who is in neither To nor Cc is appended to Cc, before
   the parties are validated. For a person the message gets the Needs-you reason `mention` until they reply in the
@@ -261,6 +265,12 @@ for the preview, and both are tested against the same table (`scripts/lib/messag
   `send_message` result also lists the added names in `cc`. Listings carry `mentions` on the summary, only when set.
 - **Refused.** A message marked `fyi` that tags someone (400): a tag asks the person to look, so "nothing needed" and
   a tag cannot both be true. The agent writes the plain name instead of the `@`, or drops the mark.
+- **Records tag nobody.** A body that is a record, not a request, is sent with `tags: false` (a server-side option, not
+  an MCP or dashboard argument): the archived chat transcript, and the reply the dashboard writes when someone taps a
+  question card (it repeats the question text). The dashboard's `POST /api/messages` passes on only the message's own
+  fields, so a browser cannot switch the rule off.
+- **One line per value.** Frontmatter values are written on one line (a line break in a subject, project code or name
+  would start a new frontmatter line, such as `mentions:`).
 - **Watching use.** One line per tag in `team/.logs/mentions.log`: time, sender, tagged, message id, whether Cc was
   added. Never the text. Agents tagging each other in status updates would wake each other, which the agent rule
   (tag only to bring someone in or to ask them for something) and this log are there to catch.

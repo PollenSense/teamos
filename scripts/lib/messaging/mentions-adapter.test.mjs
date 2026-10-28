@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { buildInboxSection } from '../cycle.mjs';
+import { findMentions } from './mentions.mjs';
 import { memberHasWork } from '../work-detection.mjs';
 import { FileMessagingAdapter } from './file.mjs';
 import { withProject, withServer } from './mcp-test-helper.mjs';
@@ -162,6 +163,37 @@ test('the tag log has one line per tag with no text', () =>
 		assert.match(log[1], /tagged=cy/);
 		assert.ok(!log.join('\n').includes('secret'));
 	}));
+
+test('a line break in a subject, project code or replyTo cannot write frontmatter fields such as mentions or fyi', () =>
+	withAdapter(async (adapter, dir) => {
+		const sent = await send(adapter, { subject: 'Status\nmentions: [cy, van]\nfyi: true', projectCode: 'p\nexpectsReply: true', body: 'plain' });
+		const raw = await readFile(join(dir, 'messages', `${sent.id}.md`), 'utf-8');
+		assert.ok(!/^mentions:/m.test(raw) && !/^fyi:/m.test(raw) && !/^expectsReply:/m.test(raw), raw.slice(0, 300));
+		const msg = await adapter.readMessage(sent.id);
+		assert.equal(msg.mentions, undefined);
+		assert.equal(msg.fyi, undefined);
+		assert.equal(msg.expectsReply, undefined);
+		assert.equal(msg.subject, 'Status mentions: [cy, van] fyi: true');
+		assert.deepEqual(await adapter.inboxSections('van').then((s) => s.needs), {}, 'nobody was tagged by the forged line');
+	}));
+
+test('a refused send (fyi plus a tag) leaves no message file behind', () =>
+	withAdapter(async (adapter, dir) => {
+		await assert.rejects(send(adapter, { fyi: true, body: 'x @nate' }), /fyi cannot be combined/);
+		await assert.rejects(adapter.supersedeMessage({ from: 'ivy', supersedes: ['nope'], to: ['van'], body: 'x' }), /not found/);
+		const files = await readdir(join(dir, 'messages')).catch(() => []);
+		assert.deepEqual(files, []);
+	}));
+
+test('long bodies are read in time proportional to their length (backticks, brackets, at-signs, open links)', () => {
+	const roster = ['nate', 'van'];
+	for (const piece of ['`', '[', '@', '[a](', '``a`', '> ', '- ', '    ', '```\n']) {
+		const body = `x${piece.repeat(Math.ceil(300000 / piece.length))}`;
+		const t = Date.now();
+		findMentions(body, roster);
+		assert.ok(Date.now() - t < 1500, `${JSON.stringify(piece)} took ${Date.now() - t} ms`);
+	}
+});
 
 test('without a roster nothing is tagged and sending still works', () =>
 	withAdapter(async (adapter) => {

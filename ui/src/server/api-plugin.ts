@@ -164,6 +164,8 @@ interface MessagingAdapter {
 		replyTo?: string;
 		projectCode?: string;
 		answers?: { ask: string; q: string; option?: number; other?: string; dismissed?: boolean }[];
+		/** `false`: the body is a record (a transcript, a reply that repeats question text), so it tags nobody. */
+		tags?: boolean;
 	}): Promise<{ id: string; sentAt: string }>;
 	supersedeMessage(args: {
 		from: string;
@@ -925,6 +927,16 @@ export function teamosApi(opts: ApiOptions): Plugin {
 		return threads;
 	}
 
+	/**
+	 * What a browser may hand to `sendMessage`: the message's own fields and the marks, nothing else. Options that
+	 * belong to the server (`tags`) and anything else in the JSON are dropped, so a caller cannot switch off the
+	 * @tag rule for their own message.
+	 */
+	function sendableFields(msg: Record<string, unknown>) {
+		const { from, to, cc, subject, body, replyTo, projectCode, attachments, questions, answers, fyi, expectsReply } = msg;
+		return { from, to, cc, subject, body, replyTo, projectCode, attachments, questions, answers, fyi, expectsReply } as Parameters<typeof sendMessage>[0];
+	}
+
 	async function sendMessage(msg: {
 		from: string;
 		to: string[];
@@ -1351,7 +1363,7 @@ export function teamosApi(opts: ApiOptions): Plugin {
 							if (!attachments) return json(res, { error: 'Attachments are not available' }, 400);
 							msg.attachments = await attachments.claim(msg.attachments, msg.from);
 						}
-						const sent = await sendMessage(msg);
+						const sent = await sendMessage(sendableFields(msg));
 						if (attachments && tokens.length > 0) await attachments.release(tokens);
 						return json(res, sent, 201);
 					}
@@ -1434,6 +1446,9 @@ export function teamosApi(opts: ApiOptions): Plugin {
 							replyTo: askId,
 							body: answersBody(ask, entries),
 							answers: entries,
+							// The body repeats the question text, which may name people (@nate): it is a record of the
+							// tap, so it tags nobody.
+							tags: false,
 						});
 						return json(res, sent, 201);
 					}
