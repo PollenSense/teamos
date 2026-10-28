@@ -1,10 +1,11 @@
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
-import { mkdir, readFile, unlink, writeFile } from 'node:fs/promises';
+import { appendFile, mkdir, readFile, unlink, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { pathExists } from '../util.mjs';
 import { applyAttachmentsToBody, isAttachmentName, prepareAttachments, removeAttachments, writeAttachments } from './attachments.mjs';
 import { inboxStatePath, readInboxState, updateInboxState } from './inbox-state.mjs';
 import { classifyInbox, countNeeds, readMarks, repliedIds, textMatches, validateMarks } from './inbox-rules.mjs';
+import { findMentions, missingFromCc, readMentions, refuseTagOnFyi } from './mentions.mjs';
 import { QuestionIndex } from './question-index.mjs';
 import { checkEntry, countQuestions, ensureQuestionsInBody, parseAnswers, readAnswers, readQuestions, validateQuestions, waitingCounts, waitingOn } from './questions.mjs';
 
@@ -77,6 +78,7 @@ function serializeMessage(msg) {
 	if (msg.projectCode) lines.push(`projectCode: ${msg.projectCode}`);
 	if (msg.fyi) lines.push('fyi: true');
 	if (msg.expectsReply) lines.push('expectsReply: true');
+	if (msg.mentions?.length) lines.push(`mentions: [${msg.mentions.join(', ')}]`);
 	if (msg.attachments?.length) lines.push(`attachments: [${msg.attachments.join(', ')}]`);
 	if (msg.questions?.length) lines.push(`questions: ${JSON.stringify(msg.questions)}`);
 	if (msg.answers?.length) lines.push(`answers: ${JSON.stringify(msg.answers)}`);
@@ -104,6 +106,7 @@ function normalizeMessage(metadata, body) {
 		projectCode: typeof metadata.projectCode === 'string' && metadata.projectCode ? metadata.projectCode : undefined,
 		attachments: (Array.isArray(metadata.attachments) ? metadata.attachments : []).filter(isAttachmentName),
 		...readMarks(metadata),
+		...nonEmpty('mentions', readMentions(metadata)),
 		...nonEmpty('questions', readQuestions(metadata.questions)),
 		...nonEmpty('answers', readAnswers(metadata.answers)),
 		body,
@@ -113,6 +116,11 @@ function normalizeMessage(metadata, body) {
 /** `{ [key]: list }` when the list has anything in it; otherwise nothing (so plain messages carry no extra keys). */
 function nonEmpty(key, list) {
 	return list.length > 0 ? { [key]: list } : {};
+}
+
+/** What a send tells its caller about tags: `{ mentioned, addedToCc }`, each only when non-empty. */
+function mentionResult({ mentions, addedToCc }) {
+	return { ...nonEmpty('mentioned', mentions), ...nonEmpty('addedToCc', addedToCc) };
 }
 
 function stripReplyPrefix(subject) {
@@ -166,6 +174,47 @@ export class FileMessagingAdapter {
 			return data.members.map((m) => m?.name).filter((n) => typeof n === 'string' && n.length > 0);
 		} catch {
 			return null;
+		}
+	}
+
+	/** `[{ name, active }]` from members.json, or null without a roster (then nothing can be tagged). */
+	async _loadRosterEntries() {
+		try {
+			const data = JSON.parse(await readFile(join(this.teamDir, 'members.json'), 'utf-8'));
+			if (!Array.isArray(data.members)) return null;
+			return data.members
+				.filter((m) => typeof m?.name === 'string' && m.name.length > 0)
+				.map((m) => ({ name: m.name, active: m.active !== false }));
+		} catch {
+			return null;
+		}
+	}
+
+	/**
+	 * @mentions (see mentions.mjs): who `body` tags, and the Cc that results. A tagged member who is in neither To
+	 * nor Cc is appended to Cc, so the message reaches them; a message marked `fyi` that tags someone is refused.
+	 * Runs before the parties are validated so the added Cc is checked like any other. `tags: false` says the body
+	 * is a record, not a request (an archived chat transcript): nothing in it tags anyone.
+	 */
+	async _applyMentions({ from, to, cc, body, fyi, tags }) {
+		const roster = tags === false ? null : await this._loadRosterEntries();
+		if (!roster) return { cc, mentions: [], addedToCc: [] };
+		const mentions = findMentions(body, roster, { sender: from });
+		refuseTagOnFyi(fyi, mentions);
+		const addedToCc = missingFromCc(mentions, to, cc);
+		return { cc: addedToCc.length ? [...(cc ?? []), ...addedToCc] : cc, mentions, addedToCc };
+	}
+
+	/** One line per tag in team/.logs/mentions.log (when, sender, tagged, message id, whether Cc was added; never text). */
+	async _logMentions({ from, id, sentAt, mentions, addedToCc }) {
+		if (mentions.length === 0) return;
+		try {
+			const dir = join(this.teamDir, '.logs');
+			await mkdir(dir, { recursive: true });
+			const lines = mentions.map((m) => `${sentAt} from=${from} tagged=${m} id=${id} addedToCc=${addedToCc.includes(m)}\n`);
+			await appendFile(join(dir, 'mentions.log'), lines.join(''), 'utf-8');
+		} catch {
+			// The log is for watching how tags are used; a full disk must not lose a message.
 		}
 	}
 
@@ -340,11 +389,13 @@ export class FileMessagingAdapter {
 		return summaries.length > 0;
 	}
 
-	async sendMessage({ from, to, cc, subject, body, replyTo, projectCode, attachments, questions, answers, fyi, expectsReply }) {
+	async sendMessage({ from, to, cc, subject, body, replyTo, projectCode, attachments, questions, answers, fyi, expectsReply, tags }) {
 		if (!from) throw new Error('sendMessage: from is required');
 		if (!Array.isArray(to) || to.length === 0) throw new Error('sendMessage: to is required');
 		if (body == null) throw new Error('sendMessage: body is required');
 
+		const tagged = await this._applyMentions({ from, to, cc, body, fyi, tags });
+		cc = tagged.cc;
 		await this._validateParties('sendMessage', from, to, cc);
 
 		let derivedSubject = subject;
@@ -384,6 +435,7 @@ export class FileMessagingAdapter {
 			replyTo,
 			projectCode,
 			...marks,
+			mentions: tagged.mentions,
 			attachments: prepared.map((a) => a.name),
 			questions: checkedQuestions,
 			answers: checkedAnswers,
@@ -396,8 +448,9 @@ export class FileMessagingAdapter {
 			await this._appendToMailbox(recipient, 'inbox', id);
 		}
 		await this._appendToMailbox(from, 'sent', id);
+		await this._logMentions({ from, id, sentAt, ...tagged });
 
-		return { id, sentAt, ...(questionsAppended ? { questionsAppended: true } : {}) };
+		return { id, sentAt, ...mentionResult(tagged), ...(questionsAppended ? { questionsAppended: true } : {}) };
 	}
 
 	/**
@@ -419,7 +472,7 @@ export class FileMessagingAdapter {
 	 * the predecessors reached — otherwise dropped recipients would be left
 	 * with neither the predecessor (if removed from inbox) nor a replacement.
 	 */
-	async supersedeMessage({ from, supersedes, to, cc, subject, body, projectCode, replyTo, attachments, questions, answers, fyi, expectsReply }) {
+	async supersedeMessage({ from, supersedes, to, cc, subject, body, projectCode, replyTo, attachments, questions, answers, fyi, expectsReply, tags }) {
 		if (!from) throw new Error('supersedeMessage: from is required');
 		if (!Array.isArray(supersedes) || supersedes.length === 0) {
 			throw new Error('supersedeMessage: supersedes must list at least one prior message id');
@@ -427,6 +480,8 @@ export class FileMessagingAdapter {
 		if (!Array.isArray(to) || to.length === 0) throw new Error('supersedeMessage: to is required');
 		if (body == null) throw new Error('supersedeMessage: body is required');
 
+		const tagged = await this._applyMentions({ from, to, cc, body, fyi, tags });
+		cc = tagged.cc;
 		await this._validateParties('supersedeMessage', from, to, cc);
 
 		// Load and validate every predecessor up front — no partial commits.
@@ -508,6 +563,7 @@ export class FileMessagingAdapter {
 			supersedes: [...supersedes],
 			projectCode,
 			...marks,
+			mentions: tagged.mentions,
 			attachments: prepared.map((a) => a.name),
 			questions: checkedQuestions,
 			answers: checkedAnswers,
@@ -537,6 +593,7 @@ export class FileMessagingAdapter {
 			await this._appendToMailbox(recipient, 'inbox', id);
 		}
 		await this._appendToMailbox(from, 'sent', id);
+		await this._logMentions({ from, id, sentAt, ...tagged });
 
 		return {
 			id,
@@ -544,6 +601,7 @@ export class FileMessagingAdapter {
 			supersededIds: [...supersedes],
 			unreadRemoved,
 			alreadyDelivered: stillReachable.length,
+			...mentionResult(tagged),
 			...(questionsAppended ? { questionsAppended: true } : {}),
 		};
 	}
@@ -652,6 +710,7 @@ export class FileMessagingAdapter {
 				supersededBy: msg.supersededBy,
 				...(msg.fyi ? { fyi: true } : {}),
 				...(msg.expectsReply ? { expectsReply: true } : {}),
+				...(msg.mentions?.length ? { mentions: msg.mentions } : {}),
 				questions,
 			});
 		}
@@ -834,7 +893,7 @@ export class FileMessagingAdapter {
 		const waitingAsks = new Set(waitingOn(member, [...(folded ?? (await this.questionStates())).values()]).map((w) => w.askId));
 		const inInbox = new Set(inbox.map((m) => m.id));
 		const pinned = new Set(Object.keys(readInboxState(this._statePath(member)).pinned));
-		const asks = inbox.filter((m) => m.expectsReply && m.from !== member && m.to?.includes(member));
+		const asks = inbox.filter((m) => m.from !== member && ((m.expectsReply && m.to?.includes(member)) || m.mentions?.includes(member)));
 		const replied = await this._repliedAmong(member, asks);
 		const classified = classifyInbox(inbox, member, { cards: waitingAsks, replied, pinned });
 		for (const id of waitingAsks) {

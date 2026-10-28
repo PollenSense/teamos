@@ -16,9 +16,12 @@ export async function loadMembers(teamDir) {
 /** Priority of inbox mail that only Cc's the member — it waits like a `today` todo. */
 export const CC_PRIORITY = 'today';
 
-/** To-addressed mail is pressing; mail on which the member is only Cc'd is CC_PRIORITY. */
+/**
+ * To-addressed mail is pressing; mail on which the member is only Cc'd is CC_PRIORITY, unless the sender tagged
+ * the member with `@name` (`mentions`): a tag makes the message addressed to them, so it is pressing too.
+ */
 export function inboxPriority(summary, member) {
-	return summary.to?.includes(member) ? 'pressing' : CC_PRIORITY;
+	return summary.to?.includes(member) || summary.mentions?.includes(member) ? 'pressing' : CC_PRIORITY;
 }
 
 /**

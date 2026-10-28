@@ -218,6 +218,19 @@ test('ending a chat wraps up like a cycle and archives the transcript instead of
 	});
 });
 
+test('the archived transcript is a record: an @name typed in the chat tags nobody', async () => {
+	await withChat(TASK_STUB, async ({ chat, messaging }) => {
+		const session = await chat.create({ member: 'ada', human: 'nate' });
+		await chat.turn(session.id, 'tell @ada to ask @nate about the parser');
+		const { messageId } = await chat.end(session.id);
+		const message = await messaging.readMessage(messageId);
+		assert.match(message.body, /@ada/);
+		assert.equal(message.mentions, undefined);
+		assert.deepEqual(message.cc, []);
+		await chat.settled();
+	});
+});
+
 test('an empty chat does nothing; a discarded chat records nothing and runs no wrap-up without leftovers', async () => {
 	await withChat(TASK_STUB, async ({ chat, messaging, dir }) => {
 		const empty = await chat.create({ member: 'ada', human: 'nate' });

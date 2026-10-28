@@ -8,12 +8,14 @@
  *   - `card`:  an open question on it waits on the member (the cards' `waitingOn`), or
  *   - `reply`: the sender marked it `expectsReply`, the member is one of its To recipients (a Cc is not asked to
  *              reply) and has not replied in the thread since, or
+ *   - `mention`: the sender tagged the member with `@name` (stored as `mentions`, see mentions.mjs), in To or Cc, and
+ *              the member has not replied in the thread since (the same test as `reply`), or
  *   - `pin`:   the member pinned it ("Needs me").
  * Everything else is **FYI**. A message the sender marked `fyi: true` says so; one with neither mark is
  * unmarked (an FYI that ages out more slowly once automatic archiving exists).
  */
 
-export const NEEDS_REASONS = ['card', 'reply', 'pin'];
+export const NEEDS_REASONS = ['card', 'reply', 'mention', 'pin'];
 
 /**
  * The marks of a message about to be sent: `{ fyi?: true, expectsReply?: true }`.
@@ -41,7 +43,7 @@ export function readMarks(metadata) {
 /**
  * Why `msg` is in Needs you for `member`: a list of reasons from NEEDS_REASONS, empty when it is FYI.
  *
- * @param {{ id: string, from: string, to?: string[], expectsReply?: boolean }} msg a message in the member's inbox
+ * @param {{ id: string, from: string, to?: string[], expectsReply?: boolean, mentions?: string[] }} msg a message in the member's inbox
  * @param {string} member
  * @param {{ cards?: Set<string>, replied?: Set<string>, pinned?: Set<string> }} facts
  *   `cards`: ids of messages with an open question waiting on `member`; `replied`: ids of messages the member has
@@ -51,6 +53,7 @@ export function needsReasons(msg, member, { cards = new Set(), replied = new Set
 	const reasons = [];
 	if (cards.has(msg.id)) reasons.push('card');
 	if (msg.expectsReply && msg.from !== member && msg.to?.includes(member) && !replied.has(msg.id)) reasons.push('reply');
+	if (msg.mentions?.includes(member) && msg.from !== member && !replied.has(msg.id)) reasons.push('mention');
 	if (pinned.has(msg.id)) reasons.push('pin');
 	return reasons;
 }

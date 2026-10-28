@@ -82,6 +82,7 @@ Field reference:
 | `attachments` | no | Array of image file names stored in `team/messages/attachments/<id>/`; omit if none. See [Images](#images). |
 | `fyi` | no | `true` when nothing is needed from the recipients; omit otherwise. See [Inbox sections](#inbox-sections). |
 | `expectsReply` | no | `true` when the sender needs a written answer that is not a choice between options; omit otherwise. Never together with `fyi`. See [Inbox sections](#inbox-sections). |
+| `mentions` | no | Array of the member names the body tags with `@name`; written by the server at send time, omit if none. See [Tags](#tags-name). |
 
 ### Images
 
@@ -211,6 +212,8 @@ A message from the inbox needs the member (`needs` lists the reasons) when
 - `reply`: the sender marked it `expectsReply`, they are one of its **To** recipients (a Cc is not asked to
   reply), and they have not sent a message in the thread since (a message of theirs anywhere below it in the
   `replyTo` chain counts);
+- `mention`: the sender tagged them with `@name` (see [Tags](#tags-name)), in To or Cc, and they have not sent a message
+  in the thread since (the same test as `reply`);
 - `pin`: they pinned it ("Needs me"). A pin lives in the member's `inbox-state.json` and is cleared when the
   message leaves the inbox (archive, delete, or replaced by `supersede_message`); moving it back does not restore it.
 Everything else in the inbox is FYI. `fyi: true` is the sender saying so; mail with neither mark and no card is
@@ -236,6 +239,31 @@ holds three of them says "3 need you"); FYI, Done and Sent count conversations. 
 whose message they deleted still counts and is shown as a greyed context thread, so it can be answered. Typing in the search box
 looks through all four lists at once (each row says which one it is in) and also through the text of the member's
 archived messages (`GET /api/members/:name/search?q=`, at least two characters, that member's archive only).
+
+### Tags (`@name`)
+
+`@name` in a body tags that member: the tagged person is brought into the message and it counts as addressed to them.
+The rule is one pure module, `scripts/lib/messaging/mentions.mjs`, applied by `sendMessage` and `supersedeMessage`
+(so the dashboard, the chat and the agents' MCP tools share it); the compose box in `ui/src/lib/mentions.ts` repeats it
+for the preview, and both are tested against the same table (`scripts/lib/messaging/mentions-cases.json`).
+
+- **What is a tag.** `@name` where `name` is an *active* member of `members.json` (case-insensitive; the canonical
+  spelling is stored), the `@` starts a line or follows a space or an opening or separating mark (so `van@host.com` and
+  `https://host/@nate` are not tags), the name is not joined to more word (`@salary` is not `@sal`; `@sal-ary` and
+  `@sal.smith` are not either, `@sal.` at a sentence end is), the text is not in a code span, a fenced block or a `>`
+  quote line, and the sender never tags themself. `@all` and inactive members are not tags.
+- **What a tag does.** The tagged names are stored as `mentions: [..]` in the frontmatter (only when there are any;
+  old messages have none and nothing migrates). A tagged member who is in neither To nor Cc is appended to Cc, before
+  the parties are validated. For a person the message gets the Needs-you reason `mention` until they reply in the
+  thread; for an agent `inboxPriority` is `pressing` (the one place a tag changes when an agent wakes), the cycle prompt
+  lists it with the To mail and adds a line `You are tagged: <sender> wrote @<you>.`
+- **What a send tells the caller.** The result carries `mentioned` and `addedToCc` when they are not empty; the MCP
+  `send_message` result also lists the added names in `cc`. Listings carry `mentions` on the summary, only when set.
+- **Refused.** A message marked `fyi` that tags someone (400): a tag asks the person to look, so "nothing needed" and
+  a tag cannot both be true. The agent writes the plain name instead of the `@`, or drops the mark.
+- **Watching use.** One line per tag in `team/.logs/mentions.log`: time, sender, tagged, message id, whether Cc was
+  added. Never the text. Agents tagging each other in status updates would wake each other, which the agent rule
+  (tag only to bring someone in or to ask them for something) and this log are there to catch.
 
 ### Mailbox files
 
@@ -268,9 +296,9 @@ send_message({
   attachments?: string[], // optional — paths of image files; see Images
   questions?: object[],  // optional — see Questions
   answers?: object[],    // optional — answers to the message replyTo points at; see Questions
-  fyi?: boolean,         // optional — nothing needed from the recipients; see Inbox sections
+  fyi?: boolean,         // optional — nothing needed from the recipients; see Inbox sections (not with an @tag in the body)
   expectsReply?: boolean, // optional — a written answer is wanted (not with fyi); see Inbox sections
-}) → { id: string, sentAt: string }
+}) → { id: string, sentAt: string, mentioned?: string[], addedToCc?: string[] }  // the last two when the body tags members; see Tags
 ```
 
 Allocates a new id, writes the message to the master store, appends the id to each recipient's `inbox.json` (both To and Cc) and to the sender's `sent.json`. If `replyTo` is set and no explicit `subject` is provided, the adapter derives `Re: <parent.subject>` (stripping any existing `Re: ` prefix to avoid stacking). Explicit subjects are used verbatim.
@@ -288,7 +316,7 @@ supersede_message({
   projectCode?: string,  // optional
   fyi?: boolean,         // optional — see Inbox sections
   expectsReply?: boolean, // optional — see Inbox sections
-}) → { id, sentAt, supersededIds, unreadRemoved, alreadyDelivered }
+}) → { id, sentAt, supersededIds, unreadRemoved, alreadyDelivered, mentioned?, addedToCc? }
 ```
 
 Sends a new message that consolidates / replaces one or more earlier messages from the same sender. The adapter:
@@ -339,7 +367,7 @@ list_inbox() → InboxEntry[]
 Returns summaries for every id in the caller's `inbox.json`, newest first:
 
 ```
-{ id, from, to, cc, subject, sentAt, projectCode, hasParent, supersedes?, supersededBy?, fyi?, expectsReply? }
+{ id, from, to, cc, subject, sentAt, projectCode, hasParent, supersedes?, supersededBy?, fyi?, expectsReply?, mentions? }
 ```
 
 `hasParent` is `true` when `replyTo` is set, so the UI or agent can indicate "this is part of a thread" without fetching the full message. `supersedes` (when present) lists the predecessor ids that this message consolidates; `supersededBy` (when present) is the id of a later message that consolidates this one.
@@ -391,7 +419,7 @@ The agent is expected to process each inbox message and then `archive_message` i
 
 ## Work Detection
 
-A member has messaging work when their inbox listing (after the supersede collapse) holds a message at or above the priority being scanned. A message on which the member is in `to` is `pressing`; one on which they are only in `cc` is `today` (`CC_PRIORITY` in `scripts/lib/work-detection.mjs`), so Cc-only mail is served like a `today` todo — on that priority's weight and cadence — rather than waking the member for a pressing cycle. The collapse step requires reading each candidate's frontmatter, but inboxes are bounded and the cost is paid once per scheduling pass per member — not in a hot loop.
+A member has messaging work when their inbox listing (after the supersede collapse) holds a message at or above the priority being scanned. A message on which the member is in `to`, or which tags them with `@name` (`mentions`), is `pressing`; one on which they are only in `cc` is `today` (`CC_PRIORITY` in `scripts/lib/work-detection.mjs`), so Cc-only mail is served like a `today` todo — on that priority's weight and cadence — rather than waking the member for a pressing cycle. The collapse step requires reading each candidate's frontmatter, but inboxes are bounded and the cost is paid once per scheduling pass per member — not in a hot loop.
 
 ## Sender Semantics
 
@@ -424,7 +452,7 @@ so the web dashboard reconstructs threads at read time over the same adapter:
   thread groups carry `questions: { open, total, waitingOn }` per thread and per message; member summaries carry
   `waitingCount`.
 - Inbox sections (see [Inbox sections](#inbox-sections)): thread groups carry `needsCount` per thread and `needs`
-  (`card`, `reply`, `pin`) plus the sender's `fyi` / `expectsReply` marks per message; member summaries carry
+  (`card`, `reply`, `mention`, `pin`) plus the sender's `fyi` / `expectsReply` marks and the `mentions` per message; member summaries carry
   `needsCount`. `POST` and `DELETE /api/members/:name/pins/:id` pin and unpin an inbox message (404 when it is not in
   that inbox). `GET /api/members/:name/search?q=` returns `{ ids }`, the member's archived messages that contain the
   text.

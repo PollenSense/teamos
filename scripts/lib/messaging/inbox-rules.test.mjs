@@ -78,3 +78,17 @@ test('textMatches: subject, body, people and project; case-insensitive; needs tw
 	for (const q of ['', ' ', 'm', 'sky', undefined]) assert.ok(!textMatches(msg, q), String(q));
 	assert.ok(!textMatches({ subject: 5, body: null }, 'xx'), 'odd fields do not throw');
 });
+
+test('needsReasons: a tag (mention) counts in To or Cc until the member replies; not for the sender; keeps its place in the reason order', () => {
+	const tagged = { id: 'm1', from: 'ivy', to: ['nate'], cc: ['van'], mentions: ['van'] };
+	assert.deepEqual(needsReasons(tagged, 'van'), ['mention'], 'a Cc is asked when tagged');
+	assert.deepEqual(needsReasons({ ...tagged, to: ['van'], cc: [] }, 'van'), ['mention'], 'also in To');
+	assert.deepEqual(needsReasons(tagged, 'nate'), [], 'not tagged: not asked');
+	assert.deepEqual(needsReasons(tagged, 'van', { replied: new Set(['m1']) }), []);
+	assert.deepEqual(needsReasons({ ...tagged, from: 'van' }, 'van'), [], 'own message');
+	assert.deepEqual(
+		needsReasons({ ...tagged, to: ['van'], expectsReply: true }, 'van', { cards: new Set(['m1']), pinned: new Set(['m1']) }),
+		['card', 'reply', 'mention', 'pin'],
+	);
+	assert.deepEqual(needsReasons(tagged, 'van', { replied: new Set(['m1']), pinned: new Set(['m1']) }), ['pin']);
+});
