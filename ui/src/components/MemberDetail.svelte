@@ -281,7 +281,7 @@ async function deleteMember() {
 
 	<div class="tabs">
 		<button class="tab" class:active={tab === 'messages'} onclick={() => tab = 'messages'}>
-			Messages {#if mailCounts && mailCounts.inboxMessages > 0}<span class="badge">{mailCounts.inboxMessages}</span>{/if}
+			Messages {#if mailCounts && mailCounts.needsMessages > 0}<span class="badge" title="Messages that need {name}">{mailCounts.needsMessages}</span>{/if}
 		</button>
 		<button class="tab" class:active={tab === 'chat'} onclick={() => tab = 'chat'}>Chat</button>
 		<button class="tab" class:active={tab === 'todos'} onclick={() => tab = 'todos'}>

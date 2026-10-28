@@ -3,8 +3,10 @@ import { mkdir, readFile, unlink, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { pathExists } from '../util.mjs';
 import { applyAttachmentsToBody, isAttachmentName, prepareAttachments, removeAttachments, writeAttachments } from './attachments.mjs';
+import { inboxStatePath, readInboxState, updateInboxState } from './inbox-state.mjs';
+import { classifyInbox, countNeeds, readMarks, repliedIds, textMatches, validateMarks } from './inbox-rules.mjs';
 import { QuestionIndex } from './question-index.mjs';
-import { checkEntry, countQuestions, ensureQuestionsInBody, parseAnswers, readAnswers, readQuestions, validateQuestions, waitingCounts } from './questions.mjs';
+import { checkEntry, countQuestions, ensureQuestionsInBody, parseAnswers, readAnswers, readQuestions, validateQuestions, waitingCounts, waitingOn } from './questions.mjs';
 
 /**
  * File-based messaging adapter.
@@ -73,6 +75,8 @@ function serializeMessage(msg) {
 	if (msg.supersedes?.length) lines.push(`supersedes: [${msg.supersedes.join(', ')}]`);
 	if (msg.supersededBy) lines.push(`supersededBy: ${msg.supersededBy}`);
 	if (msg.projectCode) lines.push(`projectCode: ${msg.projectCode}`);
+	if (msg.fyi) lines.push('fyi: true');
+	if (msg.expectsReply) lines.push('expectsReply: true');
 	if (msg.attachments?.length) lines.push(`attachments: [${msg.attachments.join(', ')}]`);
 	if (msg.questions?.length) lines.push(`questions: ${JSON.stringify(msg.questions)}`);
 	if (msg.answers?.length) lines.push(`answers: ${JSON.stringify(msg.answers)}`);
@@ -99,6 +103,7 @@ function normalizeMessage(metadata, body) {
 			typeof metadata.supersededBy === 'string' && metadata.supersededBy ? metadata.supersededBy : undefined,
 		projectCode: typeof metadata.projectCode === 'string' && metadata.projectCode ? metadata.projectCode : undefined,
 		attachments: (Array.isArray(metadata.attachments) ? metadata.attachments : []).filter(isAttachmentName),
+		...readMarks(metadata),
 		...nonEmpty('questions', readQuestions(metadata.questions)),
 		...nonEmpty('answers', readAnswers(metadata.answers)),
 		body,
@@ -121,6 +126,8 @@ function recipientsOf(msg) {
 export class FileMessagingAdapter {
 	constructor(teamDir) {
 		this.teamDir = teamDir;
+		/** id -> `{ replyTo, sentAt }`. Neither ever changes after a message is written, so it is kept for the process's life. */
+		this._replyMeta = new Map();
 		this.messagesDir = join(teamDir, 'messages');
 		this._questions = new QuestionIndex(
 			this.messagesDir,
@@ -333,7 +340,7 @@ export class FileMessagingAdapter {
 		return summaries.length > 0;
 	}
 
-	async sendMessage({ from, to, cc, subject, body, replyTo, projectCode, attachments, questions, answers }) {
+	async sendMessage({ from, to, cc, subject, body, replyTo, projectCode, attachments, questions, answers, fyi, expectsReply }) {
 		if (!from) throw new Error('sendMessage: from is required');
 		if (!Array.isArray(to) || to.length === 0) throw new Error('sendMessage: to is required');
 		if (body == null) throw new Error('sendMessage: body is required');
@@ -357,6 +364,7 @@ export class FileMessagingAdapter {
 		const checkedQuestions = validateQuestions(questions, { to, cc: cc ?? [], from });
 		const checkedAnswers = parseAnswers(answers);
 		if (checkedAnswers) await this._checkAnswers(checkedAnswers, { from, replyTo });
+		const marks = validateMarks({ fyi, expectsReply });
 
 		const id = makeMessageId();
 		const sentAt = new Date().toISOString();
@@ -375,6 +383,7 @@ export class FileMessagingAdapter {
 			sentAt,
 			replyTo,
 			projectCode,
+			...marks,
 			attachments: prepared.map((a) => a.name),
 			questions: checkedQuestions,
 			answers: checkedAnswers,
@@ -410,7 +419,7 @@ export class FileMessagingAdapter {
 	 * the predecessors reached — otherwise dropped recipients would be left
 	 * with neither the predecessor (if removed from inbox) nor a replacement.
 	 */
-	async supersedeMessage({ from, supersedes, to, cc, subject, body, projectCode, replyTo, attachments, questions, answers }) {
+	async supersedeMessage({ from, supersedes, to, cc, subject, body, projectCode, replyTo, attachments, questions, answers, fyi, expectsReply }) {
 		if (!from) throw new Error('supersedeMessage: from is required');
 		if (!Array.isArray(supersedes) || supersedes.length === 0) {
 			throw new Error('supersedeMessage: supersedes must list at least one prior message id');
@@ -478,6 +487,7 @@ export class FileMessagingAdapter {
 		const checkedQuestions = validateQuestions(questions, { to, cc: cc ?? [], from });
 		const checkedAnswers = parseAnswers(answers);
 		if (checkedAnswers) await this._checkAnswers(checkedAnswers, { from, replyTo });
+		const marks = validateMarks({ fyi, expectsReply });
 
 		const id = makeMessageId();
 		const sentAt = new Date().toISOString();
@@ -497,6 +507,7 @@ export class FileMessagingAdapter {
 			replyTo,
 			supersedes: [...supersedes],
 			projectCode,
+			...marks,
 			attachments: prepared.map((a) => a.name),
 			questions: checkedQuestions,
 			answers: checkedAnswers,
@@ -513,7 +524,10 @@ export class FileMessagingAdapter {
 			await writeFile(this._messagePath(prev.id), serializeMessage(updated), 'utf-8');
 			for (const recipient of recipientsOf(prev)) {
 				const removed = await this._removeFromMailbox(recipient, 'inbox', prev.id);
-				if (removed) unreadRemoved++;
+				if (removed) {
+					unreadRemoved++;
+					this._unpin(recipient, prev.id);
+				}
 				else stillReachable.push({ id: prev.id, recipient });
 			}
 		}
@@ -636,6 +650,8 @@ export class FileMessagingAdapter {
 				hasParent: !!msg.replyTo,
 				supersedes: msg.supersedes?.length ? msg.supersedes : undefined,
 				supersededBy: msg.supersededBy,
+				...(msg.fyi ? { fyi: true } : {}),
+				...(msg.expectsReply ? { expectsReply: true } : {}),
 				questions,
 			});
 		}
@@ -697,6 +713,8 @@ export class FileMessagingAdapter {
 		this._moveBetweenMailboxes(member, 'inbox', 'archives', id, () => {
 			throw new Error(`archiveMessage: ${id} is not in ${member}'s inbox`);
 		});
+		// Handled is handled: a pin ("Needs me") does not outlive the message leaving the inbox.
+		this._unpin(member, id);
 	}
 
 	async unarchiveMessage(member, id) {
@@ -711,9 +729,120 @@ export class FileMessagingAdapter {
 	 */
 	async deleteInboxMessage(member, id) {
 		await this._removeFromMailbox(member, 'inbox', id);
+		this._unpin(member, id);
 	}
 
 	async deleteArchivedMessage(member, id) {
 		await this._removeFromMailbox(member, 'archives', id);
+	}
+
+	// ─── Inbox sections ("Needs you" / FYI) and pins ───────────────────────────
+	//
+	// The sections are a view over the inbox (see inbox-rules.mjs); only a pin is stored, in the member's
+	// inbox-state.json. Nothing here moves a message between mailboxes.
+
+	_statePath(member) {
+		return inboxStatePath(this.teamDir, member);
+	}
+
+	/** Drop a pin; a no-op when there is none (and no file is written then). */
+	_unpin(member, id) {
+		updateInboxState(this._statePath(member), (state) => {
+			if (!(id in state.pinned)) return false;
+			delete state.pinned[id];
+			return true;
+		});
+	}
+
+	/** Pin a message in the member's inbox ("Needs me"): it stays in Needs you until unpinned or archived. */
+	async pinMessage(member, id) {
+		const roster = await this._loadRosterNames();
+		if (roster) this._assertInRoster('pinMessage.member', member, roster);
+		if (!(await this._readMailbox(member, 'inbox')).includes(id)) {
+			throw Object.assign(new Error(`pinMessage: ${id} is not in ${member}'s inbox`), { status: 404 });
+		}
+		updateInboxState(this._statePath(member), (state) => {
+			if (id in state.pinned) return false;
+			state.pinned[id] = new Date().toISOString();
+			return true;
+		});
+	}
+
+	async unpinMessage(member, id) {
+		const roster = await this._loadRosterNames();
+		if (roster) this._assertInRoster('unpinMessage.member', member, roster);
+		this._unpin(member, id);
+	}
+
+	/** `{ replyTo, sentAt }` of a message, read once; null when the message is not in the store. */
+	async _replyMetaOf(id) {
+		let meta = this._replyMeta.get(id);
+		if (!meta) {
+			const msg = await this._readRawMessage(id).catch(() => null);
+			if (!msg) return null;
+			meta = { replyTo: msg.replyTo, sentAt: msg.sentAt || '' };
+			this._replyMeta.set(id, meta);
+		}
+		return meta;
+	}
+
+	/**
+	 * The ids `member` has replied to, among `candidates` (inbox messages that ask for a reply): every ancestor,
+	 * through `replyTo`, of a message they sent after the oldest candidate. Reads messages only when there is a
+	 * candidate, so a mailbox without `expectsReply` mail costs nothing, and each message at most once per process.
+	 */
+	async _repliedAmong(member, candidates) {
+		if (candidates.length === 0) return new Set();
+		const oldest = candidates.reduce((min, c) => ((c.sentAt || '') < min ? c.sentAt || '' : min), candidates[0].sentAt || '');
+		const sent = [];
+		for (const id of await this._readMailbox(member, 'sent')) {
+			const meta = await this._replyMetaOf(id);
+			if (meta?.replyTo && meta.sentAt > oldest) sent.push({ id, replyTo: meta.replyTo });
+		}
+		return repliedIds(sent, async (id) => (await this._replyMetaOf(id))?.replyTo);
+	}
+
+	/**
+	 * The ids of the member's archived messages that contain `query` (subject, body, people, project code),
+	 * newest first, at most `limit`. Reads only that member's archive; superseded predecessors are skipped like
+	 * everywhere else.
+	 */
+	async searchArchives(member, query, { limit = 500 } = {}) {
+		if (typeof query !== 'string' || query.trim().length < 2) return [];
+		const found = [];
+		for (const entry of await this.listArchives(member)) {
+			const msg = await this._readRawMessage(entry.id).catch(() => null);
+			if (msg && textMatches(msg, query)) found.push({ id: msg.id, sentAt: msg.sentAt });
+		}
+		found.sort((a, b) => (b.sentAt || '').localeCompare(a.sentAt || ''));
+		return found.slice(0, limit).map((m) => m.id);
+	}
+
+	/**
+	 * The member's inbox cut into sections: `{ inbox, needs, needsCount }`.
+	 *   - `inbox`: what `listInbox` returns;
+	 *   - `needs`: `{ [id]: reasons }` for every message that needs the member (`card`, `reply`, `pin`; see
+	 *     inbox-rules.mjs). A message with an open question for the member counts wherever it is (inbox, archive,
+	 *     or deleted from both), because the asker is still waiting; the other two reasons need it in the inbox;
+	 *   - `needsCount`: the size of `needs`.
+	 * Everything in `inbox` that is not in `needs` is FYI. `opts.folded` is `questionStates()`: pass it when
+	 * sectioning many members so the questions are folded once.
+	 */
+	async inboxSections(member, { folded } = {}) {
+		const inbox = await this.listInbox(member);
+		const archived = new Set(await this._readMailbox(member, 'archives'));
+		const waitingAsks = new Set(waitingOn(member, [...(folded ?? (await this.questionStates())).values()]).map((w) => w.askId));
+		const inInbox = new Set(inbox.map((m) => m.id));
+		const pinned = new Set(Object.keys(readInboxState(this._statePath(member)).pinned));
+		const asks = inbox.filter((m) => m.expectsReply && m.from !== member && m.to?.includes(member));
+		const replied = await this._repliedAmong(member, asks);
+		const classified = classifyInbox(inbox, member, { cards: waitingAsks, replied, pinned });
+		for (const id of waitingAsks) {
+			if (inInbox.has(id)) continue;
+			if (archived.has(id) || (await this._readRawMessage(id).catch(() => null))) classified.set(id, ['card']);
+		}
+		const needs = {};
+		for (const [id, reasons] of classified) if (reasons.length > 0) needs[id] = reasons;
+		return { inbox, needs, needsCount: countNeeds(classified) };
 	}
 }

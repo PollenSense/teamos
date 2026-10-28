@@ -16,6 +16,8 @@ interface MessageSummary {
 	hasParent: boolean;
 	supersedes?: string[];
 	supersededBy?: string;
+	fyi?: boolean;
+	expectsReply?: boolean;
 }
 
 type MailBox = 'inbox' | 'sent' | 'archives';
@@ -38,6 +40,11 @@ interface ThreadMessage {
 	depth: number;
 	/** Set when the message asks questions: how many are still open. */
 	questions?: { open: number; total: number };
+	/** The sender's marks: nothing needed (`fyi`) or a written answer wanted (`expectsReply`). */
+	fyi?: boolean;
+	expectsReply?: boolean;
+	/** Why this message needs the viewed member (`card`, `reply`, `pin`); absent when it does not. */
+	needs?: string[];
 }
 
 interface Thread {
@@ -50,6 +57,8 @@ interface Thread {
 	inboxCount: number;
 	sentCount: number;
 	archiveCount: number;
+	/** Messages in the thread that need the viewed member (see `needs` on a message). */
+	needsCount: number;
 	firstAt: string;
 	lastAt: string;
 	lastFrom: string;
@@ -124,6 +133,8 @@ interface Message {
 	supersedes?: string[];
 	supersededBy?: string;
 	projectCode?: string;
+	fyi?: boolean;
+	expectsReply?: boolean;
 	body: string;
 	/** Names of the images stored with the message. */
 	attachments?: string[];
@@ -170,6 +181,14 @@ interface MessagingAdapter {
 	questionStates?(): Promise<Map<string, FoldedAsk>>;
 	listQuestions?(member: string): Promise<{ waitingOnMe: WaitingItem[]; asked: unknown[] }>;
 	waitingCounts?(): Promise<Record<string, number>>;
+	/** Inbox sections and pins (the file adapter has them; without them every inbox message is FYI). */
+	inboxSections?(
+		member: string,
+		opts?: { folded?: Map<string, FoldedAsk> },
+	): Promise<{ inbox: MessageSummary[]; needs: Record<string, string[]>; needsCount: number }>;
+	pinMessage?(member: string, id: string): Promise<void>;
+	unpinMessage?(member: string, id: string): Promise<void>;
+	searchArchives?(member: string, query: string, opts?: { limit?: number }): Promise<string[]>;
 }
 
 interface ScheduleEvent {
@@ -645,19 +664,32 @@ export function teamosApi(opts: ApiOptions): Plugin {
 		return ticketsAvailable;
 	}
 
+	/** The inbox cut into sections; an adapter without sections has everything in FYI. */
+	async function inboxSectionsOf(member: string, folded?: Map<string, FoldedAsk>) {
+		if (messagingAdapter.inboxSections) {
+			const found = await messagingAdapter.inboxSections(member, { folded }).catch(() => null);
+			if (found) return found;
+		}
+		const inbox = await messagingAdapter.listInbox(member).catch(() => [] as MessageSummary[]);
+		return { inbox, needs: {} as Record<string, string[]>, needsCount: 0 };
+	}
+
 	async function getMemberSummaries() {
 		const manifest = await readJson(join(teamDir, 'members.json'), { members: [] });
 		const waiting = messagingAdapter.waitingCounts ? await messagingAdapter.waitingCounts().catch(() => ({})) : {};
+		// One fold of the questions for every member, not one per member.
+		const folded = messagingAdapter.questionStates ? await messagingAdapter.questionStates().catch(() => undefined) : undefined;
 		return Promise.all(
 			manifest.members.map(async (m: Record<string, unknown>) => {
 				const dir = join(teamDir, 'members', m.name as string);
-				const inboxSummaries = await messagingAdapter.listInbox(m.name as string).catch(() => []);
+				const sections = await inboxSectionsOf(m.name as string, folded);
 				const todos = await readJson(join(dir, 'todo.json'), { items: [] });
 				const items: any[] = todos.items ?? [];
 				const events = await scheduleAdapter.listEvents(m.name as string).catch(() => []);
 				return {
 					...m,
-					inboxCount: inboxSummaries.length,
+					inboxCount: sections.inbox.length,
+					needsCount: sections.needsCount,
 					waitingCount: (waiting as Record<string, number>)[m.name as string] ?? 0,
 					todoCount: items.length,
 					blockedCount: items.filter((t: any) => t.status === 'blocked').length,
@@ -738,8 +770,9 @@ export function teamosApi(opts: ApiOptions): Plugin {
 		// the supersede-collapse rule applies here exactly as it does everywhere
 		// else and the tab badge matches the dashboard's inbox count.
 		const boxesById = new Map<string, MailBox[]>();
+		const sections = await inboxSectionsOf(member);
 		const listers: Record<MailBox, () => Promise<MessageSummary[]>> = {
-			inbox: () => messagingAdapter.listInbox(member),
+			inbox: async () => sections.inbox,
 			sent: () => messagingAdapter.listSent(member),
 			archives: () => messagingAdapter.listArchives(member),
 		};
@@ -754,7 +787,9 @@ export function teamosApi(opts: ApiOptions): Plugin {
 
 		// Every mailbox message, plus every ancestor reachable from one.
 		const loaded = new Map<string, Message>();
-		const pending = [...boxesById.keys()];
+		// A message with an open question for the member counts even if it is in none of their mailboxes (they
+		// deleted it, the asker still waits): it is pulled in as context so the thread can be opened and answered.
+		const pending = [...new Set([...boxesById.keys(), ...Object.keys(sections.needs)])];
 		while (pending.length > 0) {
 			const id = pending.pop() as string;
 			if (loaded.has(id)) continue;
@@ -823,6 +858,7 @@ export function teamosApi(opts: ApiOptions): Plugin {
 				if (m.projectCode && !projectCodes.includes(m.projectCode)) projectCodes.push(m.projectCode);
 			}
 			const boxCount = (box: MailBox) => msgs.filter((m) => boxesById.get(m.id)?.includes(box)).length;
+			const needsCount = msgs.filter((m) => sections.needs[m.id]).length;
 			// Questions: only the live version of each ask counts (a superseded one is replaced by its successor).
 			const counts = (m: Message) => {
 				const folded = m.questions?.length ? asks?.get(m.id) : undefined;
@@ -852,6 +888,7 @@ export function teamosApi(opts: ApiOptions): Plugin {
 				inboxCount: boxCount('inbox'),
 				sentCount: boxCount('sent'),
 				archiveCount: boxCount('archives'),
+				needsCount,
 				firstAt: msgs[0].sentAt,
 				lastAt: latest.sentAt,
 				lastFrom: latest.from,
@@ -871,6 +908,9 @@ export function teamosApi(opts: ApiOptions): Plugin {
 					boxes: boxesById.get(m.id) ?? [],
 					depth: resolve(m.id).depth,
 					questions: counts(m),
+					...(m.fyi ? { fyi: true } : {}),
+					...(m.expectsReply ? { expectsReply: true } : {}),
+					...(sections.needs[m.id] ? { needs: sections.needs[m.id] } : {}),
 				})),
 			});
 		}
@@ -1494,6 +1534,25 @@ export function teamosApi(opts: ApiOptions): Plugin {
 						const id = decodeURIComponent(match[2]);
 						await messagingAdapter.archiveMessage(name, id);
 						return json(res, { ok: true });
+					}
+
+					// "Needs me": pin an inbox message so it stays in Needs you; archiving it clears the pin.
+					match = path.match(/^\/api\/members\/([^/]+)\/pins\/([^/]+)$/);
+					if (match && (method === 'POST' || method === 'DELETE')) {
+						const name = decodeURIComponent(match[1]);
+						const id = decodeURIComponent(match[2]);
+						const act = method === 'POST' ? messagingAdapter.pinMessage : messagingAdapter.unpinMessage;
+						if (!act) return json(res, { error: 'This messaging adapter has no pins.' }, 501);
+						await act.call(messagingAdapter, name, id);
+						return json(res, { ok: true });
+					}
+
+					// Done search: which of the member's archived messages contain the text (ids only).
+					match = path.match(/^\/api\/members\/([^/]+)\/search$/);
+					if (match && method === 'GET') {
+						if (!messagingAdapter.searchArchives) return json(res, { ids: [] });
+						const q = url.searchParams.get('q') ?? '';
+						return json(res, { ids: await messagingAdapter.searchArchives(decodeURIComponent(match[1]), q, { limit: 500 }) });
 					}
 
 					match = path.match(/^\/api\/members\/([^/]+)\/archives\/([^/]+)\/unarchive$/);

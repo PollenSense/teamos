@@ -175,6 +175,19 @@ const QUESTIONS_SCHEMA = {
 	},
 };
 
+const MARK_PROPS = {
+	fyi: {
+		type: 'boolean',
+		description:
+			'Nothing is needed from the recipients: they may read it if they like. Mark every message that only informs (a status, a thanks, a finished job) so it never counts as something that needs them.',
+	},
+	expectsReply: {
+		type: 'boolean',
+		description:
+			'You need a written answer that is not a choice between options (a choice is a `questions` card). Stays in the recipients\' "Needs you" until they reply in the thread. Cannot be combined with `fyi`.',
+	},
+};
+
 const ANSWERS_SCHEMA = {
 	type: 'array',
 	description:
@@ -233,6 +246,7 @@ const BASE_TOOLS = [
 				},
 				questions: QUESTIONS_SCHEMA,
 				answers: ANSWERS_SCHEMA,
+				...MARK_PROPS,
 			},
 			required: ['to', 'body'],
 		},
@@ -274,6 +288,7 @@ const BASE_TOOLS = [
 					description: ATTACHMENTS_DESCRIPTION,
 				},
 				questions: QUESTIONS_SCHEMA,
+				...MARK_PROPS,
 			},
 			required: ['supersedes', 'to', 'body'],
 		},
@@ -638,7 +653,7 @@ function textResult(payload) {
 async function handleToolCall(name, args) {
 	switch (name) {
 		case 'send_message': {
-			const { to, subject, body, cc, replyTo, projectCode, questions, answers } = args;
+			const { to, subject, body, cc, replyTo, projectCode, questions, answers, fyi, expectsReply } = args;
 			const { id, sentAt, questionsAppended } = await adapter.sendMessage({
 				from: resolveMember(args),
 				to,
@@ -650,6 +665,8 @@ async function handleToolCall(name, args) {
 				attachments: attachmentItems(args),
 				questions,
 				answers,
+				fyi,
+				expectsReply,
 			});
 			return textResult({
 				id,
@@ -663,7 +680,7 @@ async function handleToolCall(name, args) {
 		}
 
 		case 'supersede_message': {
-			const { supersedes, to, subject, body, cc, replyTo, projectCode, questions } = args;
+			const { supersedes, to, subject, body, cc, replyTo, projectCode, questions, fyi, expectsReply } = args;
 			const result = await adapter.supersedeMessage({
 				from: resolveMember(args),
 				supersedes,
@@ -675,6 +692,8 @@ async function handleToolCall(name, args) {
 				projectCode,
 				attachments: attachmentItems(args),
 				questions,
+				fyi,
+				expectsReply,
 			});
 			return textResult(result);
 		}

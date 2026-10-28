@@ -1,5 +1,6 @@
 <script lang="ts">
 import { identity } from '../lib/identity.svelte.js';
+import { needsLabel } from '../lib/sections.js';
 import type { MemberSummary } from '../lib/types.js';
 
 const { member }: { member: MemberSummary } = $props();
@@ -25,10 +26,10 @@ const isMe = $derived(identity.name === member.name);
 				{member.inboxCount}
 			</span>
 		{/if}
-		{#if (member.waitingCount ?? 0) > 0}
-			<span class="stat waiting" title="Open questions waiting on {member.name}">
+		{#if (member.needsCount ?? 0) > 0}
+			<span class="stat waiting" title="Open questions, wanted replies and pinned mail for {member.name}">
 				<span class="stat-icon">&#8987;</span>
-				{member.waitingCount} waiting
+				{needsLabel(member.name, identity.name, member.needsCount ?? 0)}
 			</span>
 		{/if}
 		{#if member.todoCount > 0}
@@ -49,7 +50,7 @@ const isMe = $derived(identity.name === member.name);
 				{member.eventCount}
 			</span>
 		{/if}
-		{#if member.todoCount === 0 && member.inboxCount === 0 && member.eventCount === 0 && !member.waitingCount}
+		{#if member.todoCount === 0 && member.inboxCount === 0 && member.eventCount === 0 && !member.needsCount}
 			<span class="stat idle">idle</span>
 		{/if}
 	</div>
