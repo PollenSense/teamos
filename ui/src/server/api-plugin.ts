@@ -18,6 +18,8 @@ interface MessageSummary {
 	supersededBy?: string;
 	fyi?: boolean;
 	expectsReply?: boolean;
+	/** Members the body tags with @name (see scripts/lib/messaging/mentions.mjs). */
+	mentions?: string[];
 }
 
 type MailBox = 'inbox' | 'sent' | 'archives';
@@ -43,7 +45,9 @@ interface ThreadMessage {
 	/** The sender's marks: nothing needed (`fyi`) or a written answer wanted (`expectsReply`). */
 	fyi?: boolean;
 	expectsReply?: boolean;
-	/** Why this message needs the viewed member (`card`, `reply`, `pin`); absent when it does not. */
+	/** Members the body tags with @name. */
+	mentions?: string[];
+	/** Why this message needs the viewed member (`card`, `reply`, `mention`, `pin`); absent when it does not. */
 	needs?: string[];
 }
 
@@ -135,6 +139,8 @@ interface Message {
 	projectCode?: string;
 	fyi?: boolean;
 	expectsReply?: boolean;
+	/** Members the body tags with @name. */
+	mentions?: string[];
 	body: string;
 	/** Names of the images stored with the message. */
 	attachments?: string[];
@@ -158,6 +164,8 @@ interface MessagingAdapter {
 		replyTo?: string;
 		projectCode?: string;
 		answers?: { ask: string; q: string; option?: number; other?: string; dismissed?: boolean }[];
+		/** `false`: the body is a record (a transcript, a reply that repeats question text), so it tags nobody. */
+		tags?: boolean;
 	}): Promise<{ id: string; sentAt: string }>;
 	supersedeMessage(args: {
 		from: string;
@@ -910,12 +918,23 @@ export function teamosApi(opts: ApiOptions): Plugin {
 					questions: counts(m),
 					...(m.fyi ? { fyi: true } : {}),
 					...(m.expectsReply ? { expectsReply: true } : {}),
+					...(m.mentions?.length ? { mentions: m.mentions } : {}),
 					...(sections.needs[m.id] ? { needs: sections.needs[m.id] } : {}),
 				})),
 			});
 		}
 		threads.sort((a, b) => (b.lastAt || '').localeCompare(a.lastAt || ''));
 		return threads;
+	}
+
+	/**
+	 * What a browser may hand to `sendMessage`: the message's own fields and the marks, nothing else. Options that
+	 * belong to the server (`tags`) and anything else in the JSON are dropped, so a caller cannot switch off the
+	 * @tag rule for their own message.
+	 */
+	function sendableFields(msg: Record<string, unknown>) {
+		const { from, to, cc, subject, body, replyTo, projectCode, attachments, questions, answers, fyi, expectsReply } = msg;
+		return { from, to, cc, subject, body, replyTo, projectCode, attachments, questions, answers, fyi, expectsReply } as Parameters<typeof sendMessage>[0];
 	}
 
 	async function sendMessage(msg: {
@@ -1344,7 +1363,7 @@ export function teamosApi(opts: ApiOptions): Plugin {
 							if (!attachments) return json(res, { error: 'Attachments are not available' }, 400);
 							msg.attachments = await attachments.claim(msg.attachments, msg.from);
 						}
-						const sent = await sendMessage(msg);
+						const sent = await sendMessage(sendableFields(msg));
 						if (attachments && tokens.length > 0) await attachments.release(tokens);
 						return json(res, sent, 201);
 					}
@@ -1427,6 +1446,9 @@ export function teamosApi(opts: ApiOptions): Plugin {
 							replyTo: askId,
 							body: answersBody(ask, entries),
 							answers: entries,
+							// The body repeats the question text, which may name people (@nate): it is a record of the
+							// tap, so it tags nobody.
+							tags: false,
 						});
 						return json(res, sent, 201);
 					}

@@ -741,7 +741,8 @@ export class ChatSessions {
 			startedAt: session.startedAt,
 			endedAt: record.endedAt,
 		});
-		const { id: messageId } = await this.adapters.messaging.sendMessage(message);
+		// The transcript is a record: an @name typed in the chat must not copy the whole conversation to that person.
+		const { id: messageId } = await this.adapters.messaging.sendMessage({ ...message, tags: false });
 		await this.adapters.messaging.archiveMessage(session.member, messageId);
 		record.messageId = messageId;
 		record.threadMessageId = messageId;

@@ -2,6 +2,7 @@ import DOMPurify from 'dompurify';
 import { marked } from 'marked';
 import { attachmentRenderer, isServedAttachmentUrl } from './attachments.js';
 import { type LinkMap, linkRenderer } from './linkify.js';
+import { splitMentions } from './mentions.js';
 
 /**
  * Messages are written in markdown (the compose box says so, and the agents write it). The
@@ -50,11 +51,46 @@ DOMPurify.addHook('afterSanitizeAttributes', (node) => {
 	}
 });
 
-export function renderMarkdown(source: string, links?: LinkMap): string {
+/**
+ * Highlight the tags a message made (`mentions`, see lib/mentions.ts): `@name` in plain text becomes a link to the
+ * member's page. Runs on the sanitized HTML and builds its elements itself (text via textContent, the address from a
+ * name that is letters, digits and underscores), so nothing from the message becomes markup. Code, quotes and
+ * existing links are left as they are, like the server's rule.
+ */
+function highlightMentions(html: string, mentions: readonly string[]): string {
+	const holder = document.createElement('template');
+	holder.innerHTML = html;
+	const texts: Text[] = [];
+	const walker = document.createTreeWalker(holder.content, NodeFilter.SHOW_TEXT);
+	for (let n = walker.nextNode(); n; n = walker.nextNode()) texts.push(n as Text);
+	for (const node of texts) {
+		if (!node.data.includes('@') || node.parentElement?.closest('a, code, pre, blockquote')) continue;
+		const parts = splitMentions(node.data, mentions);
+		if (parts.length === 1 && !('mention' in parts[0])) continue;
+		const frag = document.createDocumentFragment();
+		for (const part of parts) {
+			if ('mention' in part) {
+				const a = document.createElement('a');
+				a.className = 'mention';
+				a.setAttribute('href', `#/member/${part.mention}`);
+				a.setAttribute('data-internal', '1');
+				a.textContent = part.text;
+				frag.append(a);
+			} else {
+				frag.append(part.text);
+			}
+		}
+		node.replaceWith(frag);
+	}
+	return holder.innerHTML;
+}
+
+export function renderMarkdown(source: string, links?: LinkMap, mentions?: readonly string[]): string {
 	activeLinks = links;
 	try {
 		const html = marked.parse(source ?? '', { async: false }) as string;
-		return DOMPurify.sanitize(html, NO_AUTO_FETCH);
+		const clean = DOMPurify.sanitize(html, NO_AUTO_FETCH);
+		return mentions?.length ? highlightMentions(clean, mentions) : clean;
 	} finally {
 		activeLinks = undefined;
 	}

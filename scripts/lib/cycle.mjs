@@ -31,13 +31,16 @@ function formatRecipients(to, cc) {
 	return parts.join('  ');
 }
 
-function renderMessage(msg, { heading, headingLevel = '###' }) {
+function renderMessage(msg, { heading, headingLevel = '###', member }) {
 	const lines = [];
 	lines.push(`${headingLevel} ${heading}`);
 	lines.push('');
 	lines.push(`**Id:** ${msg.id}`);
 	lines.push(`**From:** ${msg.from}`);
 	lines.push(formatRecipients(msg.to, msg.cc));
+	if (member && msg.from !== member && msg.mentions?.includes(member)) {
+		lines.push(`**You are tagged:** ${msg.from} wrote @${member}. This message is addressed to you, whether you are in To or Cc.`);
+	}
 	lines.push(`**Subject:** ${msg.subject || '(no subject)'}`);
 	lines.push(`**Sent:** ${msg.sentAt}`);
 	if (msg.projectCode) lines.push(`**Project:** ${msg.projectCode}`);
@@ -136,25 +139,25 @@ export async function buildInboxSection(member, messagingAdapter) {
 	const ccOnly = summaries.filter((s) => inboxPriority(s, member) === CC_PRIORITY);
 
 	const out = ['', `## Inbox (${summaries.length})`, ''];
-	await pushMessages(out, direct, messagingAdapter);
+	await pushMessages(out, direct, messagingAdapter, member);
 	if (ccOnly.length > 0) {
 		out.push(
 			`**Cc'd to you (${ccOnly.length})** — priority \`${CC_PRIORITY}\`: for awareness. Handle after To-addressed mail; act only where you are the right one to.`,
 			'',
 		);
-		await pushMessages(out, ccOnly, messagingAdapter);
+		await pushMessages(out, ccOnly, messagingAdapter, member);
 	}
 	return out;
 }
 
-async function pushMessages(out, summaries, messagingAdapter) {
+async function pushMessages(out, summaries, messagingAdapter, member) {
 	for (const summary of summaries) {
 		const msg = await messagingAdapter
 			.readMessage(summary.id, { inlineParent: true, withPaths: true, withState: true })
 			.catch(() => null);
 		if (!msg) continue;
 
-		out.push(...renderMessage(msg, { heading: msg.subject || summary.subject || '(no subject)' }));
+		out.push(...renderMessage(msg, { heading: msg.subject || summary.subject || '(no subject)', member }));
 
 		if (msg.parent) {
 			out.push('');

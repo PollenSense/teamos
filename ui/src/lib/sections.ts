@@ -1,7 +1,7 @@
 /**
  * Inbox sections, browser side.
  *
- * A member's mail is cut into **Needs you** (an open question for them, a reply the sender asked for, or a pin),
+ * A member's mail is cut into **Needs you** (an open question for them, a reply the sender asked for, an @tag, or a pin),
  * **FYI** (the rest of the inbox), **Done** (the archive) and **Sent**. The server decides what needs the member
  * (`needs` on a message, `needsCount` on a thread; rules in `scripts/lib/messaging/inbox-rules.mjs`); this file
  * only sorts threads into the four lists and words the labels. Everything here is pure so it can be tested
@@ -100,7 +100,7 @@ export function needsLabel(member: string, viewer: string | null | undefined, n:
 	return `${n} ${n === 1 ? 'needs' : 'need'} ${member === viewer ? 'you' : member}`;
 }
 
-const REASON_WORDS: Record<NeedsReason, string> = { card: 'open question', reply: 'reply wanted', pin: 'pinned' };
+const REASON_WORDS: Record<NeedsReason, string> = { card: 'open question', reply: 'reply wanted', mention: 'tagged you', pin: 'pinned' };
 
 /** "open question, pinned": why a message needs the member, for a badge title. */
 export function reasonsText(reasons: readonly NeedsReason[] | undefined): string {
@@ -109,11 +109,11 @@ export function reasonsText(reasons: readonly NeedsReason[] | undefined): string
 
 /**
  * The reasons shown on a thread row, one badge each: why the thread is in Needs you when the question chip does not
- * already say so (`card` is the chip's job). In the order wanted reply, pin.
+ * already say so (`card` is the chip's job). In the order wanted reply, tagged, pin.
  */
 export function rowReasons(t: Pick<Thread, 'messages'>): NeedsReason[] {
 	const all = new Set(t.messages.flatMap((m) => m.needs ?? []));
-	return (['reply', 'pin'] as const).filter((r) => all.has(r));
+	return (['reply', 'mention', 'pin'] as const).filter((r) => all.has(r));
 }
 
 /** The words for one reason badge ("reply wanted", "pinned", "open question"). */

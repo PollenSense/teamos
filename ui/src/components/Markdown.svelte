@@ -2,9 +2,9 @@
 import type { LinkMap } from '../lib/linkify.js';
 import { renderMarkdown } from '../lib/markdown.js';
 
-/** `links`: paths the server resolved in this text (exact text -> target); see lib/linkify.ts. */
-const { source, links }: { source: string; links?: LinkMap } = $props();
-const html = $derived(renderMarkdown(source, links));
+/** `links`: paths the server resolved in this text (exact text -> target); see lib/linkify.ts. `mentions`: the members the message tags. */
+const { source, links, mentions }: { source: string; links?: LinkMap; mentions?: string[] } = $props();
+const html = $derived(renderMarkdown(source, links, mentions));
 </script>
 
 <div class="md">{@html html}</div>
@@ -55,6 +55,14 @@ const html = $derived(renderMarkdown(source, links));
 		vertical-align: top;
 	}
 	.md :global(a) { color: var(--accent, inherit); text-decoration: underline; }
+	.md :global(a.mention) {
+		text-decoration: none;
+		font-weight: 600;
+		padding: 0 0.2em;
+		border-radius: 3px;
+		background: var(--primary-subtle);
+		color: var(--primary);
+	}
 	.md :global(hr) { border: 0; border-top: 1px solid var(--border, rgba(127, 127, 127, 0.5)); margin: 0.8rem 0; }
 	.md :global(img) { max-width: 100%; }
 	.md :global(a.md-image) { display: inline-block; max-width: 100%; line-height: 0; }

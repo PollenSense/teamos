@@ -179,7 +179,7 @@ const MARK_PROPS = {
 	fyi: {
 		type: 'boolean',
 		description:
-			'Nothing is needed from the recipients: they may read it if they like. Mark every message that only informs (a status, a thanks, a finished job) so it never counts as something that needs them.',
+			'Nothing is needed from the recipients: they may read it if they like. Mark every message that only informs (a status, a thanks, a finished job) so it never counts as something that needs them. Cannot be combined with an @tag in the body.',
 	},
 	expectsReply: {
 		type: 'boolean',
@@ -235,7 +235,11 @@ const BASE_TOOLS = [
 					description:
 						'Thread subject (required on new threads; auto-derived as "Re: <parent>" for replies if omitted)',
 				},
-				body: { type: 'string', description: 'Message body (markdown)' },
+				body: {
+					type: 'string',
+					description:
+						'Message body (markdown). Writing @name (an active member) tags them: they are added to Cc and the message counts as addressed to them, even on Cc. Tag only to bring someone in or to ask them for something; otherwise write the plain name ("Nate said ..."). A message marked `fyi` cannot tag.',
+				},
 				cc: { type: 'array', items: { type: 'string' }, description: "Optional cc'd member names" },
 				replyTo: { type: 'string', description: 'Optional id of the message being replied to' },
 				projectCode: { type: 'string', description: 'Optional project tag for filtering/grouping' },
@@ -654,7 +658,7 @@ async function handleToolCall(name, args) {
 	switch (name) {
 		case 'send_message': {
 			const { to, subject, body, cc, replyTo, projectCode, questions, answers, fyi, expectsReply } = args;
-			const { id, sentAt, questionsAppended } = await adapter.sendMessage({
+			const { id, sentAt, questionsAppended, mentioned, addedToCc } = await adapter.sendMessage({
 				from: resolveMember(args),
 				to,
 				cc,
@@ -672,7 +676,9 @@ async function handleToolCall(name, args) {
 				id,
 				sentAt,
 				to,
-				cc: cc ?? [],
+				cc: [...(cc ?? []), ...(addedToCc ?? [])],
+				...(mentioned ? { mentioned } : {}),
+				...(addedToCc ? { addedToCc } : {}),
 				...(questionsAppended
 					? { note: 'The body did not contain every question, so a numbered "Questions" block was appended.' }
 					: {}),

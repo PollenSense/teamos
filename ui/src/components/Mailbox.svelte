@@ -616,12 +616,13 @@ function roleOf(msg: ThreadMessage): string {
 									<div class="msg-recipients">
 										<span>To: {msg.to.join(', ') || '—'}</span>
 										{#if msg.cc?.length}<span>Cc: {msg.cc.join(', ')}</span>{/if}
+										{#if msg.mentions?.length}<span class="msg-tagged">Tagged: {msg.mentions.map((n) => `@${n}`).join(', ')}</span>{/if}
 										<span class="msg-full-time">{fullTime(msg.sentAt)}</span>
 									</div>
 									{#if bodies[msg.id] === undefined}
 										<div class="empty small">Loading...</div>
 									{:else if mdPreview}
-										<Markdown source={bodies[msg.id]} links={bodyLinks[msg.id]} />
+										<Markdown source={bodies[msg.id]} links={bodyLinks[msg.id]} mentions={msg.mentions} />
 									{:else}
 										<pre class="msg-text">{bodies[msg.id]}</pre>
 									{/if}
@@ -905,6 +906,7 @@ function roleOf(msg: ThreadMessage): string {
 		color: var(--text-muted);
 		padding: 0.5rem 0 0.25rem;
 	}
+	.msg-tagged { color: var(--primary); font-weight: 600; }
 	.msg-full-time { margin-left: auto; }
 	.msg-text {
 		font-family: var(--font);
