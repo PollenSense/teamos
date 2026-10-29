@@ -93,7 +93,7 @@ test('needsReasons: a tag (mention) counts in To or Cc until the member replies;
 	assert.deepEqual(needsReasons(tagged, 'van', { replied: new Set(['m1']), pinned: new Set(['m1']) }), ['pin']);
 });
 
-test('needsReasons: a reply to the member\'s own message (answer) until they reply; not fyi-marked, not their own, not a Cc-only unrelated reply', () => {
+test('needsReasons: a reply to the member\'s own message (answer) until they reply; not fyi-marked, not their own', () => {
 	const reply = { id: 'm1', from: 'nate', to: ['van'] };
 	const facts = { answers: new Set(['m1']) };
 	assert.deepEqual(needsReasons(reply, 'van', facts), ['answer']);
