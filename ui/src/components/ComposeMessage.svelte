@@ -14,6 +14,7 @@ import {
 } from '../lib/attachments.js';
 import Markdown from './Markdown.svelte';
 import { identity } from '../lib/identity.svelte.js';
+import { prefillRecipients } from '../lib/compose.js';
 import { activeTag, completeTag, insertAtSign, previewTags, suggestions } from '../lib/mentions.js';
 import { router } from '../lib/router.svelte.js';
 import type { MemberSummary, Message, Project } from '../lib/types.js';
@@ -175,6 +176,9 @@ async function load() {
 		} catch {
 			/* original may have been deleted */
 		}
+	} else if (to.size === 0) {
+		// A Compose button on a member's page: that member is in the To line already.
+		to = new Set(prefillRecipients(router.query, members));
 	}
 
 	loading = false;
