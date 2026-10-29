@@ -34,10 +34,10 @@ import { FileMessagingAdapter } from './file.mjs';
  * Currently only the file adapter ships; see teamos/docs/messages.md for the
  * protocol contract a future SMTP/IMAP adapter would implement.
  */
-export async function createMessagingAdapter(adapterName, _config, teamDir) {
+export async function createMessagingAdapter(adapterName, config, teamDir) {
 	switch (adapterName) {
 		case 'file':
-			return new FileMessagingAdapter(teamDir);
+			return new FileMessagingAdapter(teamDir, { answersSince: config?.inbox?.answersSince });
 		default:
 			throw new Error(`Unknown messaging adapter: ${adapterName}. Available: file`);
 	}

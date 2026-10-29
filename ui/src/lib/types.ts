@@ -91,7 +91,7 @@ export interface ThreadMessage {
 	needs?: NeedsReason[];
 }
 
-export type NeedsReason = 'card' | 'reply' | 'mention' | 'pin';
+export type NeedsReason = 'card' | 'reply' | 'mention' | 'answer' | 'pin';
 
 /** Messages sharing a subject, with their reply chains resolved through the master store. */
 export interface Thread {
