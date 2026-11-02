@@ -23,6 +23,11 @@ const MAX_RUN_MS = 60 * 60 * 1000; // 1 hour hard stop (single-run mode only)
 const BACKOFF_INITIAL_MS = 30 * 1000; // 30 seconds after first failure
 const BACKOFF_MAX_MS = 30 * 60 * 1000; // cap at 30 minutes
 
+// state.md is pasted into every cycle's prompt and re-read by every tool call that cycle — see
+// agent-rules/cycle.md § Guidelines. 16 KiB, matching the "16 KB" the rules and self-assessment
+// both quote.
+export const STATE_BUDGET_BYTES = 16 * 1024;
+
 // ─── Prompt building ───────────────────────────────────────────────────────────
 
 function formatRecipients(to, cc) {
@@ -126,6 +131,18 @@ export async function buildQuestionsSection(member, messagingAdapter) {
 		out.push(...more(lists.asked.length), '');
 	}
 	return out;
+}
+
+/**
+ * A one-line warning for the cycle prompt when `state.md` is over `STATE_BUDGET_BYTES`, or null
+ * when it's within budget. Surfaced in the prompt itself (not just the weekly self-assessment)
+ * so a member catches the drift the cycle it happens, rather than carrying it for up to a week.
+ */
+export function stateBudgetWarning(sizeBytes) {
+	if (sizeBytes <= STATE_BUDGET_BYTES) return null;
+	const kb = (sizeBytes / 1024).toFixed(1);
+	const budgetKb = STATE_BUDGET_BYTES / 1024;
+	return `⚠ **state.md is ${kb} KB, over the ${budgetKb} KB budget** (agent-rules/cycle.md § Guidelines). Roll it up this cycle: archive the current file verbatim to \`archives/state-history/<YYYY-MM-DD>-pre-rollup.md\`, then rewrite \`state.md\` under budget — move reusable detail into \`team/docs/<topic>/\` (updating that folder's \`index.md\` and the top-level \`team/docs/index.md\`) rather than dropping it, and only finished narrative into the archive.`;
 }
 
 export async function buildInboxSection(member, messagingAdapter) {
@@ -306,6 +323,8 @@ export async function buildCyclePrompt(member, priority, teamDir, adapters = {})
 		buildWatchesSection(member.name, adapters.watches),
 	]);
 
+	const stateWarning = stateBudgetWarning(Buffer.byteLength(state, 'utf-8'));
+
 	const parts = [
 		`# TeamOS Cycle: ${member.name} (${member.title})`,
 		`# Priority: ${priority}`,
@@ -337,6 +356,7 @@ export async function buildCyclePrompt(member, priority, teamDir, adapters = {})
 		'',
 		'## Your Current State',
 		'',
+		...(stateWarning ? [stateWarning, ''] : []),
 		state || '_No state file found._',
 		'',
 		'## Your TODOs',
