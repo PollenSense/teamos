@@ -3,6 +3,7 @@ import { access, mkdir, readFile, readdir, rm, stat, unlink, writeFile } from 'n
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { join } from 'node:path';
 import type { Plugin } from 'vite';
+import { refusalReason } from './identity-gate.js';
 import { createLinker, type LinksConfig } from './linkify.js';
 
 interface MessageSummary {
@@ -1149,6 +1150,9 @@ export function teamosApi(opts: ApiOptions): Plugin {
 				const method = req.method?.toUpperCase() ?? 'GET';
 
 				try {
+					const refusal = refusalReason(await resolveIdentity(req), path);
+					if (refusal) return json(res, { error: refusal }, 403);
+
 					if (path === '/api/messaging/info' && method === 'GET') {
 						return json(res, { adapter: messagingAdapterName, ...(attachments ? { attachments: attachments.limits } : {}) });
 					}
