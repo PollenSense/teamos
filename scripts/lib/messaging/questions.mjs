@@ -20,7 +20,7 @@ export const MAX_OPTIONS = 4;
 export const MAX_TEXT = 300;
 export const MAX_LABEL = 60;
 export const MAX_DESCRIPTION = 160;
-export const MAX_OTHER = 500;
+export const MAX_OTHER = 1000;
 export const MAX_REASON = 200;
 
 function bad(message) {
