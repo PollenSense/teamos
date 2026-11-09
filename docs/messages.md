@@ -214,6 +214,14 @@ A message from the inbox needs the member (`needs` lists the reasons) when
   `replyTo` chain counts);
 - `mention`: the sender tagged them with `@name` (see [Tags](#tags-name)), in To or Cc, and they have not sent a message
   in the thread since (the same test as `reply`);
+- `answer`: someone else replied directly to a message they sent, the reply is addressed **To** them (a Cc is not
+  asked, as for `reply`; the sender can tag them with `@name`), it is not marked `fyi`, and they have not sent a
+  message in the thread since (the same test as `reply`, and a later message of theirs to the same parent also
+  counts, so "thanks both" sent to their own message settles every reply to it). A plain reply from a person carries no mark, and
+  without this reason it would sit in FYI. Only replies sent after `inbox.answersSince` count (an ISO time in
+  `teamos.config.json`, passed to the adapter by `createMessagingAdapter`; empty or absent means every reply). Set it
+  when switching the reason on, so the replies already in an inbox do not all move to Needs you at once. A reply
+  to someone else's reply is not an answer to the member;
 - `pin`: they pinned it ("Needs me"). A pin lives in the member's `inbox-state.json` and is cleared when the
   message leaves the inbox (archive, delete, or replaced by `supersede_message`); moving it back does not restore it.
 Everything else in the inbox is FYI. `fyi: true` is the sender saying so; mail with neither mark and no card is
@@ -462,7 +470,7 @@ so the web dashboard reconstructs threads at read time over the same adapter:
   thread groups carry `questions: { open, total, waitingOn }` per thread and per message; member summaries carry
   `waitingCount`.
 - Inbox sections (see [Inbox sections](#inbox-sections)): thread groups carry `needsCount` per thread and `needs`
-  (`card`, `reply`, `mention`, `pin`) plus the sender's `fyi` / `expectsReply` marks and the `mentions` per message; member summaries carry
+  (`card`, `reply`, `mention`, `answer`, `pin`) plus the sender's `fyi` / `expectsReply` marks and the `mentions` per message; member summaries carry
   `needsCount`. `POST` and `DELETE /api/members/:name/pins/:id` pin and unpin an inbox message (404 when it is not in
   that inbox). `GET /api/members/:name/search?q=` returns `{ ids }`, the member's archived messages that contain the
   text.

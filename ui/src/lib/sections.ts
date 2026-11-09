@@ -100,7 +100,13 @@ export function needsLabel(member: string, viewer: string | null | undefined, n:
 	return `${n} ${n === 1 ? 'needs' : 'need'} ${member === viewer ? 'you' : member}`;
 }
 
-const REASON_WORDS: Record<NeedsReason, string> = { card: 'open question', reply: 'reply wanted', mention: 'tagged you', pin: 'pinned' };
+const REASON_WORDS: Record<NeedsReason, string> = {
+	card: 'open question',
+	reply: 'reply wanted',
+	mention: 'tagged you',
+	answer: 'replied to you',
+	pin: 'pinned',
+};
 
 /** "open question, pinned": why a message needs the member, for a badge title. */
 export function reasonsText(reasons: readonly NeedsReason[] | undefined): string {
@@ -109,11 +115,11 @@ export function reasonsText(reasons: readonly NeedsReason[] | undefined): string
 
 /**
  * The reasons shown on a thread row, one badge each: why the thread is in Needs you when the question chip does not
- * already say so (`card` is the chip's job). In the order wanted reply, tagged, pin.
+ * already say so (`card` is the chip's job). In the order wanted reply, tagged, replied to you, pin.
  */
 export function rowReasons(t: Pick<Thread, 'messages'>): NeedsReason[] {
 	const all = new Set(t.messages.flatMap((m) => m.needs ?? []));
-	return (['reply', 'mention', 'pin'] as const).filter((r) => all.has(r));
+	return (['reply', 'mention', 'answer', 'pin'] as const).filter((r) => all.has(r));
 }
 
 /** The words for one reason badge ("reply wanted", "pinned", "open question"). */

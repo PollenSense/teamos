@@ -10,12 +10,14 @@
  *              reply) and has not replied in the thread since, or
  *   - `mention`: the sender tagged the member with `@name` (stored as `mentions`, see mentions.mjs), in To or Cc, and
  *              the member has not replied in the thread since (the same test as `reply`), or
+ *   - `answer`: someone else replied directly to a message the member sent, did not mark the reply `fyi`, and the
+ *              member has not replied in the thread since (the same test as `reply`), or
  *   - `pin`:   the member pinned it ("Needs me").
  * Everything else is **FYI**. A message the sender marked `fyi: true` says so; one with neither mark is
  * unmarked (an FYI that ages out more slowly once automatic archiving exists).
  */
 
-export const NEEDS_REASONS = ['card', 'reply', 'mention', 'pin'];
+export const NEEDS_REASONS = ['card', 'reply', 'mention', 'answer', 'pin'];
 
 /**
  * The marks of a message about to be sent: `{ fyi?: true, expectsReply?: true }`.
@@ -45,15 +47,17 @@ export function readMarks(metadata) {
  *
  * @param {{ id: string, from: string, to?: string[], expectsReply?: boolean, mentions?: string[] }} msg a message in the member's inbox
  * @param {string} member
- * @param {{ cards?: Set<string>, replied?: Set<string>, pinned?: Set<string> }} facts
+ * @param {{ cards?: Set<string>, replied?: Set<string>, pinned?: Set<string>, answers?: Set<string> }} facts
  *   `cards`: ids of messages with an open question waiting on `member`; `replied`: ids of messages the member has
- *   replied to (or to a message below them); `pinned`: ids the member pinned.
+ *   replied to (or to a message below them); `pinned`: ids the member pinned; `answers`: ids of messages whose
+ *   direct parent the member sent (a reply to them).
  */
-export function needsReasons(msg, member, { cards = new Set(), replied = new Set(), pinned = new Set() } = {}) {
+export function needsReasons(msg, member, { cards = new Set(), replied = new Set(), pinned = new Set(), answers = new Set() } = {}) {
 	const reasons = [];
 	if (cards.has(msg.id)) reasons.push('card');
 	if (msg.expectsReply && msg.from !== member && msg.to?.includes(member) && !replied.has(msg.id)) reasons.push('reply');
 	if (msg.mentions?.includes(member) && msg.from !== member && !replied.has(msg.id)) reasons.push('mention');
+	if (answers.has(msg.id) && msg.from !== member && !msg.fyi && !replied.has(msg.id)) reasons.push('answer');
 	if (pinned.has(msg.id)) reasons.push('pin');
 	return reasons;
 }

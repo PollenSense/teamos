@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { FileMessagingAdapter } from './file.mjs';
+import { createMessagingAdapter } from './index.mjs';
 import { inboxStatePath } from './inbox-state.mjs';
 
 const MEMBERS = [
@@ -90,6 +91,148 @@ test('sections: expectsReply needs the To recipient until they reply in the thre
 		await adapter.unarchiveMessage('van', ask.id);
 		assert.deepEqual((await adapter.inboxSections('van')).needs, {});
 	}));
+
+test('sections: a reply to a message the member sent needs them until they reply, unless the reply is marked fyi', () =>
+	withAdapter(async (adapter) => {
+		// van asks nate something in plain words; nate's plain reply is not marked, and still has to reach van
+		const mine = await adapter.sendMessage({ from: 'van', to: ['nate'], subject: 'script', body: 'can you run it?' });
+		await tick();
+		const reply = await adapter.sendMessage({ from: 'nate', to: ['van'], replyTo: mine.id, body: 'sent you the output' });
+		await tick();
+		let s = await adapter.inboxSections('van');
+		assert.deepEqual(s.needs, { [reply.id]: ['answer'] });
+		assert.equal(s.needsCount, 1);
+		assert.deepEqual((await adapter.inboxSections('nate')).needs, {}, 'the question itself is nate\'s plain inbox mail');
+
+		// a reply marked fyi says nothing is needed, so it stays FYI
+		const info = await adapter.sendMessage({ from: 'ivy', to: ['van'], replyTo: mine.id, body: 'noted', fyi: true });
+		await tick();
+		assert.deepEqual((await adapter.inboxSections('van')).needs, { [reply.id]: ['answer'] });
+		assert.equal((await adapter.inboxSections('van')).inbox.some((m) => m.id === info.id), true, 'the fyi reply is in the inbox, as FYI');
+
+		// nate answering something van did not send, or a reply to nate's reply, is not an answer to van
+		const other = await adapter.sendMessage({ from: 'ivy', to: ['nate'], cc: ['van'], subject: 'other', body: 'b' });
+		await tick();
+		await adapter.sendMessage({ from: 'nate', to: ['ivy'], cc: ['van'], replyTo: other.id, body: 'ok' });
+		await tick();
+		await adapter.sendMessage({ from: 'ivy', to: ['van'], replyTo: reply.id, body: 'thanks, nate' });
+		await tick();
+		s = await adapter.inboxSections('van');
+		assert.deepEqual(s.needs, { [reply.id]: ['answer'] }, 'only a direct reply to van\'s own message');
+		assert.equal(s.inbox.length, 5);
+
+		// van answers in the thread (anywhere below): it no longer needs him
+		await adapter.sendMessage({ from: 'van', to: ['nate'], replyTo: reply.id, body: 'thanks' });
+		assert.deepEqual((await adapter.inboxSections('van')).needs, {});
+	}));
+
+test('sections: replying to your own message settles every reply to it; replying to one reply settles only that one', () =>
+	withAdapter(async (adapter) => {
+		const mine = await adapter.sendMessage({ from: 'van', to: ['nate', 'ivy'], subject: 'both', body: 'thoughts?' });
+		await tick();
+		const fromNate = await adapter.sendMessage({ from: 'nate', to: ['van'], replyTo: mine.id, body: 'mine is A' });
+		await tick();
+		const fromIvy = await adapter.sendMessage({ from: 'ivy', to: ['van'], replyTo: mine.id, body: 'mine is B' });
+		await tick();
+		assert.deepEqual((await adapter.inboxSections('van')).needs, { [fromNate.id]: ['answer'], [fromIvy.id]: ['answer'] });
+
+		await adapter.sendMessage({ from: 'van', to: ['ivy'], replyTo: fromIvy.id, body: 'thanks ivy' });
+		assert.deepEqual((await adapter.inboxSections('van')).needs, { [fromNate.id]: ['answer'] }, 'only ivy\'s is settled');
+
+		await tick();
+		await adapter.sendMessage({ from: 'van', to: ['nate', 'ivy'], replyTo: mine.id, body: 'thanks both' });
+		assert.deepEqual((await adapter.inboxSections('van')).needs, {}, 'a later message to the same parent settles the rest');
+
+		// a message to the same parent that was sent BEFORE the reply does not settle it
+		await tick();
+		const late = await adapter.sendMessage({ from: 'nate', to: ['van'], replyTo: mine.id, body: 'one more thing' });
+		assert.deepEqual((await adapter.inboxSections('van')).needs, { [late.id]: ['answer'] });
+	}));
+
+test('sections: only a reply addressed To the member is an answer (a Cc is not asked, a tag is); superseding a reply keeps its parent', () =>
+	withAdapter(async (adapter) => {
+		const mine = await adapter.sendMessage({ from: 'van', to: ['nate'], cc: ['ivy'], subject: 'q', body: 'b' });
+		await tick();
+		const ccOnly = await adapter.sendMessage({ from: 'ivy', to: ['nate'], cc: ['van'], replyTo: mine.id, body: 'fyi to you, van' });
+		await tick();
+		assert.deepEqual((await adapter.inboxSections('van')).needs, {}, 'copied only: stays FYI');
+		const tagged = await adapter.sendMessage({ from: 'ivy', to: ['nate'], cc: ['van'], replyTo: mine.id, body: '@van this one is for you' });
+		await tick();
+		assert.deepEqual((await adapter.inboxSections('van')).needs, { [tagged.id]: ['mention'] });
+		assert.ok((await adapter.inboxSections('van')).inbox.some((m) => m.id === ccOnly.id), 'it is in the inbox, as FYI');
+
+		const reply = await adapter.sendMessage({ from: 'nate', to: ['van'], replyTo: mine.id, body: 'first words' });
+		await tick();
+		// nate replaces his reply and forgets the replyTo: the replacement still answers van's message
+		const better = await adapter.supersedeMessage({ from: 'nate', supersedes: [reply.id], to: ['van'], body: 'better words' });
+		const needs = (await adapter.inboxSections('van')).needs;
+		assert.deepEqual(needs[better.id], ['answer'], 'inherits the predecessor\'s parent');
+		assert.equal(needs[reply.id], undefined, 'the superseded one is gone from the inbox');
+	}));
+
+test('a half-written message is not remembered as a message with no parent', () =>
+	withAdapter(async (adapter, dir) => {
+		const mine = await adapter.sendMessage({ from: 'van', to: ['nate'], subject: 'q', body: 'b' });
+		await tick();
+		const reply = await adapter.sendMessage({ from: 'nate', to: ['van'], replyTo: mine.id, body: 'r' });
+		const file = join(dir, 'messages', `${reply.id}.md`);
+		const whole = await readFile(file, 'utf-8');
+		await writeFile(file, '', 'utf-8'); // another process is rewriting it
+		assert.equal((await adapter._replyMetaOf(reply.id))?.sentAt, '');
+		await writeFile(file, whole, 'utf-8');
+		assert.equal((await adapter._replyMetaOf(reply.id))?.replyTo, mine.id, 'the next read sees the real message');
+	}));
+
+test('sections: an answer survives archive and move back until the member replies, and mixes with other reasons in order', () =>
+	withAdapter(async (adapter) => {
+		const mine = await adapter.sendMessage({ from: 'van', to: ['nate'], subject: 'q', body: 'b' });
+		await tick();
+		const reply = await adapter.sendMessage({ from: 'nate', to: ['van'], replyTo: mine.id, body: 'r', expectsReply: true });
+		await tick();
+		assert.deepEqual((await adapter.inboxSections('van')).needs, { [reply.id]: ['reply', 'answer'] });
+		await adapter.archiveMessage('van', reply.id);
+		assert.deepEqual((await adapter.inboxSections('van')).needs, {}, 'archived: gone from Needs you');
+		await adapter.unarchiveMessage('van', reply.id);
+		assert.deepEqual((await adapter.inboxSections('van')).needs, { [reply.id]: ['reply', 'answer'] });
+		await adapter.pinMessage('van', reply.id);
+		assert.deepEqual((await adapter.inboxSections('van')).needs, { [reply.id]: ['reply', 'answer', 'pin'] });
+	}));
+
+test('sections: it is the same for an agent\'s mailbox (a view of what waits on the agent)', () =>
+	withAdapter(async (adapter) => {
+		const mine = await adapter.sendMessage({ from: 'ivy', to: ['van'], subject: 'q', body: 'b', fyi: true });
+		await tick();
+		const reply = await adapter.sendMessage({ from: 'van', to: ['ivy'], replyTo: mine.id, body: 'yes' });
+		assert.deepEqual((await adapter.inboxSections('ivy')).needs, { [reply.id]: ['answer'] });
+	}));
+
+test('sections: inbox.answersSince leaves the replies already in the inbox in FYI; a bad value counts every reply', async () => {
+	const dir = await mkdtemp(join(tmpdir(), 'teamos-sections-'));
+	try {
+		await writeFile(join(dir, 'members.json'), JSON.stringify({ members: MEMBERS }), 'utf-8');
+		const plain = new FileMessagingAdapter(dir);
+		const mine = await plain.sendMessage({ from: 'van', to: ['nate'], subject: 'q', body: 'b' });
+		await tick();
+		const before = await plain.sendMessage({ from: 'nate', to: ['van'], replyTo: mine.id, body: 'old reply' });
+		await tick();
+		const cutoff = new Date().toISOString();
+		await tick();
+		const after = await plain.sendMessage({ from: 'nate', to: ['van'], replyTo: mine.id, body: 'new reply' });
+
+		assert.deepEqual((await plain.inboxSections('van')).needs, { [before.id]: ['answer'], [after.id]: ['answer'] }, 'no cutoff: every reply');
+		const config = { inbox: { answersSince: cutoff } };
+		const cut = await createMessagingAdapter('file', config, dir);
+		assert.deepEqual((await cut.inboxSections('van')).needs, { [after.id]: ['answer'] }, 'only replies after the cutoff');
+		assert.equal((await cut.inboxSections('van')).inbox.length, 2, 'the older reply is still in the inbox, as FYI');
+		const bad = new FileMessagingAdapter(dir, { answersSince: 'not a time' });
+		assert.equal(bad.answersSince, '');
+		assert.equal(new FileMessagingAdapter(dir, { answersSince: 5 }).answersSince, '');
+		assert.equal(new FileMessagingAdapter(dir, {}).answersSince, '');
+		assert.equal(new FileMessagingAdapter(dir).answersSince, '');
+	} finally {
+		await rm(dir, { recursive: true, force: true });
+	}
+});
 
 test('sections: an open card counts for the member it waits on, also after they archive the message', () =>
 	withAdapter(async (adapter) => {
