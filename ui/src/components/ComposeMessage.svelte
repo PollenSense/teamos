@@ -14,6 +14,7 @@ import {
 } from '../lib/attachments.js';
 import Markdown from './Markdown.svelte';
 import { identity } from '../lib/identity.svelte.js';
+import { prefillRecipients } from '../lib/compose.js';
 import { activeTag, completeTag, insertAtSign, previewTags, suggestions } from '../lib/mentions.js';
 import { router } from '../lib/router.svelte.js';
 import type { MemberSummary, Message, Project } from '../lib/types.js';
@@ -33,6 +34,8 @@ let from = $state(identity.name ?? '');
 let subject = $state('');
 let projectCode = $state('');
 let body = $state('');
+/** The sender wants a written answer: the message sits in each recipient's Needs you until they reply. */
+let expectsReply = $state(false);
 
 /** One image on its way with this message; `ref` is what the body's placeholder says until the upload gives a token. */
 interface Attached {
@@ -175,6 +178,9 @@ async function load() {
 		} catch {
 			/* original may have been deleted */
 		}
+	} else if (to.size === 0) {
+		// A Compose button on a member's page: that member is in the To line already.
+		to = new Set(prefillRecipients(router.query, members));
 	}
 
 	loading = false;
@@ -216,6 +222,7 @@ async function send() {
 			body: body.trim(),
 			replyTo: replyMessage?.id,
 			projectCode: projectCode || undefined,
+			expectsReply: expectsReply || undefined,
 			attachments: readyTokens.length > 0 ? readyTokens : undefined,
 		});
 		addedToCc = result.addedToCc ?? [];
@@ -359,6 +366,7 @@ function reset() {
 	subject = '';
 	projectCode = '';
 	body = '';
+	expectsReply = false;
 	caret = 0;
 	addedToCc = [];
 	sent = false;
@@ -567,6 +575,11 @@ function reset() {
 			{/if}
 		</div>
 
+		<label class="reply-wanted">
+			<input type="checkbox" bind:checked={expectsReply} data-testid="expects-reply" />
+			<span><strong>Needs a reply</strong> <span class="reply-wanted-hint">Stays in Needs you for everyone in To until they answer.</span></span>
+		</label>
+
 		{#if sendError}
 			<div class="send-error" role="alert">
 				<strong>Send failed:</strong> {sendError}
@@ -729,6 +742,17 @@ function reset() {
 	.tray-remove { font-size: 1.1rem; line-height: 1; padding: 0.25rem 0.5rem; color: var(--text-muted); border-radius: var(--radius); }
 	.tray-remove:hover { background: var(--bg); color: var(--text); }
 
+	.reply-wanted {
+		display: flex;
+		align-items: flex-start;
+		gap: 0.5rem;
+		min-height: 44px;
+		margin-bottom: 1rem;
+		font-size: 0.875rem;
+		cursor: pointer;
+	}
+	.reply-wanted input { flex: none; width: 1.25rem; height: 1.25rem; padding: 0; margin-top: 0.125rem; }
+	.reply-wanted-hint { color: var(--text-muted); }
 	.send-error {
 		margin-top: 1rem;
 		padding: 0.75rem 1rem;
