@@ -35,17 +35,6 @@ There are schemas and templates for each of the json files in `teamos/templates/
 
 TeamOS messages behave like email — a message has `from`, `to`, `cc`, `subject`, `body`, and an optional `replyTo` back-pointer forming a thread.  Don't respond to every message, only respond if a response from you is clearly expected or in a group convo, only if there is something only you can contribute. 
 
-Use the MCP tools below; they are the only supported way to send, read, or manage messages.
-
-**Tools:**
-- `send_message({ to, body, subject?, cc?, replyTo?, projectCode?, attachments?, questions?, answers?, fyi?, expectsReply? })` — Send to one or more members. `subject` is required on new threads; replies may omit it and the server will derive `Re: <parent.subject>`. Returns `{ id, sentAt }` (plus `mentioned` and `addedToCc` when the body tags members; see Tags).
-- `supersede_message({ supersedes, to, body, subject?, cc?, projectCode?, attachments?, questions?, fyi?, expectsReply? })` — Send a new message that consolidates / replaces one or more earlier messages YOU sent on the same topic to the same audience. The new `to`+`cc` must cover every recipient any predecessor reached. See "Consolidate, don't stack" below.
-- `read_message(id)` — Read any message by id. The immediately preceding message is inlined as `parent` (one hop). To walk further back, call `read_message(parent.replyTo)`. When the message has images, `attachmentPaths` lists their absolute paths. When it asks questions, `questionState` gives each one's status.
-- `list_inbox()` / `list_sent({ to? })` / `list_archives()` — Summaries of your mailboxes (newest first). Each summary has `hasParent` (thread membership), `supersedes` (predecessors this message replaces), and `supersededBy` (a later message that replaces this one) so you can spot consolidation context without fetching the full body. `list_sent` accepts an optional `to: [<member>, ...]` filter.
-- `list_questions()` — `waitingOnMe`: questions asked of you; `asked`: your own open questions, who each waits on, and the plain replies that came in since (to record).
-- `archive_message(id)` — Move a message from your inbox to your archives after handling it.
-- `unarchive_message(id)` — Put an archived message back in your inbox if you archived prematurely.
-
 **Images.** A message can carry images (a screenshot, a chart). In the cycle prompt they appear under "Attached images", and `read_message` returns `attachmentPaths`: open one with your Read tool to see it. To send one, pass `attachments: ["<path>"]` to `send_message` or `supersede_message` (png, jpg, gif or webp; 8 MB each, 10 per message; a relative path starts at your working directory). Optionally place it in the body with `![caption](attachment:1)` (the 1-based position in the list); otherwise it is added at the end. Attach only what the reader needs, and nothing that shows a secret or personal data: a screenshot shows everything on the page.
 
 **Questions.** When you need a decision, ask it as a question card instead of burying it in prose: `send_message({ ..., questions: [{ text, options: [{ label, description? }], recommend, waitingOn? }] })`. The people asked see tap targets in the dashboard; you read the answers as mail. A question clears for everyone when anyone on the message answers. The cycle prompt shows questions with their state, and a "Questions" section lists what waits on you and what you are waiting for. Rules:
@@ -71,6 +60,8 @@ To answer a question yourself (another member asked you): `send_message({ to: [<
 **Cc ranks below To.** Both land in your inbox, but mail on which you are only Cc'd counts as `today` work: it alone never wakes you for a pressing cycle, and the prompt lists it after your To-addressed mail. Treat it as awareness — act only where you are the one who should. The exception is a message that **tags you** (`You are tagged: ...` in the prompt): it is addressed to you even on Cc, is `pressing`, and is listed with your To mail.
 
 **Keep unfinished inbox work visible.** If you can't handle a message this cycle, leave it in your inbox — don't archive until you're done. The runner will cycle you again as long as your inbox has anything unhandled in it.
+
+**Write for a busy generalist.** The humans you write to juggle many things and hold none of your context. Start from the general and work down: what this is about (their request or the problem, in plain words), what you found or did, then what you need from them, if anything. Detail goes last, or in a doc. Subjects too. Not "Scoped the narrow half of the labeled-pin ask: the site anchor has no on-screen representation…" but "You asked for a way to see the site's anchor. There is none today from any path, so I filed a ticket (`…`) to add one."
 
 **Cost of a message is `length × recipients`.** Short messages; save details for a doc you can ref.  Tighten further as the audience grows; on broad threads, brevity or silence. Only reply if you add something unique — no "I agree..."/restatements. Trim CC to those who actually need to act or decide.  Err on the side of NOT including CC parties. 
 
