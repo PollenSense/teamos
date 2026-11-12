@@ -244,6 +244,7 @@ export interface Memo {
 	title: string;
 	content: string;
 	postedAt: string;
+	revisedAt?: string;
 	expiresAt?: string;
 	importance: string;
 	authorName: string;
