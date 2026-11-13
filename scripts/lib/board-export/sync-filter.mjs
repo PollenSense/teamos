@@ -1,8 +1,10 @@
 /**
  * Which paths does an rclone filter file keep off Drive?
  *
- * The board import writes issue text, comments and screenshots into folders that must stay on this
- * machine (`team/board/raw/`, `team/board/files/`, and the export folder the fetcher fills). Text that
+ * The board import writes issue text and comments into folders that must stay on this machine
+ * (`team/board/raw/`, and the export folder the fetcher fills). Uploaded files (`team/board/files/`) are
+ * NOT local on purpose: Van wants every screenshot kept in Drive on its own issue (2026-11-13), so nothing
+ * here asks for that folder to be filtered, and the live check fails if someone filters it. Text that
  * reached Drive cannot be pulled back, so the importer asks this module before it writes anything:
  * "does the filter really exclude this folder?" It reads the same file `scripts/drive-sync.sh` hands to
  * rclone and follows rclone's own model (fs/filter):
