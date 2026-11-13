@@ -48,6 +48,8 @@ export function buildFixture() {
 			{ id: 'cm-1', issueKey: 'PSE-1', body: 'Invented comment.', createdAt: '2025-02-01T09:00:00.000Z', authorId: 'u-1' },
 			{ id: 'cm-2', issueKey: 'PSE-1', body: 'Invented bot comment.', createdAt: '2025-02-01T09:05:00.000Z', botName: 'Test Bot' },
 			{ id: 'cm-3', projectUpdateId: 'pu-1', body: 'Invented comment on an update.', createdAt: '2025-02-02T09:00:00.000Z', externalUserName: 'Outside Person' },
+			{ id: 'cm-4', projectId: 'p-1', body: 'Invented comment on a project.', createdAt: '2025-02-03T09:00:00.000Z', authorId: 'u-1' },
+			{ id: 'cm-5', issueKey: 'PSE-1', parentId: 'cm-1', body: 'Invented reply.', createdAt: '2025-02-01T10:00:00.000Z', authorId: 'u-2' },
 		],
 		relations: [
 			{ id: 'r-1', type: 'blocks', issueKey: 'PSE-1', relatedIssueKey: 'PSE-2' },
