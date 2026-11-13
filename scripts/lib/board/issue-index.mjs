@@ -1,4 +1,4 @@
-import { mkdir, open, readFile, readdir, rename, stat, writeFile } from 'node:fs/promises';
+import { mkdir, open, readFile, readdir, rename, stat, unlink, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { parseHead } from './frontmatter.mjs';
 import { isTeamKey, normalizeId, parseId } from './ids.mjs';
@@ -19,6 +19,13 @@ async function mapLimit(items, limit, fn) {
 	};
 	await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
 	return results;
+}
+
+/** Team key first, then the number as a number: PSE-9 comes before PSE-10. */
+function compareIds(a, b) {
+	const pa = parseId(a);
+	const pb = parseId(b);
+	return pa.team === pb.team ? pa.number - pb.number : pa.team < pb.team ? -1 : 1;
 }
 
 /**
@@ -80,6 +87,7 @@ export class IssueIndex {
 			await rename(tmp, this.cachePath);
 		} catch {
 			// The cache is an optimisation: failing to save it must not fail a read.
+			await unlink(tmp).catch(() => {});
 		}
 	}
 
@@ -103,16 +111,18 @@ export class IssueIndex {
 		let teams;
 		try {
 			teams = await readdir(this.dir, { withFileTypes: true });
-		} catch {
-			return files;
+		} catch (err) {
+			if (err.code === 'ENOENT') return files; // no issues yet
+			throw err; // an unreadable folder is not an empty one: do not let the index (and the alias guard) believe that
 		}
 		for (const team of teams) {
 			if (!team.isDirectory() || !isTeamKey(team.name)) continue;
 			let names;
 			try {
 				names = await readdir(join(this.dir, team.name));
-			} catch {
-				continue;
+			} catch (err) {
+				if (err.code === 'ENOENT') continue;
+				throw err;
 			}
 			for (const name of names) {
 				const match = ISSUE_FILE.exec(name);
@@ -186,7 +196,7 @@ export class IssueIndex {
 			}
 			this.byId.set(file.id, { id: file.id, rel: file.rel, fields: hit.fields });
 		}
-		const ids = [...this.byId.keys()].sort();
+		const ids = [...this.byId.keys()].sort(compareIds);
 		for (const id of ids) {
 			const aliases = Array.isArray(this.byId.get(id).fields.aliases) ? this.byId.get(id).fields.aliases : [];
 			for (const raw of aliases) {
@@ -231,10 +241,6 @@ export class IssueIndex {
 
 	/** All issues, sorted by team then number. */
 	entries() {
-		return [...this.byId.values()].sort((a, b) => {
-			const pa = parseId(a.id);
-			const pb = parseId(b.id);
-			return pa.team === pb.team ? pa.number - pb.number : pa.team < pb.team ? -1 : 1;
-		});
+		return [...this.byId.values()].sort((a, b) => compareIds(a.id, b.id));
 	}
 }

@@ -52,21 +52,22 @@ Every write says what it replaces: `expect: 'new'` or the content hash it read e
 place. A different hash is `changed`; identical text writes nothing (`changed: false`). Errors are `BoardError`
 with a `code` (`errors.mjs`). Phase (a) has one writer, the importer; field-level merge is phase (c).
 
-`store.nextNumber(key)` allocates IDs (never reuses one); `raiseNextNumber` is for the importer's last step.
+`store.nextNumber(key)` allocates IDs (never reuses one); `raiseNextNumber` is for the importer's last step. `nextNumber` belongs to the allocator: `writeTeam` keeps it from the existing file and only ever raises it. A lock file with no readable content (empty, half-written) is judged by its age on disk; a stale lock that cannot be removed ends in `locked` at the deadline.
 
 ## Index (`issue-index.mjs`)
 
 `store.index.refresh()` stats every issue file (parallel) and re-reads those whose **mtime or size** differ from the
 cache (Drive can restore an older mtime on a changed file, so "newer than" is not the test). The cache lives in
 memory and in `team/.logs/board/index.json`. `byId`, `resolve(idOrAlias)`, `entries()`, `problems` (damaged,
-misplaced, id-mismatch, alias-shadowed, alias-taken). 1,500 issues: about 125 ms cold, 30 ms warm. Each write
+misplaced, id-mismatch, alias-shadowed, alias-taken; a shared alias goes to the lower issue number). A folder the index cannot read makes
+`refresh()` throw: an unreadable folder is never taken for an empty one. 1,500 issues: about 125 ms cold, 30 ms warm. Each write
 refreshes first (to check aliases), so a write costs a stat per issue: about 4 ms at 600 issues, linear.
 
 ## Config (`config.mjs`)
 
 `board:` in `teamos.config.json`: `path` (inside `team/`, default `team/board`), `pollMinutes`, `importer`, `teams`,
-`enabled`. **Without the section the module is off**: `openBoard(config, repoRoot)` returns null. A bad value turns it
-off with the reason instead of half on.
+`enabled` (`true` or `false`; anything else is off). **Without the section the module is off**: `openBoard(config, repoRoot)` returns
+null. A bad value turns it off with the reason instead of half on.
 
 ## Tests
 

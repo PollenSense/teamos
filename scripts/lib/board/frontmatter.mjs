@@ -135,10 +135,11 @@ export function contentHash(text) {
  */
 export function mergeFields(existing, incoming, known) {
 	const out = {};
-	for (const key of known) if (incoming[key] !== undefined) out[key] = incoming[key];
+	const given = (key) => Object.hasOwn(incoming, key) && incoming[key] !== undefined; // own keys only: `constructor` and `toString` are field names too
+	for (const key of known) if (given(key)) out[key] = incoming[key];
 	const knownSet = new Set(known);
 	for (const [key, value] of Object.entries(existing ?? {})) {
-		if (!knownSet.has(key) && incoming[key] === undefined) out[key] = value;
+		if (!knownSet.has(key) && !given(key)) out[key] = value;
 	}
 	for (const [key, value] of Object.entries(incoming)) {
 		if (!knownSet.has(key) && value !== undefined) out[key] = value;

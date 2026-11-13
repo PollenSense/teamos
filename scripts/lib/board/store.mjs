@@ -17,7 +17,8 @@ export const ISSUE_FIELDS = [
 	'created', 'updated', 'started', 'completed', 'canceled', 'archived', 'deleted', 'source',
 ];
 export const PROJECT_FIELDS = ['code', 'name', 'linearId', 'teams', 'status', 'lead', 'startDate', 'targetDate', 'milestones', 'updates', 'created', 'updated', 'source'];
-export const TEAM_FIELDS = ['key', 'name', 'linearId', 'native', 'states', 'cycles', 'nextNumber', 'source'];
+// `nextNumber` is not in this list on purpose: it belongs to the allocator and only ever goes up (see writeTeam).
+export const TEAM_FIELDS = ['key', 'name', 'linearId', 'native', 'states', 'cycles', 'source'];
 export const CYCLE_FIELDS = ['number', 'team', 'name', 'startsAt', 'endsAt', 'completed', 'linearId', 'source'];
 
 /**
@@ -188,13 +189,15 @@ export class BoardStore {
 				if (this.index.byId.has(alias)) throw new BoardError('alias-conflict', `alias ${alias} of ${id} is the real ID of another issue`, { alias, owner: alias });
 				const owner = this.index.aliasOwner.get(alias);
 				if (owner && owner !== id) throw new BoardError('alias-conflict', `alias ${alias} of ${id} already belongs to ${owner}`, { alias, owner });
+				// A file with that name is a real issue even when the index cannot read it (damaged, id mismatch).
+				if (await stat(this.issuePath(alias)).then(() => true, () => false)) throw new BoardError('alias-conflict', `alias ${alias} of ${id} is the name of an existing issue file`, { alias, owner: alias });
 			}
 			const current = await this._readDocument(path, `issue ${id}`);
 			this._check(current && { hash: current.hash }, expect, `issue ${id}`);
 			const merged = mergeFields(current?.fields, { ...fields, ...(aliases ? { aliases } : {}), team }, ISSUE_FIELDS);
 			const text = serializeDocument(merged, body ?? current?.body ?? '');
 			const result = await this._put(path, text, expect, `issue ${id}`);
-			if (result.changed) await this.index.noteWritten(`${team}/${id}.md`, merged);
+			if (result.changed) await this.index.noteWritten(`${team}/${id}.md`, parseDocument(text).fields); // what the file says, not the caller's objects
 			return { id, ...result };
 		}, this.lockOptions);
 	}
@@ -223,11 +226,13 @@ export class BoardStore {
 	}
 
 	// --- JSON files: teams, cycles, people ---
-	async _writeJsonRecord(path, name, data, known, expect, what) {
+	async _writeJsonRecord(path, name, data, known, expect, what, finish) {
+		if (data === null || typeof data !== 'object' || Array.isArray(data)) throw new BoardError('bad-value', `${what} must be written as a JSON object`);
 		return withLock(this.lockDir, name, async () => {
 			const current = await this._readJson(path, what);
 			this._check(current && { hash: current.hash }, expect, what);
 			const merged = known ? mergeFields(current?.data, data, known) : data;
+			if (finish) finish(merged, current?.data);
 			return this._put(path, this._jsonText(merged), expect, what);
 		}, this.lockOptions);
 	}
@@ -236,9 +241,20 @@ export class BoardStore {
 		const file = await this._readJson(this.teamPath(key), `team ${key}`);
 		return file && { key, data: file.data, hash: file.hash };
 	}
+	/**
+	 * `nextNumber` is the allocator's: it is kept from the existing file and only ever raised (the larger of the old
+	 * value and the one given), so a team rewrite can neither erase it nor hand out an ID twice.
+	 */
 	async writeTeam(data, { expect } = {}) {
 		const key = assertTeamKey(data?.key);
-		return { key, ...(await this._writeJsonRecord(this.teamPath(key), `team-${key}`, data, TEAM_FIELDS, expect, `team ${key}`)) };
+		if (data.nextNumber !== undefined && (!Number.isInteger(data.nextNumber) || data.nextNumber < 1)) throw new BoardError('bad-value', `nextNumber ${JSON.stringify(data.nextNumber)} is not a positive whole number`);
+		const finish = (merged, old) => {
+			const keep = Number.isInteger(old?.nextNumber) && old.nextNumber >= 1 ? old.nextNumber : 0;
+			const next = Math.max(keep, data.nextNumber ?? 0);
+			if (next > 0) merged.nextNumber = next;
+			else delete merged.nextNumber;
+		};
+		return { key, ...(await this._writeJsonRecord(this.teamPath(key), `team-${key}`, data, TEAM_FIELDS, expect, `team ${key}`, finish)) };
 	}
 
 	async readCycle(team, number) {

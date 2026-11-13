@@ -25,6 +25,7 @@ export function boardConfig(config, repoRoot) {
 	if (section === undefined || section === null) return { on: false, reason: 'no board section in the config' };
 	if (typeof section !== 'object' || Array.isArray(section)) return { on: false, reason: 'board is not an object' };
 	if (section.enabled === false) return { on: false, reason: 'board.enabled is false' };
+	if (section.enabled !== undefined && section.enabled !== true) return { on: false, reason: 'board.enabled must be true or false' };
 
 	const path = section.path ?? BOARD_DEFAULTS.path;
 	if (typeof path !== 'string' || path === '' || isAbsolute(path)) return { on: false, reason: 'board.path must be a relative folder' };
