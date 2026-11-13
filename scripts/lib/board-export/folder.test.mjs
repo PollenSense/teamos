@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import { FORMAT, FORMAT_VERSION, MANIFEST_FILE, TYPE_NAMES, readExport, writeExport } from './index.mjs';
 import { buildFixture } from './fixture-data.mjs';
 
-const FILTER = '- /team/board/raw/**\n- /team/board/files/**\n';
+const FILTER = '- /team/board/raw/**\n';
 
 function sandbox() {
 	const root = mkdtempSync(join(tmpdir(), 'board-export-folder-'));

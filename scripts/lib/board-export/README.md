@@ -40,14 +40,17 @@ filterText })` first: a folder outside the synced workspace is fine; a folder in
 to keep it local. The guard checks four probe paths in the folder (top, one level, two levels, a dot name), so a filter
 that names one depth or one extension is not enough. It follows rclone's own model (file rules and directory rules, first
 match, directories walked first); see the header of `sync-filter.mjs`. Uploads (`files/`) and raw texts (`raw/`) of the
-board use the same guard (A6b and the importer call it before writing).
+board: raw texts (`raw/`) use the same guard (the importer calls it before writing). Uploads (`files/`) do NOT: Van
+wants every uploaded screenshot kept in Drive on its issue (2026-11-13), so that folder must stay unfiltered; the
+downloader treats what it saves as person data (open for the work, never copy what a picture shows).
 
-`node scripts/board-export-check.mjs --workspace <synced folder>` prints `local` or `WOULD SYNC` per folder
-(`team/board/raw`, `team/board/files` by default; `--folder` adds more; `--filter` names another filter file) and exits 1
-if any would sync. Run it after the filter edit and the bisync `--resync`, before the first import.
+`node scripts/board-export-check.mjs --workspace <synced folder>` prints one line per folder: `local` or `WOULD SYNC` for
+a folder that must stay local (`team/board/raw` by default; `--folder` names others), `syncs` or `HIDDEN` for one that must
+reach Drive (`team/board/files` by default; `--synced` names others; `--filter` names another filter file). It exits 1 if
+any line is wrong. Run it after the filter edit and the bisync `--resync`, before the first import.
 
 The live check in the tests, `BOARD_RCLONE_FILTER=<path of scripts/rclone-filter.txt> node --test scripts/lib/board-export/`,
-fails until the two step-0 lines (`- /team/board/raw/**`, `- /team/board/files/**`) are in that file.
+fails until the one step-0 line (`- /team/board/raw/**`) is in that file, and fails if a line hides `team/board/files`.
 
 ## Tests
 
