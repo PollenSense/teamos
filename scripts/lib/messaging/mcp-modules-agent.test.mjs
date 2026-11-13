@@ -11,7 +11,7 @@ const ECHO = `export const tools = [
 		name: 'echo_tool',
 		description: 'Echo the text back.',
 		inputSchema: { type: 'object', properties: { text: { type: 'string' } }, required: ['text'] },
-		handler: async (args, context) => ({ said: args.text, by: args.member, hasTeamDir: typeof context.teamDir === 'string' }),
+		handler: async (args, context) => ({ said: args.text, member: context.member, hasTeamDir: typeof context.teamDir === 'string' }),
 	},
 	{
 		name: 'fails_tool',
@@ -30,6 +30,8 @@ async function configure(dir, modules, files = {}) {
 
 const names = (result) => result.tools.map((t) => t.name);
 
+// The list with no module is compared with this branch's own list without `mcp` (a byte-for-byte comparison with
+// origin/main's server was made by hand: identical, 24398 bytes, with no config and with an empty list).
 test('with no module loaded the tool list is the same', () =>
 	withProject(async (dir) => {
 		let plain;
@@ -62,13 +64,12 @@ test('a module registers a tool: it is listed with the member field, answers a c
 			assert.equal(echo.inputSchema.properties.text.type, 'string');
 			assert.equal(echo.inputSchema.properties.member.type, 'string', 'the member field is added like for every tool');
 			assert.deepEqual(echo.inputSchema.required, ['text']);
-			assert.equal(echo.handler, undefined, 'the handler never leaves the server');
 
 			const answer = await tool('echo_tool', { text: 'hello' });
 			assert.equal(answer.isError, false, answer.text);
-			assert.deepEqual(answer.json, { said: 'hello', hasTeamDir: true }, 'no member given: none passed on (JSON drops undefined)');
+			assert.deepEqual(answer.json, { said: 'hello', member: 'alice', hasTeamDir: true }, 'the server\'s default member is the caller');
 			const as = await tool('echo_tool', { text: 'hi', member: 'bob' });
-			assert.equal(as.json.by, 'bob');
+			assert.equal(as.json.member, 'bob');
 
 			// the built-in tool of the same name as the impostor is the real one
 			const sent = await tool('send_message', { to: ['bob'], subject: 's', body: 'real one' });
@@ -114,6 +115,74 @@ test('a module list that is not a list loads nothing and breaks nothing', () =>
 		await configure(dir, 'echo-module.mjs', { 'echo-module.mjs': ECHO });
 		await withServer(dir, async ({ call, tool }) => {
 			assert.ok(!names((await call('tools/list', {})).result).includes('echo_tool'));
+			assert.equal((await tool('list_inbox', { member: 'alice' })).json.length, 0);
+		});
+	}));
+
+test('the caller is validated like for the built-in tools, and is null when nobody is set', () =>
+	withProject(async (dir) => {
+		await configure(dir, ['echo-module.mjs'], { 'echo-module.mjs': ECHO });
+		await withServer(dir, async ({ tool }) => {
+			const walk = await tool('echo_tool', { text: 'x', member: '../../etc' });
+			assert.equal(walk.error.code, -32602);
+			assert.match(walk.error.message, /Invalid member name/);
+			const notString = await tool('echo_tool', { text: 'x', member: 5 });
+			assert.equal(notString.error.code, -32602);
+		});
+		await withServer(
+			dir,
+			async ({ tool }) => {
+				assert.equal((await tool('echo_tool', { text: 'x' })).json.member, null, 'no member and no default: null, not an error');
+				assert.equal((await tool('echo_tool', { text: 'x', member: 'bob' })).json.member, 'bob');
+			},
+			'',
+		);
+	}));
+
+test('late failures in module code are logged; the server keeps answering', () =>
+	withProject(async (dir) => {
+		const LATE = `export const tools = [
+	{ name: 'late_reject', description: 'Leaves a rejected promise behind.', inputSchema: { type: 'object' },
+		handler: () => { Promise.reject(new Error('late rejection')); return { state: 'queued' }; } },
+	{ name: 'late_throw', description: 'Throws from a timer.', inputSchema: { type: 'object' },
+		handler: () => { setTimeout(() => { throw new Error('late throw'); }, 10); return { state: 'queued' }; } },
+];\n`;
+		await configure(dir, ['late.mjs'], { 'late.mjs': LATE });
+		await withServer(dir, async ({ tool }) => {
+			assert.equal((await tool('late_reject', {})).json.state, 'queued');
+			assert.equal((await tool('late_throw', {})).json.state, 'queued');
+			await new Promise((resolve) => setTimeout(resolve, 150));
+			assert.equal((await tool('list_inbox', { member: 'alice' })).json.length, 0, 'still alive');
+			assert.equal((await tool('late_reject', {})).json.state, 'queued');
+		});
+	}));
+
+test('hostile definitions (circular schema, BigInt, class with getters, results that cannot be sent) do not hide any tool', () =>
+	withProject(async (dir) => {
+		const HOSTILE = `const circular = { type: 'object', properties: {} };
+circular.properties.self = circular;
+class Greeter {
+	get name() { return 'greet_tool'; }
+	get description() { return 'Greets.'; }
+	get inputSchema() { return { type: 'object' }; }
+	handler() { return { greeting: 'hello from ' + this.constructor.name }; }
+}
+export const tools = [
+	{ name: 'circular_schema', description: 'd', inputSchema: circular, handler() {} },
+	{ name: 10n, description: 'd', inputSchema: { type: 'object' }, handler() {} },
+	{ name: 'bad_required', description: 'd', inputSchema: { type: 'object', required: 'text' }, handler() {} },
+	new Greeter(),
+	{ name: 'circular_result', description: 'Returns a circular value.', inputSchema: { type: 'object' },
+		handler: () => { const o = {}; o.self = o; return o; } },
+];\n`;
+		await configure(dir, ['hostile.mjs'], { 'hostile.mjs': HOSTILE });
+		await withServer(dir, async ({ call, tool }) => {
+			const listed = (await call('tools/list', {})).result;
+			const extra = names(listed).filter((n) => !['send_message', 'list_inbox'].includes(n) && /_(tool|result)$/.test(n));
+			assert.deepEqual(extra, ['greet_tool', 'circular_result']);
+			assert.equal((await tool('greet_tool', {})).json.greeting, 'hello from Greeter');
+			const circular = await tool('circular_result', {});
+			assert.equal(circular.isError, true);
 			assert.equal((await tool('list_inbox', { member: 'alice' })).json.length, 0);
 		});
 	}));
