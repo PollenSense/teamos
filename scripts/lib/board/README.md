@@ -69,6 +69,16 @@ refreshes first (to check aliases), so a write costs a stat per issue: about 4 m
 `enabled` (`true` or `false`; anything else is off). **Without the section the module is off**: `openBoard(config, repoRoot)` returns
 null. A bad value turns it off with the reason instead of half on.
 
+## Person data (`person-data.mjs`)
+
+Rule A (Van, 2026-11-12): no outside e-mail address or phone number reaches a synced file. `redactText(text)` replaces
+outside addresses with `[email]` and phone-shaped numbers (7 to 15 digits) with `[phone]`; addresses on our own domains
+are counted, not redacted. `scanText` counts without changing anything; `PersonDataReport` counts texts per team and field
+and prints a table. **Nothing in this file returns or prints a matched string**, only counts and the redacted text. Dates,
+times, versions, IP addresses, epoch times, hashes and IDs are masked before the phone scan, so they are not phones; the
+scan leans toward redacting too much. It cannot find names of customers or other people (`REPORT_LIMIT`), nor an address written to dodge a scan (`jo at example dot org`). The importer runs
+it again before every write; a flagged issue keeps its description and comments only in the local `raw/` folder.
+
 ## Tests
 
 `node --test scripts/lib/board/*.test.mjs`
