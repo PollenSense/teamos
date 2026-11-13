@@ -60,6 +60,28 @@ test('people: a name that is an address or a phone number never reaches the file
 	assert.match(file.people['z-4'].name, /^linear:unknown/);
 });
 
+test('people: user ids that are also property names (constructor, __proto__) are plain keys and are not taken for overrides', () => {
+	const users = [
+		{ id: 'constructor', name: 'Ctor Person', email: 'c@example.invalid', active: true },
+		{ id: '__proto__', name: 'Proto Person', email: 'p@example.invalid', active: true },
+		{ id: 'toString', name: 'Str Person', email: 'bob@example.invalid', active: false },
+	];
+	const { file, counts } = buildPeople(users, MEMBERS, {});
+	assert.deepEqual(Object.keys(file.people).sort(), ['__proto__', 'constructor', 'toString']);
+	assert.equal(file.people.constructor.name, 'linear:Ctor');
+	assert.equal(Object.getPrototypeOf(file.people), Object.prototype, 'the file object was not re-parented');
+	assert.equal(file.people.toString.name, 'bob');
+	assert.equal(counts.matched, 1);
+	const text = JSON.stringify(file);
+	assert.equal(JSON.parse(text).people['__proto__'].name, 'linear:Proto', 'survives a write and read');
+});
+
+test('a lead or author whose id is a property name but is not a user is counted as dangling', () => {
+	const e = buildExport();
+	e.projects[0].leadId = 'constructor';
+	assert.equal(plan(e).counts.dangling['projects.lead'], 1);
+});
+
 test('people: an override wins over the address; one that names no member is refused', () => {
 	const users = [{ id: 'o-1', name: 'Odd Mail', email: 'different@example.invalid', active: true }];
 	assert.equal(buildPeople(users, MEMBERS, { 'o-1': 'bob' }).file.people['o-1'].name, 'bob');

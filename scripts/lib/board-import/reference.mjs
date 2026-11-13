@@ -34,7 +34,9 @@ function compact(object) {
 	return out;
 }
 
-const byDateThenId = (a, b) => String(a.createdAt ?? '').localeCompare(String(b.createdAt ?? '')) || String(a.id).localeCompare(String(b.id));
+/** Plain code-unit order: the same on every machine (localeCompare depends on the ICU data and the locale). */
+const cmp = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
+const byDateThenId = (a, b) => cmp(String(a.createdAt ?? ''), String(b.createdAt ?? '')) || cmp(String(a.id), String(b.id));
 
 /** `Renewals automation (2026)` becomes `renewals-automation-2026`: a project's file name (letters, digits, `-`; at most 60). */
 export function slugify(text) {
@@ -82,12 +84,12 @@ export function buildPeople(users, members, overrides = {}) {
 	for (const member of Object.values(overrides)) {
 		if (!memberNames.has(member)) throw new ImportError('bad-override', 'a people override names a member that is not in members.json');
 	}
-	const people = {};
+	const entries = [];
 	const used = new Set();
 	const counts = { matched: 0, unmatched: 0, former: 0, apps: 0 };
 	for (const user of [...users].sort(byDateThenId)) {
 		const email = typeof user.email === 'string' ? user.email.trim().toLowerCase() : '';
-		let name = overrides[user.id] ?? (email === '' ? undefined : byEmail.get(email));
+		let name = Object.hasOwn(overrides, user.id) ? overrides[user.id] : email === '' ? undefined : byEmail.get(email);
 		if (name !== undefined) counts.matched++;
 		else {
 			counts.unmatched++;
@@ -98,9 +100,9 @@ export function buildPeople(users, members, overrides = {}) {
 		}
 		if (user.active === false) counts.former++;
 		if (user.app === true) counts.apps++;
-		people[user.id] = compact({ name, former: user.active === false ? true : undefined, app: user.app === true ? true : undefined });
+		entries.push([user.id, compact({ name, former: user.active === false ? true : undefined, app: user.app === true ? true : undefined })]);
 	}
-	const sorted = Object.fromEntries(Object.entries(people).sort(([a], [b]) => a.localeCompare(b)));
+	const sorted = Object.fromEntries(entries.sort(([a], [b]) => cmp(a, b))); // fromEntries: an id such as `constructor` or `__proto__` is just a key
 	return { file: { version: PEOPLE_VERSION, people: sorted }, counts };
 }
 
@@ -166,7 +168,7 @@ export function planReference(entities, { members = [], overrides = {}, tags = D
 	counts.people = peopleCounts;
 	const personName = (id, what) => {
 		if (id === undefined || id === null) return undefined;
-		const entry = people.people[id];
+		const entry = Object.hasOwn(people.people, id) ? people.people[id] : undefined;
 		if (!entry) dangle(what);
 		return entry?.name;
 	};
@@ -175,10 +177,10 @@ export function planReference(entities, { members = [], overrides = {}, tags = D
 	const teamKeys = new Set(get('teams').map((t) => t.key));
 	const statesByTeam = group(get('states'), 'teamKey');
 	for (const key of statesByTeam.keys()) if (!teamKeys.has(key)) for (let i = 0; i < statesByTeam.get(key).length; i++) dangle('states.team');
-	const teams = [...get('teams')].sort((a, b) => String(a.key).localeCompare(String(b.key))).map((t) => {
+	const teams = [...get('teams')].sort((a, b) => cmp(String(a.key), String(b.key))).map((t) => {
 		const states = (statesByTeam.get(t.key) ?? [])
 			.slice()
-			.sort((a, b) => (a.position ?? Infinity) - (b.position ?? Infinity) || String(a.name).localeCompare(String(b.name)) || String(a.id).localeCompare(String(b.id)))
+			.sort((a, b) => (a.position ?? Infinity) - (b.position ?? Infinity) || cmp(String(a.name), String(b.name)) || cmp(String(a.id), String(b.id)))
 			.map((s) => compact({ id: s.id, name: s.name, type: s.type, position: s.position, archived: s.archivedAt }));
 		return compact({
 			key: t.key,
@@ -195,7 +197,7 @@ export function planReference(entities, { members = [], overrides = {}, tags = D
 
 	// cycles
 	const cycles = [];
-	for (const c of [...get('cycles')].sort((a, b) => String(a.teamKey).localeCompare(String(b.teamKey)) || a.number - b.number)) {
+	for (const c of [...get('cycles')].sort((a, b) => cmp(String(a.teamKey), String(b.teamKey)) || a.number - b.number)) {
 		if (!teamKeys.has(c.teamKey)) {
 			dangle('cycles.team');
 			continue;
@@ -216,7 +218,7 @@ export function planReference(entities, { members = [], overrides = {}, tags = D
 			if (l.teamKey && !teamKeys.has(l.teamKey)) dangle('labels.team');
 			return compact({ id: l.id, name, team: l.teamKey, group: l.isGroup === true ? true : undefined, retired: l.retiredAt });
 		})
-		.sort((a, b) => a.name.localeCompare(b.name) || String(a.id).localeCompare(String(b.id)));
+		.sort((a, b) => cmp(a.name, b.name) || cmp(String(a.id), String(b.id)));
 
 	// projects with milestones and updates
 	const milestonesByProject = group(get('milestones'), 'projectId');
@@ -245,7 +247,7 @@ export function planReference(entities, { members = [], overrides = {}, tags = D
 		const team = teamsOfProject[0] ?? 'none';
 		const milestoneRecords = (milestonesByProject.get(p.id) ?? [])
 			.slice()
-			.sort((a, b) => (a.sortOrder ?? Infinity) - (b.sortOrder ?? Infinity) || String(a.name).localeCompare(String(b.name)) || String(a.id).localeCompare(String(b.id)));
+			.sort((a, b) => (a.sortOrder ?? Infinity) - (b.sortOrder ?? Infinity) || cmp(String(a.name), String(b.name)) || cmp(String(a.id), String(b.id)));
 		const updateRecords = (updatesByProject.get(p.id) ?? []).slice().sort(byDateThenId);
 		const milestones = milestoneRecords.map((m) => compact({ id: m.id, name: red(m.name), description: red(m.description), targetDate: m.targetDate }));
 		const updates = updateRecords.map((u) => compact({ id: u.id, createdAt: u.createdAt, health: u.health, author: personName(u.authorId, 'projectUpdates.author'), body: red(u.body) }));
@@ -289,7 +291,7 @@ export function planReference(entities, { members = [], overrides = {}, tags = D
 
 	// documents: read-only text, under the project they belong to
 	const documents = [];
-	for (const d of [...get('documents')].sort((a, b) => String(a.id).localeCompare(String(b.id)))) {
+	for (const d of [...get('documents')].sort((a, b) => cmp(String(a.id), String(b.id)))) {
 		try {
 			assertDocumentId(d.id);
 		} catch (err) {
@@ -324,7 +326,7 @@ export function planReference(entities, { members = [], overrides = {}, tags = D
 		const bySlug = [...codes].find((c) => c.toLowerCase() === slugify(tag));
 		mapTags[tag] = hinted ?? bySlug ?? null;
 	}
-	const projectMap = { version: 1, tags: Object.fromEntries(Object.entries(mapTags).sort(([a], [b]) => a.localeCompare(b))) };
+	const projectMap = { version: 1, tags: Object.fromEntries(Object.entries(mapTags).sort(([a], [b]) => cmp(a, b))) };
 	counts.tags = { total: Object.keys(projectMap.tags).length, mapped: Object.values(projectMap.tags).filter((v) => typeof v === 'string').length };
 	counts.tags.unmapped = counts.tags.total - counts.tags.mapped;
 	counts.tags.missingProject = Object.values(projectMap.tags).filter((v) => typeof v === 'string' && !codes.has(v)).length;
