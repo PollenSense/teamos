@@ -114,8 +114,8 @@ export const ENTITY_TYPES = {
 	comments: {
 		id: 'id',
 		fields: {
-			id: 'string', issueKey: 'key?', projectUpdateId: 'string?', documentId: 'string?', body: 'string',
-			createdAt: 'iso', updatedAt: 'iso?', authorId: 'string?', botName: 'string?', externalUserName: 'string?',
+			id: 'string', issueKey: 'key?', projectUpdateId: 'string?', documentId: 'string?', projectId: 'string?', parentId: 'string?',
+			body: 'string', createdAt: 'iso', updatedAt: 'iso?', authorId: 'string?', botName: 'string?', externalUserName: 'string?',
 		},
 	},
 	relations: {
