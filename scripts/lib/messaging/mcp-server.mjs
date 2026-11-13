@@ -18,6 +18,9 @@
  *   TEAMOS_TRIGGERS_ADAPTER  — commit-triggers adapter name (default: file)
  *   TEAMOS_WATCHES_ADAPTER   — watches adapter name       (default: file)
  *
+ * Extra tools: the host lists tool modules under `mcp.modules` in teamos.config.json
+ * (see docs/mcp-modules.md); with none listed the tool list is the built-in one.
+ *
  * Every tool accepts an optional `member` argument identifying the team member
  * whose mailbox / todos / schedule / triggers / watches the call operates against. When
  * omitted, the server falls back to `TEAMOS_MEMBER_NAME`. This makes the same
@@ -34,6 +37,7 @@ import { FileTasksAdapter } from '../tasks/file.mjs';
 import { FileTriggersAdapter } from '../triggers/file.mjs';
 import { FileWatchesAdapter } from '../watches/file.mjs';
 import { FileMessagingAdapter } from './file.mjs';
+import { callToolModule, loadToolModules } from './mcp-modules.mjs';
 
 // ─── Resolve adapters from env ─────────────────────────────────────────────────
 
@@ -639,13 +643,29 @@ const BASE_TOOLS = [
 
 // Inject the optional `member` field into every tool's input schema. Kept out
 // of the per-tool definitions so the schemas above stay legible.
-const TOOLS = BASE_TOOLS.map((tool) => ({
-	...tool,
-	inputSchema: {
-		...tool.inputSchema,
-		properties: { member: MEMBER_PROP, ...(tool.inputSchema.properties || {}) },
-	},
-}));
+function withMember(tool) {
+	return {
+		...tool,
+		inputSchema: {
+			...tool.inputSchema,
+			properties: { member: MEMBER_PROP, ...(tool.inputSchema.properties || {}) },
+		},
+	};
+}
+
+// Extra tools from the host's `mcp.modules` list (see ./mcp-modules.mjs). A module that fails to load, or a tool
+// that is malformed or named like another tool, is reported on stderr and left out; the rest keep working.
+const moduleContext = { teamDir, repoRoot, config, memberName: envMemberName };
+const { tools: MODULE_TOOLS } = await loadToolModules({
+	modulePaths: config.mcp?.modules,
+	repoRoot,
+	context: moduleContext,
+	reserved: BASE_TOOLS.map((tool) => tool.name),
+	timeoutMs: config.mcp?.moduleLoadTimeoutMs,
+});
+const MODULE_TOOLS_BY_NAME = new Map(MODULE_TOOLS.map((tool) => [tool.definition.name, tool]));
+
+const TOOLS = [...BASE_TOOLS, ...MODULE_TOOLS.map((tool) => tool.definition)].map(withMember);
 
 // ─── Tool handlers ─────────────────────────────────────────────────────────────
 
@@ -836,8 +856,11 @@ async function handleToolCall(name, args) {
 			return textResult(`Removed ${id}`);
 		}
 
-		default:
+		default: {
+			const moduleTool = MODULE_TOOLS_BY_NAME.get(name);
+			if (moduleTool) return callToolModule(moduleTool, args, moduleContext);
 			throw { code: -32601, message: `Unknown tool: ${name}` };
+		}
 	}
 }
 

@@ -38,7 +38,13 @@ export async function withServer(dir, fn, member = 'alice') {
 	});
 	const waiting = new Map();
 	createInterface({ input: child.stdout }).on('line', (line) => {
-		const msg = JSON.parse(line);
+		// loadConfig prints "[runner] Loaded config ..." on stdout when the project has a teamos.config.json
+		let msg;
+		try {
+			msg = JSON.parse(line);
+		} catch {
+			return;
+		}
 		waiting.get(msg.id)?.(msg);
 	});
 	let next = 1;
