@@ -9,7 +9,7 @@ import { writeExport } from './lib/board-export/index.mjs';
 import { MEMBERS, buildExport } from './lib/board-import/fixture.mjs';
 
 const CLI = join(dirname(fileURLToPath(import.meta.url)), 'board-import-reference.mjs');
-const FILTER = '- /team/board/raw/**\n- /team/board/files/**\n';
+const FILTER = '- /team/board/raw/**\n';
 
 function sandbox({ importer = true, filter = FILTER } = {}) {
 	const root = mkdtempSync(join(tmpdir(), 'board-import-cli-'));
