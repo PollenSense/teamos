@@ -22,19 +22,25 @@ const BEFORE = `
 `;
 const AFTER = `${BEFORE}
 - /team/board/raw/**
-- /team/board/files/**
 `;
 
 const synced = (text, p) => isSynced(parseFilter(text), p);
 
-test('step 0: without the two lines raw/ and files/ would sync; with them they are local', () => {
-	for (const p of ['team/board/raw/PSE-1.json', 'team/board/raw/a/b/c.json', 'team/board/files/PSE-1/shot.png', 'team/board/files/x']) {
+test('step 0: without the line raw/ would sync; with it raw/ is local', () => {
+	for (const p of ['team/board/raw/PSE-1.json', 'team/board/raw/a/b/c.json', 'team/board/raw/PSE/PSE-1.json']) {
 		assert.equal(synced(BEFORE, p), true, `${p} syncs before the edit`);
 		assert.equal(synced(AFTER, p), false, `${p} is local after the edit`);
 	}
 });
 
-test('the lines of step 0 do not keep the board itself local', () => {
+test('uploaded files sync on purpose (Van, 2026-11-13): step 0 does not hide team/board/files', () => {
+	for (const p of ['team/board/files/PSE-1/shot.png', 'team/board/files/x', 'team/board/files/PSE-1/a/b.jpg']) {
+		assert.equal(synced(BEFORE, p), true, `${p} syncs before the edit`);
+		assert.equal(synced(AFTER, p), true, `${p} still syncs after the edit`);
+	}
+});
+
+test('the line of step 0 does not keep the board itself local', () => {
 	for (const p of ['team/board/issues/PSE/PSE-1.md', 'team/board/teams/PSE.json', 'team/board/people.json', 'team/board/projects/ops.md', 'team/board/cycles/PSE/1.json', 'team/board/rawish/x.json', 'team/board/files.json']) {
 		assert.equal(synced(AFTER, p), true, p);
 	}
@@ -168,7 +174,8 @@ test('assertLocalOnly: inside the workspace needs the filter lines, and says wha
 			(e) => e.code === 'export-synced' && /team\/board\/raw/.test(e.message) && /--resync/.test(e.message) && /- \/team\/board\/raw\/\*\*/.test(e.message),
 		);
 		assert.deepEqual(assertLocalOnly('team/board/raw', { workspaceRoot: ws, filterText: AFTER }), { where: 'filtered', rel: 'team/board/raw' });
-		assert.deepEqual(assertLocalOnly(join(ws, 'team', 'board', 'files'), { workspaceRoot: ws, filterText: AFTER }), { where: 'filtered', rel: 'team/board/files' });
+		// uploads are not local on purpose: a writer that asked for local-only there would be refused
+		assert.throws(() => assertLocalOnly(join(ws, 'team', 'board', 'files'), { workspaceRoot: ws, filterText: AFTER }), (e) => e.code === 'export-synced');
 		assert.throws(() => assertLocalOnly('team/board/issues', { workspaceRoot: ws, filterText: AFTER }), (e) => e.code === 'export-synced');
 	} finally {
 		rmSync(ws, { recursive: true, force: true });
@@ -222,11 +229,11 @@ test('assertLocalOnly: a missing workspace root is an error', () => {
 });
 
 // The live check: point BOARD_RCLONE_FILTER at the real scripts/rclone-filter.txt of the synced workspace.
-// It fails until the two step-0 lines are in the file, which is the point of it.
-test('the real filter file keeps raw/ and files/ local (set BOARD_RCLONE_FILTER to run)', { skip: process.env.BOARD_RCLONE_FILTER ? false : 'BOARD_RCLONE_FILTER is not set' }, () => {
+// It fails until the step-0 line is in the file, which is the point of it, and it fails if the uploads folder
+// is filtered (Van wants every screenshot in Drive).
+test('the real filter file keeps raw/ local and lets files/ sync (set BOARD_RCLONE_FILTER to run)', { skip: process.env.BOARD_RCLONE_FILTER ? false : 'BOARD_RCLONE_FILTER is not set' }, () => {
 	const rules = parseFilter(readFileSync(process.env.BOARD_RCLONE_FILTER, 'utf8'));
-	for (const folder of ['team/board/raw', 'team/board/files']) {
-		for (const p of probePaths(folder)) assert.equal(isSynced(rules, p), false, `${p} would sync`);
-	}
+	for (const p of probePaths('team/board/raw')) assert.equal(isSynced(rules, p), false, `${p} would sync`);
+	for (const p of probePaths('team/board/files')) assert.equal(isSynced(rules, p), true, `${p} is hidden from Drive, but uploads are meant to sync`);
 	assert.equal(isSynced(rules, 'team/board/issues/PSE/PSE-1.md'), true, 'the board itself still syncs');
 });
