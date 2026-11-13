@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { DEFAULT_INTERNAL_DOMAINS, PersonDataReport, REPORT_LIMIT, redactText, scanText } from './person-data.mjs';
+import { DEFAULT_INTERNAL_DOMAINS, PersonDataReport, REPORT_LIMIT, redactText, redactValue, scanText, scanValue } from './person-data.mjs';
 
 // Every number and address below is invented (555 / example.org / reserved documentation ranges).
 const EN_DASH = String.fromCharCode(0x2013);
@@ -148,4 +148,212 @@ test('hostile input stays fast: long runs of digits, separators, dots and at-sig
 		redactText(text);
 		assert.ok(performance.now() - t0 < 3000, `${text.slice(0, 12)}... took ${performance.now() - t0} ms`);
 	}
+});
+
+// ─── Fixes from the independent review (every case below leaked, or crashed, before) ───
+
+const ch = (...codes) => String.fromCodePoint(...codes);
+const ZWSP = ch(0x200b);
+const BOM = ch(0xfeff);
+const SOFT_HYPHEN = ch(0xad);
+const shift = (digits, zero) => [...digits].map((d) => ch(zero + Number(d))).join('');
+
+/** The text must be flagged and none of the invented secrets may survive in the redacted copy. */
+function gone(input, ...secrets) {
+	const r = redactText(input);
+	assert.equal(r.flagged, true, `not flagged: ${JSON.stringify(input)}`);
+	for (const secret of secrets) assert.ok(!r.text.includes(secret), `${JSON.stringify(secret)} survived in ${JSON.stringify(r.text)}`);
+	return r;
+}
+
+test('an address is found after a quote, an underscore, a plus, an encoded space, or inside quotes and JSON', () => {
+	for (const input of [
+		"email = 'jo@example.org'",
+		"{'email': 'jo@example.org'}",
+		'x _jo@example.org',
+		'to=%20jo@example.org',
+		'see "jo@example.org".',
+		'(jo@example.org)',
+	]) gone(input, 'example.org');
+	const both = gone('+15550100199@example.org', '5550100199', 'example.org');
+	assert.equal(both.emails, 1);
+	assert.equal(both.phones, 0, 'the digits inside the address are not a second finding');
+	const quoted = gone('"jo doe"@example.org', 'doe', 'example.org');
+	assert.equal(quoted.text, '[email]');
+});
+
+test('an encoded or look-alike at-sign, dot and letter case do not hide an address', () => {
+	const at = ch(0xff20);
+	const smallAt = ch(0xfe6b);
+	const fullDot = ch(0xff0e);
+	const ideographicDot = ch(0x3002);
+	for (const input of [
+		'jo%40example.org',
+		'mailto:jo%40example.org?subject=x',
+		'jo&#64;example.org',
+		'jo&#x40;example.org',
+		'jo&commat;example.org',
+		`jo${at}example.org`,
+		`jo${smallAt}example.org`,
+		`jo@example${fullDot}org`,
+		`jo@example${ideographicDot}org`,
+		'JO@EXAMPLE.ORG',
+		'jo@example.xn--p1ai',
+	]) gone(input, 'example', 'EXAMPLE');
+});
+
+test('what follows an address does not hide it: colon, hyphen, a second address', () => {
+	gone('jo@example.org:Phone', 'example.org');
+	gone('jo@example.org- thanks', 'example.org');
+	const two = gone('jo@example.org:smith@example.org', 'example.org');
+	assert.equal(two.emails, 2);
+	assert.equal(redactText('clone git@github.com:org/repo.git now').flagged, false, 'a repository address with a path is not a person');
+	assert.equal(redactText('see icon@2x.png').flagged, false);
+});
+
+test('real top-level domains that look like file extensions are addresses', () => {
+	for (const tld of ['md', 'py', 'zip']) gone(`jo@example.${tld}`, 'example');
+	for (const ext of ['png', 'js', 'json', 'txt']) assert.equal(redactText(`name@2x.${ext}`).flagged, false, ext);
+});
+
+test('invisible characters inside an address or number do not hide it', () => {
+	gone(`j${ZWSP}o@example.org`, 'example.org');
+	gone(`jo${ZWSP}@example.org`, 'example.org');
+	gone(`${BOM}jo@exam${SOFT_HYPHEN}ple.org`, 'org');
+	gone(`555-010${ZWSP}-0199`, '0199');
+	gone(`+1 555${BOM} 010 0199`, '0199');
+	// the text around a match is untouched, also when the match holds dropped characters
+	assert.equal(redactText(`call 555${ZWSP}-010-0199 now`).text, 'call [phone] now');
+});
+
+test('non-ASCII digits and spaces are read as digits and spaces, and the text around the match stays as it was', () => {
+	for (const zero of [0x660, 0xff10, 0x966, 0x1d7d8]) {
+		const written = shift('5550100199', zero);
+		assert.equal(redactText(`call ${written} now`).text, 'call [phone] now', `zero at ${zero.toString(16)}`);
+	}
+	assert.equal(redactText(`555${ch(0x2003)}010${ch(0x3000)}0199`).text, '[phone]');
+	assert.equal(redactText(`555${ch(0x2015)}010${ch(0x2015)}0199`).text, '[phone]');
+	const around = `caf${E_ACUTE} jo@example.org ${ch(0x1f600)} 555-010-0199 ${ch(0x1f600)}`;
+	assert.equal(redactText(around).text, `caf${E_ACUTE} [email] ${ch(0x1f600)} [phone] ${ch(0x1f600)}`);
+	assert.equal(redactText(`${ch(0x1f600)}${ch(0x1f600)} 555-010-0199`).text, `${ch(0x1f600)}${ch(0x1f600)} [phone]`);
+});
+
+test('a number with an extension or a label glued on is a phone number', () => {
+	assert.equal(redactText('555-010-0199x123').text, '[phone]x123');
+	assert.equal(redactText('555-010-0199 ext.123').text, '[phone] ext.123');
+	assert.equal(redactText('5550100199ext12').text, '[phone]ext12');
+	for (const input of ['cell #555-010-0199', 'Tel.555-010-0199', 'wa.me/15550100199', 'tel/fax/555-010-0199']) gone(input, '0199');
+	assert.equal(redactText('5550100199abc').flagged, false, 'digits glued to letters are an ID');
+});
+
+test('international and national formats written without the usual grouping', () => {
+	for (const input of [
+		'+44 7700900123',
+		'+1 5550100199',
+		'+49 1711234567',
+		'Jo (5550100199)',
+		'07700900123',
+		'09171234567',
+		'0612345678',
+		'01.23.45.67.89',
+		'+1.555.010.0199',
+		'+44.20.7946.0958',
+	]) gone(input, '5550100199', '7700900123', '1711234567', '09171234567', '0612345678', '23.45.67', '555.010', '7946');
+	for (const input of ['+1.2.3', '123456789012', '10.0.19041.1234', '3.14159265', '1699999999']) assert.equal(redactText(input).flagged, false, input);
+});
+
+test('two numbers in one run are both found, whatever separates them', () => {
+	for (const input of ['555-010-0199 / 555-010-0188', '555-010-0199/555-010-0188', '555-010-0199 555-010-0188', '555-010-0199 555-010-0188 555-010-0177']) {
+		const r = gone(input, '0199', '0188', '0177', '010');
+		assert.ok(r.phones >= 2, `${input}: ${r.phones}`);
+	}
+});
+
+test('a value that is not text is refused, not called clean', () => {
+	for (const bad of [5550100199, true, {}, ['jo@example.org'], new Date(), Buffer.from('jo@example.org'), 10n]) {
+		assert.throws(() => scanText(bad), TypeError);
+		assert.throws(() => redactText(bad), TypeError);
+	}
+	try {
+		scanText({ email: 'zebra.quokka@example.org' });
+	} catch (err) {
+		assert.ok(!String(err.message).includes('zebra'), 'the refusal names the type, not the value');
+	}
+});
+
+test('structured values: arrays, objects, keys and numbers are walked; what cannot be scanned throws', () => {
+	const value = {
+		title: 'Call 555-010-0199',
+		list: ['jo@example.org', 'fine', 42, 5550100199, { deep: '+44 7700900123' }],
+		'jo@example.org': 'a key that is an address',
+		when: new Date(0),
+		flag: true,
+		none: null,
+		internal: 'someone-else@pollensense.com',
+	};
+	const r = redactValue(value);
+	assert.equal(r.flagged, true);
+	assert.deepEqual(r.value.list, ['[email]', 'fine', 42, '[phone]', { deep: '[phone]' }]);
+	assert.equal(r.value.title, 'Call [phone]');
+	assert.equal(r.value['[email]'], 'a key that is an address');
+	assert.equal(r.value.when.getTime(), 0);
+	assert.equal(r.value.internal, 'someone-else@pollensense.com');
+	assert.deepEqual([r.emails, r.internalEmails, r.phones], [2, 1, 3]);
+	assert.deepEqual(scanValue(value), { emails: 2, internalEmails: 1, phones: 3, flagged: true });
+	assert.equal(JSON.stringify(value).includes('[email]'), false, 'the input is not changed');
+
+	// two keys that redact to the same text stay two keys
+	assert.deepEqual(Object.keys(redactValue({ 'a@example.org': 1, 'b@example.org': 2 }).value), ['[email]', '[email]#2']);
+
+	const circular = {};
+	circular.self = circular;
+	let deep = 'x';
+	for (let i = 0; i < 70; i++) deep = [deep];
+	for (const bad of [circular, deep, Buffer.from('x'), new Map(), new (class Thing {})(), () => 1, Symbol('s')]) {
+		assert.throws(() => redactValue(bad), TypeError);
+	}
+	assert.equal(redactValue([[['x']]]).flagged, false);
+});
+
+test('dense matches stay fast: no work grows with the square of the text', () => {
+	const dense = 'jo@example.org 555-010-0199 '.repeat(36000); // about 1 MB, 72,000 matches
+	let started = Date.now();
+	const r = redactText(dense);
+	assert.equal(r.emails, 36000);
+	assert.equal(r.phones, 36000);
+	assert.ok(Date.now() - started < 3000, `dense text took ${Date.now() - started} ms`);
+	started = Date.now();
+	redactText('1 '.repeat(500000));
+	assert.ok(Date.now() - started < 3000, `digit list took ${Date.now() - started} ms`);
+	started = Date.now();
+	const wide = `${ch(0x4e2d, 0x6587)} 555-010-0199 `.repeat(60000); // non-ASCII text takes the mapping path
+	assert.equal(redactText(wide).phones, 60000);
+	assert.ok(Date.now() - started < 3000, `non-ASCII text took ${Date.now() - started} ms`);
+});
+
+test('the report prints names, so a name that could carry data is refused without echoing it', () => {
+	const report = new PersonDataReport();
+	for (const [team, field] of [['PSE', 'jo@example.org'], ['a b', 'description'], ['PSE', ''], [5, 'x']]) {
+		assert.throws(() => report.add(team, field, 'text'), (err) => err instanceof TypeError && !String(err.message).includes('example.org'));
+	}
+	report.add('PSE', 'description', { notes: ['jo@example.org'] });
+	assert.equal(report.summary()[0].withEmail, 1);
+	assert.throws(() => report.add('PSE', 'description', new Map()), TypeError);
+	assert.ok(!report.format().includes('example.org'));
+});
+
+test('digits delimited by dots or underscores inside an address are part of the address, not a second finding', () => {
+	for (const input of ['jo.5550100199.x@example.org', 'a.555-010-0199.b@example.org', 'sales_5550100199_eu@example.org']) {
+		const r = redactText(input);
+		assert.deepEqual([r.text, r.emails, r.phones], ['[email]', 1, 0], input);
+	}
+	// and next to an address the number is still its own finding
+	const next = redactText('jo@example.org 555-010-0199');
+	assert.deepEqual([next.text, next.emails, next.phones], ['[email] [phone]', 1, 1]);
+});
+
+test('a cut-out piece with dots mixed with spaces is a pair of decimals, not a number; two dotted numbers are two numbers', () => {
+	for (const input of ['lat 33.448376 -112.074036', '33.448376 -112.074036 40.712776', '1.5 2.5 3.5 4.5 5.5 6.5 7.5 8.5 9.5']) assert.equal(redactText(input).flagged, false, input);
+	const two = redactText('555.010.0199 555.010.0188');
+	assert.deepEqual([two.text, two.phones], ['[phone] [phone]', 2]);
 });
