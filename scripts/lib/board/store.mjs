@@ -2,7 +2,7 @@ import { mkdir, open, readFile, readdir, rename, stat, unlink } from 'node:fs/pr
 import { dirname, join } from 'node:path';
 import { BoardError } from './errors.mjs';
 import { contentHash, mergeFields, parseDocument, serializeDocument } from './frontmatter.mjs';
-import { assertCycleNumber, assertId, assertProjectCode, assertTeamKey, normalizeId } from './ids.mjs';
+import { assertCycleNumber, assertDocumentId, assertId, assertProjectCode, assertTeamKey, normalizeId } from './ids.mjs';
 import { IssueIndex } from './issue-index.mjs';
 import { withLock } from './lock.mjs';
 
@@ -16,10 +16,17 @@ export const ISSUE_FIELDS = [
 	'project', 'milestone', 'cycle', 'parent', 'labels', 'estimate', 'dueDate', 'branch', 'relations', 'prs', 'links',
 	'created', 'updated', 'started', 'completed', 'canceled', 'archived', 'deleted', 'source',
 ];
-export const PROJECT_FIELDS = ['code', 'name', 'linearId', 'teams', 'status', 'lead', 'startDate', 'targetDate', 'milestones', 'updates', 'created', 'updated', 'source'];
+export const PROJECT_FIELDS = [
+	'code', 'name', 'linearId', 'teams', 'status', 'statusType', 'lead', 'startDate', 'targetDate', 'milestones', 'updates',
+	'created', 'updated', 'archived', 'completed', 'canceled', 'source',
+];
 // `nextNumber` is not in this list on purpose: it belongs to the allocator and only ever goes up (see writeTeam).
-export const TEAM_FIELDS = ['key', 'name', 'linearId', 'native', 'states', 'cycles', 'source'];
+export const TEAM_FIELDS = ['key', 'name', 'linearId', 'native', 'private', 'archived', 'states', 'cycles', 'source'];
 export const CYCLE_FIELDS = ['number', 'team', 'name', 'startsAt', 'endsAt', 'completed', 'linearId', 'source'];
+/** Read-only text kept beside the projects (Linear documents; ticket A4): `documents/<id>.md`, fields + the text. */
+export const DOCUMENT_FIELDS = ['id', 'linearId', 'title', 'project', 'issue', 'created', 'updated', 'source'];
+/** One-object files at the top of the board folder: who is who, the label list, which message tag is which project. */
+export const SINGLE_FILES = ['people', 'labels', 'project-map'];
 
 /**
  * Reads and writes the board's files under `dir` (`team/board/`): issues, projects, cycles, teams, people.
@@ -34,8 +41,10 @@ export const CYCLE_FIELDS = ['number', 'team', 'name', 'startsAt', 'endsAt', 'co
  * `lockDir` is `team/.logs/board/` (local). `hooks.beforeRename` is for tests only.
  */
 export class BoardStore {
-	constructor({ dir, lockDir, cachePath, lockOptions, hooks } = {}) {
+	constructor({ dir, lockDir, cachePath, lockOptions, hooks, dryRun } = {}) {
 		if (!dir || !lockDir) throw new TypeError('BoardStore needs dir and lockDir');
+		/** With `dryRun`, every write runs its checks and says `changed` as it would, and writes nothing into the board folder (locks and the index cache under `lockDir` are local and may still be touched). */
+		this.dryRun = dryRun === true;
 		this.dir = dir;
 		this.lockDir = lockDir;
 		this.lockOptions = lockOptions ?? {};
@@ -62,7 +71,14 @@ export class BoardStore {
 		return join(this.dir, 'projects', `${assertProjectCode(code)}.md`);
 	}
 	peoplePath() {
-		return join(this.dir, 'people.json');
+		return this.singlePath('people');
+	}
+	singlePath(name) {
+		if (!SINGLE_FILES.includes(name)) throw new BoardError('bad-id', `"${String(name).slice(0, 40)}" is not one of the board's single files (${SINGLE_FILES.join(', ')})`);
+		return join(this.dir, `${name}.json`);
+	}
+	documentPath(id) {
+		return join(this.dir, 'documents', `${assertDocumentId(id)}.md`);
 	}
 
 	// --- files ---
@@ -111,7 +127,7 @@ export class BoardStore {
 		this._check(current, expect, what);
 		const hash = contentHash(text);
 		if (current && current.hash === hash) return { changed: false, hash };
-		await this._writeAtomic(path, text);
+		if (!this.dryRun) await this._writeAtomic(path, text);
 		return { changed: true, hash };
 	}
 
@@ -197,7 +213,7 @@ export class BoardStore {
 			const merged = mergeFields(current?.fields, { ...fields, ...(aliases ? { aliases } : {}), team }, ISSUE_FIELDS);
 			const text = serializeDocument(merged, body ?? current?.body ?? '');
 			const result = await this._put(path, text, expect, `issue ${id}`);
-			if (result.changed) await this.index.noteWritten(`${team}/${id}.md`, parseDocument(text).fields); // what the file says, not the caller's objects
+			if (result.changed && !this.dryRun) await this.index.noteWritten(`${team}/${id}.md`, parseDocument(text).fields); // what the file says, not the caller's objects
 			return { id, ...result };
 		}, this.lockOptions);
 	}
@@ -276,10 +292,41 @@ export class BoardStore {
 
 	/** people.json is one object whose shape belongs to the importer (A4): the store only reads and replaces it whole. */
 	async readPeople() {
-		return this._readJson(this.peoplePath(), 'people.json');
+		return this.readSingle('people');
 	}
 	async writePeople(data, { expect } = {}) {
-		return this._writeJsonRecord(this.peoplePath(), 'people', data, null, expect, 'people.json');
+		return this.writeSingle('people', data, { expect });
+	}
+
+	/** `people`, `labels`, `project-map`: one JSON object each, read and replaced whole (the shape belongs to the importer). */
+	async readSingle(name) {
+		return this._readJson(this.singlePath(name), `${name}.json`);
+	}
+	async writeSingle(name, data, { expect } = {}) {
+		return this._writeJsonRecord(this.singlePath(name), `single-${name}`, data, null, expect, `${name}.json`);
+	}
+
+	// --- documents (Markdown: fields + the text; read-only text of phase (a)) ---
+	async readDocument(id) {
+		return this._readDocument(this.documentPath(id), `document ${id}`).then((doc) => doc && { id, ...doc });
+	}
+	async writeDocument({ fields, body }, { expect } = {}) {
+		const id = assertDocumentId(fields?.id);
+		const path = this.documentPath(id);
+		return withLock(this.lockDir, `document-${id}`, async () => {
+			const current = await this._readDocument(path, `document ${id}`);
+			this._check(current && { hash: current.hash }, expect, `document ${id}`);
+			const merged = mergeFields(current?.fields, fields, DOCUMENT_FIELDS);
+			const result = await this._put(path, serializeDocument(merged, body ?? current?.body ?? ''), expect, `document ${id}`);
+			return { id, ...result };
+		}, this.lockOptions);
+	}
+	async listDocuments() {
+		try {
+			return (await readdir(join(this.dir, 'documents'))).filter((n) => n.endsWith('.md') && !n.startsWith('.')).map((n) => n.slice(0, -3)).sort();
+		} catch {
+			return [];
+		}
 	}
 
 	// --- the ID allocator (design 2.3): built now, used from phase (c) and by the importer's last step ---

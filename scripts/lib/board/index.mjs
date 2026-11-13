@@ -3,9 +3,10 @@ import { BoardStore } from './store.mjs';
 
 export { BoardError } from './errors.mjs';
 export { boardConfig, BOARD_DEFAULTS } from './config.mjs';
-export { BoardStore, ISSUE_FIELDS, PROJECT_FIELDS, TEAM_FIELDS, CYCLE_FIELDS } from './store.mjs';
+export { BoardStore, ISSUE_FIELDS, PROJECT_FIELDS, TEAM_FIELDS, CYCLE_FIELDS, DOCUMENT_FIELDS, SINGLE_FILES } from './store.mjs';
 export { IssueIndex } from './issue-index.mjs';
-export { assertId, isProjectCode, isTeamKey, normalizeId, parseId } from './ids.mjs';
+export { assertDocumentId, assertId, isProjectCode, isTeamKey, normalizeId, parseId } from './ids.mjs';
+export { PersonDataReport, redactText, redactValue, scanText, scanValue } from './person-data.mjs';
 export { contentHash, mergeFields, parseDocument, serializeDocument } from './frontmatter.mjs';
 
 /**
