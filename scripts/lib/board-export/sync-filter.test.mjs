@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { assertLocalOnly, explain, globToRegexSource, isSynced, matchingRule, parseFilter, probePaths } from './sync-filter.mjs';
+import { UPLOAD_EXTENSIONS, assertLocalOnly, assertSynced, explain, globToRegexSource, isSynced, matchingRule, parseFilter, probePaths, uploadProbePaths } from './sync-filter.mjs';
 
 // A copy of the rules in pollen-bot's scripts/rclone-filter.txt (comments trimmed), without and with step 0.
 const BEFORE = `
@@ -228,12 +228,53 @@ test('assertLocalOnly: a missing workspace root is an error', () => {
 	assert.throws(() => assertLocalOnly('x', { workspaceRoot: '', filterText: AFTER }), (e) => e.code === 'bad-path');
 });
 
+test('uploadProbePaths: the real upload shape, every extension, upper case and a deeper path', () => {
+	const paths = uploadProbePaths('team/board/files');
+	assert.ok(paths.includes('team/board/files/PSE-1/shot.png'));
+	assert.ok(paths.includes('team/board/files/PSE-1/shot.mov'));
+	assert.ok(paths.includes('team/board/files/PSE-1/shot.PNG'));
+	assert.ok(paths.includes('team/board/files/PSE-1/shot'), 'a file with no extension');
+	assert.ok(paths.includes('team/board/files/PSE-1/a/b/shot.png'));
+	assert.equal(paths.length, 4 + UPLOAD_EXTENSIONS.length);
+	assert.ok(uploadProbePaths('').every((p) => !p.startsWith('/')), 'the workspace itself has no leading slash');
+});
+
+test('assertSynced: passes only when EVERY upload-shaped path reaches Drive', () => {
+	const ws = workspace();
+	try {
+		assert.deepEqual(assertSynced('team/board/files', { workspaceRoot: ws, filterText: AFTER }), { where: 'synced', rel: 'team/board/files' });
+		// each of these hides some uploads and not others; none may pass
+		for (const rule of ['- *.png', '- *.mov', '- /team/board/files/*/*', '- /team/board/files/*/*.png', '- /team/board/files/**/*.png', '- /team/board/files/*', '- /team/board/files/**', '- /team/board/files/PSE-1/**', '- shot*']) {
+			assert.throws(
+				() => assertSynced('team/board/files', { workspaceRoot: ws, filterText: `${AFTER}\n${rule}\n` }),
+				(e) => e.code === 'export-hidden' && /filter line/.test(e.message),
+				rule,
+			);
+		}
+	} finally {
+		rmSync(ws, { recursive: true, force: true });
+	}
+});
+
+test('assertSynced: a folder outside the synced workspace never reaches Drive; a bad root is an error', () => {
+	const ws = workspace();
+	const out = mkdtempSync(join(tmpdir(), 'board-export-out-'));
+	try {
+		assert.throws(() => assertSynced(out, { workspaceRoot: ws, filterText: AFTER }), (e) => e.code === 'export-hidden' && /outside/.test(e.message));
+		assert.throws(() => assertSynced('x', { workspaceRoot: '', filterText: AFTER }), (e) => e.code === 'bad-path');
+		assert.equal(assertSynced('.', { workspaceRoot: ws, filterText: AFTER }).where, 'synced', 'the workspace root is judged by its own files');
+	} finally {
+		rmSync(ws, { recursive: true, force: true });
+		rmSync(out, { recursive: true, force: true });
+	}
+});
+
 // The live check: point BOARD_RCLONE_FILTER at the real scripts/rclone-filter.txt of the synced workspace.
 // It fails until the step-0 line is in the file, which is the point of it, and it fails if the uploads folder
 // is filtered (Van wants every screenshot in Drive).
 test('the real filter file keeps raw/ local and lets files/ sync (set BOARD_RCLONE_FILTER to run)', { skip: process.env.BOARD_RCLONE_FILTER ? false : 'BOARD_RCLONE_FILTER is not set' }, () => {
 	const rules = parseFilter(readFileSync(process.env.BOARD_RCLONE_FILTER, 'utf8'));
 	for (const p of probePaths('team/board/raw')) assert.equal(isSynced(rules, p), false, `${p} would sync`);
-	for (const p of probePaths('team/board/files')) assert.equal(isSynced(rules, p), true, `${p} is hidden from Drive, but uploads are meant to sync`);
+	for (const p of uploadProbePaths('team/board/files')) assert.equal(isSynced(rules, p), true, `${p} is hidden from Drive, but uploads are meant to sync`);
 	assert.equal(isSynced(rules, 'team/board/issues/PSE/PSE-1.md'), true, 'the board itself still syncs');
 });

@@ -8,15 +8,17 @@
  * local, `--synced` one that must reach Drive. With neither flag the check covers the two import folders:
  * `team/board/raw` must be local (full-fidelity Linear text), `team/board/files` must sync (Van wants every
  * uploaded screenshot kept in Drive on its issue, 2026-11-13). Each folder is a path relative to the
- * workspace (or an absolute path; one outside the workspace is always local). Prints one line per folder,
- * "local" or "WOULD SYNC" for a folder that must stay local, "syncs" or "HIDDEN" for one that must reach Drive,
+ * workspace (or an absolute path; one outside the workspace is always local, so it fails as a `--synced` folder).
+ * Prints one line per folder, "local" or "WOULD SYNC" for a folder that must stay local, "syncs" or "HIDDEN"
+ * for one that must reach Drive (HIDDEN when ANY upload-shaped path in it is filtered: `<folder>/PSE-1/shot.png`
+ * and the other extensions, see `uploadProbePaths`),
  * and exits 1 if any line is wrong, 2 on a usage or filter-file error. Prints no file content. Run it after
  * the filter edit and the bisync `--resync`, and before the first import.
  */
 
 import { readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
-import { ExportError, assertLocalOnly } from './lib/board-export/index.mjs';
+import { ExportError, assertLocalOnly, assertSynced } from './lib/board-export/index.mjs';
 
 function usage(message) {
 	if (message) process.stderr.write(`${message}\n`);
@@ -67,13 +69,14 @@ for (const folder of folders) {
 }
 for (const folder of syncedFolders) {
 	try {
-		const r = assertLocalOnly(folder, { workspaceRoot: resolve(workspace), filterText });
-		failed++;
-		process.stdout.write(`HIDDEN       ${folder} (${r.where}; it is meant to reach Drive)\n`);
+		assertSynced(folder, { workspaceRoot: resolve(workspace), filterText });
+		process.stdout.write(`syncs        ${folder}\n`);
 	} catch (err) {
 		if (!(err instanceof ExportError)) throw err;
-		if (err.code === 'export-synced') process.stdout.write(`syncs        ${folder}\n`);
-		else usage(`${folder}: ${err.message}`);
+		if (err.code === 'export-hidden') {
+			failed++;
+			process.stdout.write(`HIDDEN       ${folder} (${err.message})\n`);
+		} else usage(`${folder}: ${err.message}`);
 	}
 }
 process.exit(failed > 0 ? 1 : 0);

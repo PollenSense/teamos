@@ -49,3 +49,33 @@ test('check: --folder and --synced name their own folders; a missing filter file
 	const missing = spawnSync(process.execPath, [SCRIPT, '--workspace', '/nonexistent-workspace-board-check'], { env: { PATH: process.env.PATH }, encoding: 'utf8' });
 	assert.equal(missing.status, 2);
 });
+
+test('check: a filter that hides only SOME uploads is HIDDEN too (exit 1)', () => {
+	for (const rule of ['- *.png', '- *.mov', '- /team/board/files/*/*', '- /team/board/files/*/*.png', '- /team/board/files/**/*.png', '- /team/board/files/*']) {
+		const r = run(`- /team/board/raw/**\n${rule}\n`);
+		assert.equal(r.code, 1, `${rule}: ${r.out}`);
+		assert.match(r.out, /HIDDEN +team\/board\/files/, rule);
+		assert.match(r.out, /local +team\/board\/raw/, rule);
+	}
+});
+
+test('check: a --synced folder outside the workspace fails the run (nothing there reaches Drive)', () => {
+	const elsewhere = mkdtempSync(join(tmpdir(), 'board-check-elsewhere-'));
+	try {
+		const r = run('- /team/board/raw/**\n', ['--synced', elsewhere]);
+		assert.equal(r.code, 1, r.out + r.err);
+		assert.match(r.out, /HIDDEN +/);
+		assert.match(r.out, /outside the synced workspace/);
+	} finally {
+		rmSync(elsewhere, { recursive: true, force: true });
+	}
+});
+
+test('check: --synced alone does not also check raw/, and an unreadable filter is a usage error even then', () => {
+	const r = run('- /team/.logs/**\n', ['--synced', 'team/board/files']);
+	assert.equal(r.code, 0, r.out + r.err);
+	assert.match(r.out, /syncs +team\/board\/files/);
+	assert.doesNotMatch(r.out, /team\/board\/raw/);
+	const bad = run('- /team/board/raw/**\n', ['--synced', 'team/board/files', '--filter', '/nonexistent-filter-for-board-check']);
+	assert.equal(bad.code, 2, bad.out + bad.err);
+});
