@@ -62,7 +62,8 @@ function uniqueCode(base, taken) {
 function firstName(user) {
 	const source = typeof user.name === 'string' && user.name.trim() !== '' ? user.name : user.displayName;
 	const token = String(source ?? '').trim().split(/\s+/)[0] ?? '';
-	if (token.includes('@') || scanText(token).flagged) return 'unknown';
+	// the whole name is scanned too: `+1 555 010 0199` has the harmless first word `+1`
+	if (token.includes('@') || scanText(token).flagged || scanText(String(source ?? '')).flagged) return 'unknown';
 	const clean = token.replace(/[^\p{L}\p{N}._-]/gu, '').slice(0, 30);
 	return clean === '' ? 'unknown' : clean;
 }
@@ -155,7 +156,7 @@ export function planReference(entities, { members = [], overrides = {}, tags = D
 	const counts = {
 		read: Object.fromEntries(['users', 'teams', 'states', 'labels', 'cycles', 'projects', 'milestones', 'projectUpdates', 'documents'].map((t) => [t, get(t).length])),
 		dangling: {},
-		flagged: { projects: 0, documents: 0 },
+		flagged: { projects: 0, documents: 0, names: 0 },
 		damagedProjectFiles: ex.damaged ?? 0,
 	};
 	const dangle = (what) => {
@@ -163,6 +164,16 @@ export function planReference(entities, { members = [], overrides = {}, tags = D
 	};
 	const report = new PersonDataReport();
 	const raw = [];
+	// Names of teams, states, labels and cycles are typed text too (rule A): redacted in the synced file, the
+	// original in the local raw folder (one record, `names/reference.json`).
+	const flaggedNames = [];
+	const nameOf = (kind, id, value) => {
+		if (typeof value !== 'string') return value;
+		report.add('none', 'name', value);
+		const r = redactValue(value);
+		if (r.flagged) flaggedNames.push({ kind, id, name: value });
+		return r.value;
+	};
 
 	const { file: people, counts: peopleCounts } = buildPeople(get('users'), members, overrides);
 	counts.people = peopleCounts;
@@ -175,16 +186,17 @@ export function planReference(entities, { members = [], overrides = {}, tags = D
 
 	// teams and workflow states
 	const teamKeys = new Set(get('teams').map((t) => t.key));
+	if (teamKeys.size !== get('teams').length) throw new ImportError('duplicate', 'two teams in the export have the same key; one would overwrite the other');
 	const statesByTeam = group(get('states'), 'teamKey');
 	for (const key of statesByTeam.keys()) if (!teamKeys.has(key)) for (let i = 0; i < statesByTeam.get(key).length; i++) dangle('states.team');
 	const teams = [...get('teams')].sort((a, b) => cmp(String(a.key), String(b.key))).map((t) => {
 		const states = (statesByTeam.get(t.key) ?? [])
 			.slice()
 			.sort((a, b) => (a.position ?? Infinity) - (b.position ?? Infinity) || cmp(String(a.name), String(b.name)) || cmp(String(a.id), String(b.id)))
-			.map((s) => compact({ id: s.id, name: s.name, type: s.type, position: s.position, archived: s.archivedAt }));
+			.map((s) => compact({ id: s.id, name: nameOf('state', s.id, s.name), type: s.type, position: s.position, archived: s.archivedAt }));
 		return compact({
 			key: t.key,
-			name: t.name,
+			name: nameOf('team', t.id, t.name),
 			linearId: t.id,
 			native: false,
 			private: t.private === true ? true : undefined,
@@ -197,12 +209,16 @@ export function planReference(entities, { members = [], overrides = {}, tags = D
 
 	// cycles
 	const cycles = [];
+	const cycleSeen = new Set();
 	for (const c of [...get('cycles')].sort((a, b) => cmp(String(a.teamKey), String(b.teamKey)) || a.number - b.number)) {
 		if (!teamKeys.has(c.teamKey)) {
 			dangle('cycles.team');
 			continue;
 		}
-		cycles.push(compact({ number: c.number, team: c.teamKey, name: c.name, startsAt: c.startsAt, endsAt: c.endsAt, completed: c.completedAt, linearId: c.id, source: SOURCE }));
+		const cycleKey = `${c.teamKey}#${c.number}`;
+		if (cycleSeen.has(cycleKey)) throw new ImportError('duplicate', 'two cycles in the export have the same team and number; one would overwrite the other');
+		cycleSeen.add(cycleKey);
+		cycles.push(compact({ number: c.number, team: c.teamKey, name: nameOf('cycle', c.id, c.name), startsAt: c.startsAt, endsAt: c.endsAt, completed: c.completedAt, linearId: c.id, source: SOURCE }));
 	}
 
 	// labels: a label in a group is `group/name`
@@ -216,7 +232,7 @@ export function planReference(entities, { members = [], overrides = {}, tags = D
 				else dangle('labels.parent');
 			}
 			if (l.teamKey && !teamKeys.has(l.teamKey)) dangle('labels.team');
-			return compact({ id: l.id, name, team: l.teamKey, group: l.isGroup === true ? true : undefined, retired: l.retiredAt });
+			return compact({ id: l.id, name: nameOf('label', l.id, name), team: l.teamKey, group: l.isGroup === true ? true : undefined, retired: l.retiredAt });
 		})
 		.sort((a, b) => cmp(a.name, b.name) || cmp(String(a.id), String(b.id)));
 
@@ -289,7 +305,7 @@ export function planReference(entities, { members = [], overrides = {}, tags = D
 		if (!isProjectCode(p.fields.code)) throw new ImportError('bad-code', 'a project code is not letters, digits, _ or -');
 	}
 
-	// documents: read-only text, under the project they belong to
+	// documents: read-only text, under the project they belong to (below: the names record)
 	const documents = [];
 	for (const d of [...get('documents')].sort((a, b) => cmp(String(a.id), String(b.id)))) {
 		try {
@@ -330,6 +346,12 @@ export function planReference(entities, { members = [], overrides = {}, tags = D
 	counts.tags = { total: Object.keys(projectMap.tags).length, mapped: Object.values(projectMap.tags).filter((v) => typeof v === 'string').length };
 	counts.tags.unmapped = counts.tags.total - counts.tags.mapped;
 	counts.tags.missingProject = Object.values(projectMap.tags).filter((v) => typeof v === 'string' && !codes.has(v)).length;
+
+	counts.flagged.names = flaggedNames.length;
+	if (flaggedNames.length > 0) {
+		flaggedNames.sort((a, b) => cmp(a.kind, b.kind) || cmp(String(a.id), String(b.id)));
+		raw.push({ type: 'names', id: 'reference', record: { names: flaggedNames } });
+	}
 
 	return { people: people, teams, cycles, labels: { version: 1, labels }, projects, documents, projectMap, raw, counts, report };
 }

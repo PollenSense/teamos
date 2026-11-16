@@ -41,6 +41,12 @@ function readJson(path, what) {
 	}
 }
 
+function readObject(path, what) {
+	const value = readJson(path, what);
+	if (value === null || typeof value !== 'object' || Array.isArray(value)) usage(`${what} must be a JSON object`);
+	return value;
+}
+
 const args = process.argv.slice(2);
 const opt = {};
 let apply = false;
@@ -59,9 +65,12 @@ if (!board.on) usage(`the board module is off: ${board.reason}`);
 if (apply && board.importer !== true) usage('board.importer is not true in the config: --apply is refused (a dry run is fine)');
 
 const membersFile = readJson(opt.members ? resolve(opt.members) : join(workspace, 'team', 'members.json'), 'members.json');
-const members = Array.isArray(membersFile?.members) ? membersFile.members : [];
-const overrides = opt['people-map'] ? readJson(resolve(opt['people-map']), 'the people map') : {};
-const tagHints = opt['tag-hints'] ? readJson(resolve(opt['tag-hints']), 'the tag hints') : {};
+// A members file of the wrong shape must stop the run: read as an empty list it would match nobody and every
+// member would be written as `linear:<first name>`.
+if (!Array.isArray(membersFile?.members)) usage('members.json has no "members" list');
+const members = membersFile.members;
+const overrides = opt['people-map'] ? readObject(resolve(opt['people-map']), 'the people map') : {};
+const tagHints = opt['tag-hints'] ? readObject(resolve(opt['tag-hints']), 'the tag hints') : {};
 const filterPath = opt.filter ? resolve(opt.filter) : join(workspace, 'scripts', 'rclone-filter.txt');
 
 try {

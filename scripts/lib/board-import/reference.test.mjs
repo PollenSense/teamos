@@ -197,7 +197,7 @@ test('rule A: our own domain is not redacted and makes no raw record', () => {
 	const e = buildExport();
 	e.projects[0].description = 'Ask someone@pollensense.com.';
 	const p = plan(e);
-	assert.match(p.projects.find((x) => x.fields.linearId === 'p-1').body, /van@pollensense\.com/);
+	assert.match(p.projects.find((x) => x.fields.linearId === 'p-1').body, /someone@pollensense\.com/);
 	assert.equal(p.raw.length, 0);
 });
 
@@ -293,4 +293,60 @@ test('loadExisting on an empty store finds nothing', async () => {
 	const ex = await loadExisting(fake);
 	assert.equal(ex.codeByLinearId.size, 0);
 	assert.equal(ex.projectMap, null);
+});
+
+// ---- the independent review of 2026-11-16 ----
+
+test('rule A: a team, state, label or cycle name with an address or a phone number is redacted; the original goes to raw', () => {
+	const e = buildExport();
+	e.teams[0].name = 'Team ask@outside.example.invalid';
+	e.states[0].name = 'Call +1 555 010 0199';
+	e.labels[0].name = 'Mail other@outside.example.invalid';
+	e.cycles[0].name = 'Hotline 555-010-0199';
+	const p = plan(e);
+	const synced = JSON.stringify([p.teams, p.cycles, p.labels]);
+	for (const secret of ['ask@', 'other@', '0199']) assert.equal(synced.includes(secret), false, `${secret} is not in a synced name`);
+	assert.match(synced, /\[email\]/);
+	assert.match(synced, /\[phone\]/);
+	assert.equal(p.counts.flagged.names, 5, 'the group label and the label under it (its name is group/name) both carry the address');
+	const record = p.raw.find((r) => r.type === 'names');
+	assert.equal(record.id, 'reference');
+	assert.deepEqual(record.record.names.map((n) => n.kind), ['cycle', 'label', 'label', 'state', 'team'], 'sorted by kind, so the file is the same on every run');
+	assert.match(JSON.stringify(record.record), /ask@outside/, 'the original is in the raw record');
+	assert.equal(plan(buildExport()).raw.some((r) => r.type === 'names'), false, 'clean names make no raw record');
+	assert.equal(plan(buildExport()).counts.flagged.names, 0);
+});
+
+test('rule A: a flagged name in a label group is judged as the full group/name text', () => {
+	const e = buildExport();
+	e.labels[1].name = 'x@outside.example.invalid';
+	const names = plan(e).labels.labels.map((l) => l.name);
+	assert.ok(names.every((n) => !n.includes('x@')), JSON.stringify(names));
+});
+
+test('rule A: a document body with a phone number (clean title) and a milestone and a project status are redacted', () => {
+	const e = buildExport();
+	e.documents[0].content = 'Hotline +1 555 010 0199 for details.';
+	e.milestones[0].name = 'Mail m@outside.example.invalid';
+	e.milestones[1].description = 'Ring 555-010-0199.';
+	e.projects[0].status = 'Blocked by s@outside.example.invalid';
+	const p = plan(e);
+	const text = JSON.stringify([p.documents, p.projects]);
+	for (const secret of ['0199', 'm@outside', 's@outside']) assert.equal(text.includes(secret), false, secret);
+	assert.equal(p.counts.flagged.documents, 1);
+	assert.equal(p.counts.flagged.projects, 1);
+});
+
+test('two teams with one key, or two cycles with one team and number, stop the run: one would overwrite the other', () => {
+	const e = buildExport();
+	e.teams.push({ ...e.teams[0], id: 't-dup' });
+	assert.throws(() => plan(e), (err) => err instanceof ImportError && err.code === 'duplicate' && /teams/.test(err.message));
+	const f = buildExport();
+	f.cycles.push({ ...f.cycles[0], id: 'c-dup' });
+	assert.throws(() => plan(f), (err) => err instanceof ImportError && err.code === 'duplicate' && /cycles/.test(err.message));
+});
+
+test('people: a display name that is a phone number (first word harmless) never reaches the file', () => {
+	const { file } = buildPeople([{ id: 'u-1', name: '+1 555 010 0199', email: null, active: true }], MEMBERS);
+	assert.deepEqual(Object.values(file.people).map((x) => x.name), ['linear:unknown']);
 });

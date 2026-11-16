@@ -133,3 +133,48 @@ test('usage errors exit 2 and name no value', () => {
 	const r = spawnSync(process.execPath, [CLI, '--workspace'], { env: { PATH: process.env.PATH }, encoding: 'utf8' });
 	assert.equal(r.status, 2);
 });
+
+// ---- the independent review of 2026-11-16 ----
+
+test('a members file of the wrong shape, and a people map or tag hints that are not objects, stop the run (exit 2) with nothing written', async () => {
+	const s = sandbox();
+	try {
+		await exported(s);
+		for (const wrong of [{ members: { alice: 1 } }, [], { people: [] }, null]) {
+			writeFileSync(join(s.workspace, 'team', 'members.json'), JSON.stringify(wrong));
+			const r = cli(s, '--apply');
+			assert.equal(r.code, 2, JSON.stringify(wrong) + r.err);
+			assert.match(r.err, /members\.json has no "members" list/);
+			assert.equal(existsSync(join(s.workspace, 'team', 'board', 'people.json')), false);
+		}
+		writeFileSync(join(s.workspace, 'team', 'members.json'), JSON.stringify({ members: MEMBERS }));
+		for (const [flag, label] of [['--people-map', /people map must be a JSON object/], ['--tag-hints', /tag hints must be a JSON object/]]) {
+			for (const body of ['null', '[]', '"text"', '5']) {
+				writeFileSync(join(s.root, 'x.json'), body);
+				const r = cli(s, flag, join(s.root, 'x.json'));
+				assert.equal(r.code, 2, `${flag} ${body}: ${r.err}`);
+				assert.match(r.err, label);
+				assert.ok(!/at .*\.mjs:\d+/.test(r.err), 'no stack trace or source excerpt');
+			}
+		}
+	} finally {
+		s.cleanup();
+	}
+});
+
+test('a write the store refuses makes the run exit 1 and say so; the clean files are still written', async () => {
+	const s = sandbox();
+	try {
+		await exported(s);
+		const dir = join(s.workspace, 'team', 'board');
+		mkdirSync(join(dir, 'projects'), { recursive: true });
+		writeFileSync(join(dir, 'projects', 'test-project.md'), 'no front matter at all\n');
+		const r = cli(s, '--apply');
+		assert.equal(r.code, 1, r.out + r.err);
+		assert.match(r.out, /FAILED writes: damaged 1/);
+		assert.equal(readFileSync(join(dir, 'projects', 'test-project.md'), 'utf8'), 'no front matter at all\n');
+		assert.ok(existsSync(join(dir, 'teams', 'PSE.json')));
+	} finally {
+		s.cleanup();
+	}
+});

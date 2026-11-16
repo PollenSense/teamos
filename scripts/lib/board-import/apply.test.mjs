@@ -253,7 +253,7 @@ test('the summary has counts and names of kinds only: no title, name, text or ad
 		const r = await run(s, e);
 		const text = formatSummary(r.plan, r, { dryRun: false });
 		for (const secret of ['Test project', 'Second project', 'Invented', 'Test Person', 'stranger', 'example.invalid', 'alice', 'Area']) assert.equal(text.includes(secret), false, `"${secret}" is not in the summary`);
-		assert.match(text, /1 projects and 0 documents had text redacted/);
+		assert.match(text, /1 projects, 0 documents and 0 team, state, label or cycle names had text redacted/);
 	} finally {
 		s.cleanup();
 	}
@@ -270,6 +270,25 @@ test('a hand-edited tag in project-map.json survives a second run', async () => 
 		const r = await run(s, buildExport());
 		assert.equal(JSON.parse(readFileSync(file, 'utf8')).tags.ops, 'test-project');
 		assert.equal(r.applied['project-map'].unchanged, 1);
+	} finally {
+		s.cleanup();
+	}
+});
+
+test('rule A on disk for names: the synced files hold [email], the raw names record holds the original, written once', async () => {
+	const s = sandbox();
+	try {
+		const e = buildExport();
+		e.labels[0].name = 'Mail other@outside.example.invalid';
+		const r = await run(s, e);
+		assert.equal(r.applied['raw names'].created, 1);
+		const raw = readFileSync(join(s.rawDir, 'names', 'reference.json'), 'utf8');
+		assert.match(raw, /other@outside/);
+		assert.equal(readFileSync(join(s.dir, 'labels.json'), 'utf8').includes('other@'), false);
+		assert.match(readFileSync(join(s.dir, 'labels.json'), 'utf8'), /\[email\]/);
+		assert.match(formatSummary(r.plan, r, { dryRun: false }), /2 team, state, label or cycle names had text redacted/);
+		const again = await run(s, e);
+		assert.equal(again.applied['raw names'].unchanged, 1);
 	} finally {
 		s.cleanup();
 	}

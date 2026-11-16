@@ -34,9 +34,11 @@ changes the name in the file and leaves the file name alone.
 
 ## Rule A
 
-Every typed text (names, descriptions, update bodies, document text) goes through `redactValue` first. Outside addresses
+Every typed text (descriptions, update bodies, document text, and the names of projects, milestones, teams, workflow states,
+labels and cycles) goes through `redactValue` first. Outside addresses
 and phone-shaped numbers become `[email]` and `[phone]` in the synced file; when anything was redacted the original goes to
-`team/board/raw/<type>/<id>.json` (folder mode 0700, file 0600), written **before** the synced file. A real run calls the
+`team/board/raw/<type>/<id>.json` (folder mode 0700, file 0600), written **before** the synced file; the flagged team,
+state, label and cycle names share one record, `raw/names/reference.json`. A real run calls the
 caller's guard (`assertLocalOnly` on the raw folder) before its first write and stops if the filter would sync it. A project
 code is made from the redacted name, so an address in a name does not become a file name. Ids, dates and codes are not
 scanned (they are not typed text).
@@ -50,8 +52,12 @@ as failed and the rest of the run goes on.
 
 ## Known limits
 
-- Dangling references (a cycle of an unknown team, a milestone of an unknown project, a lead who is not a user) are counted
-  in the report, and the record is written without the reference.
+- Dangling references are counted in the report. A milestone of an unknown project, a lead who is not a user or an
+  unknown team of a project: the record is written without the reference. A cycle of an unknown team and a document
+  whose id is not a plain name are skipped (not written).
+- Two teams with one key, or two cycles with one team and number, stop the run (`duplicate`): one would overwrite the other.
+- A `members.json` without a `members` list, and a `--people-map` or `--tag-hints` that is not a JSON object, stop the run
+  with exit 2 (read as empty, every member would be written as `linear:<first name>`).
 - `raw/` files of a text that is no longer flagged stay (they are local and the next full import removes nothing).
 - Project updates carry their text in a front-matter line (one line of JSON per value); 29 updates in Linear's workspace,
   so the files stay readable. A5 does the same for nothing: issue text goes in the body.

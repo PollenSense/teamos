@@ -13,7 +13,7 @@ import { ImportError } from './reference.mjs';
  */
 
 const RAW_NAME = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
-const RAW_TYPES = ['projects', 'documents'];
+const RAW_TYPES = ['projects', 'documents', 'names'];
 
 function rawPath(rawDir, type, id) {
 	if (!RAW_TYPES.includes(type)) throw new ImportError('bad-raw', 'a raw record has a type the importer does not know');
@@ -120,7 +120,7 @@ export function formatSummary(plan, { applied, failures }, { dryRun }) {
 	}
 	lines.push(`people: ${c.people.matched} matched to a member, ${c.people.unmatched} kept as linear:<first name>, ${c.people.former} former, ${c.people.apps} app`);
 	lines.push(`tags: ${c.tags.mapped} of ${c.tags.total} mapped to a project (${c.tags.unmapped} not yet${c.tags.missingProject ? `, ${c.tags.missingProject} point at a project that is not there` : ''})`);
-	lines.push(`person data: ${c.flagged.projects} projects and ${c.flagged.documents} documents had text redacted (originals only in the local raw folder)`);
+	lines.push(`person data: ${c.flagged.projects} projects, ${c.flagged.documents} documents and ${c.flagged.names} team, state, label or cycle names had text redacted (originals only in the local raw folder)`);
 	const dangling = Object.entries(c.dangling);
 	lines.push(dangling.length === 0 ? 'dangling references: none' : `dangling references: ${dangling.map(([k, n]) => `${k} ${n}`).join(', ')}`);
 	if (c.damagedProjectFiles > 0) lines.push(`damaged project files left alone: ${c.damagedProjectFiles}`);
