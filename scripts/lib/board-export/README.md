@@ -39,18 +39,24 @@ Linear user to a TeamOS member). It is **never synced to Drive**. Every writer c
 filterText })` first: a folder outside the synced workspace is fine; a folder inside it needs `scripts/rclone-filter.txt`
 to keep it local. The guard checks four probe paths in the folder (top, one level, two levels, a dot name), so a filter
 that names one depth or one extension is not enough. It follows rclone's own model (file rules and directory rules, first
-match, directories walked first); see the header of `sync-filter.mjs`. Uploads (`files/`) and raw texts (`raw/`) of the
-board: raw texts (`raw/`) use the same guard (the importer calls it before writing). Uploads (`files/`) do NOT: Van
-wants every uploaded screenshot kept in Drive on its issue (2026-11-13), so that folder must stay unfiltered; the
-downloader treats what it saves as person data (open for the work, never copy what a picture shows).
+match, directories walked first); see the header of `sync-filter.mjs`.
+
+The board has two kinds of folder and a guard for each. The raw texts (`team/board/raw/`) use `assertLocalOnly` (the
+importer calls it before writing). The uploads (`team/board/files/<issue key>/`) are the opposite: Van wants every
+uploaded screenshot kept in Drive on its issue (2026-11-13), so that folder must stay unfiltered, and
+`assertSynced(folder, { workspaceRoot, filterText })` fails (`export-hidden`) when the filter hides ANY upload-shaped path
+(`uploadProbePaths`: `<folder>/PSE-1/shot.<ext>` for the usual extensions in lower and upper case, no extension, one
+level deeper, the top, a dot name) or when the folder is outside the synced workspace. One visible path does not make
+the folder pass: `- *.png` hides screenshots and not videos. The downloader treats what it saves as person data (open
+for the work, never copy what a picture shows).
 
 `node scripts/board-export-check.mjs --workspace <synced folder>` prints one line per folder: `local` or `WOULD SYNC` for
 a folder that must stay local (`team/board/raw` by default; `--folder` names others), `syncs` or `HIDDEN` for one that must
 reach Drive (`team/board/files` by default; `--synced` names others; `--filter` names another filter file). It exits 1 if
 any line is wrong. Run it after the filter edit and the bisync `--resync`, before the first import.
 
-The live check in the tests, `BOARD_RCLONE_FILTER=<path of scripts/rclone-filter.txt> node --test scripts/lib/board-export/`,
-fails until the one step-0 line (`- /team/board/raw/**`) is in that file, and fails if a line hides `team/board/files`.
+The live check in the tests, `BOARD_RCLONE_FILTER=<path of scripts/rclone-filter.txt> node --test 'scripts/lib/board-export/*.test.mjs'`,
+fails until the one step-0 line (`- /team/board/raw/**`) is in that file, and fails if a line hides any upload path of `team/board/files`.
 
 ## Tests
 

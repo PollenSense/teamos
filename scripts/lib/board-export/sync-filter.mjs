@@ -233,9 +233,9 @@ function realPathLoose(p) {
 }
 
 /**
- * Probe paths for a folder: files that a writer could create at the top, one level down and two levels
- * down (an upload `files/PSE-1/shot.png`), plus a name with a dot, so a filter that only names one
- * extension or one depth does not pass.
+ * Probe paths for a folder that must stay local (the raw texts, the export folder): files that a writer
+ * could create at the top, one level down and two levels down, plus a name with a dot, so a filter that
+ * only names one extension or one depth does not pass. For uploads see `uploadProbePaths`.
  */
 export function probePaths(folderRel) {
 	const base = normalisePath(folderRel).join('/');
@@ -243,18 +243,39 @@ export function probePaths(folderRel) {
 }
 
 /**
- * The importer's guard. `folder` is a folder the importer is about to write text or uploads into
- * (absolute, or relative to `workspaceRoot`). Throws ExportError('export-synced') unless the folder is
- * outside the synced workspace or the filter keeps everything inside it local.
- *
- * Returns `{ where: 'outside' | 'filtered', rel }` so a caller can log which case held.
+ * Probe paths for a folder that must reach Drive (uploads): the shape a downloader really writes,
+ * `<folder>/<issue key>/<name>.<ext>`, for every extension an upload can have, in lower and upper case, plus
+ * one at the top, one deeper and a name with a dot. A filter that hides any one of them hides some uploads.
  */
-export function assertLocalOnly(folder, { workspaceRoot, filterText }) {
+export const UPLOAD_EXTENSIONS = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'heic', 'svg', 'mp4', 'mov', 'webm', 'pdf', 'txt', 'zip', 'PNG', 'JPG', 'MOV', ''];
+
+export function uploadProbePaths(folderRel) {
+	const base = folderRel === '' ? '' : normalisePath(folderRel).join('/');
+	const prefix = base === '' ? '' : `${base}/`;
+	const paths = [`${prefix}probe.json`, `${prefix}.probe`, `${prefix}PSE-1/.probe`, `${prefix}PSE-1/a/b/shot.png`];
+	for (const ext of UPLOAD_EXTENSIONS) paths.push(`${prefix}PSE-1/shot${ext === '' ? '' : `.${ext}`}`);
+	return paths;
+}
+
+/** Where a folder is, relative to the synced workspace: `{ rel, outside }` (`rel` is '' for the workspace itself). */
+function locate(folder, workspaceRoot) {
 	if (typeof workspaceRoot !== 'string' || workspaceRoot === '') throw new ExportError('bad-path', 'the workspace root is not given');
 	const root = realPathLoose(workspaceRoot);
 	const abs = realPathLoose(isAbsolute(folder) ? folder : join(root, folder));
 	const rel = relative(root, abs);
 	const outside = rel === '' ? false : rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel);
+	return { rel, outside };
+}
+
+/**
+ * The importer's guard for text. `folder` is a folder the importer is about to write issue text or comments
+ * into (absolute, or relative to `workspaceRoot`). Throws ExportError('export-synced') unless the folder is
+ * outside the synced workspace or the filter keeps everything inside it local.
+ *
+ * Returns `{ where: 'outside' | 'filtered', rel }` so a caller can log which case held.
+ */
+export function assertLocalOnly(folder, { workspaceRoot, filterText }) {
+	const { rel, outside } = locate(folder, workspaceRoot);
 	if (outside) return { where: 'outside', rel: null };
 	if (rel === '') throw new ExportError('export-synced', 'the folder is the synced workspace itself');
 	const rules = parseFilter(filterText);
@@ -266,4 +287,24 @@ export function assertLocalOnly(folder, { workspaceRoot, filterText }) {
 		);
 	}
 	return { where: 'filtered', rel: rel.split(sep).join('/') };
+}
+
+/**
+ * The guard for uploads, the opposite question: does EVERY path an upload can take reach Drive? Throws
+ * ExportError('export-hidden') when the folder is outside the synced workspace (nothing there syncs) or the
+ * filter hides any probe path: a filter that names one extension or one depth hides some uploads and not
+ * others, and one visible probe path must not make the folder look fine.
+ * Returns `{ where: 'synced', rel }`.
+ */
+export function assertSynced(folder, { workspaceRoot, filterText }) {
+	const { rel, outside } = locate(folder, workspaceRoot);
+	if (outside) throw new ExportError('export-hidden', 'the folder is outside the synced workspace, so nothing in it reaches Drive');
+	const rules = parseFilter(filterText);
+	const hidden = uploadProbePaths(rel).filter((p) => !isSynced(rules, p));
+	const shown = rel.split(sep).join('/');
+	if (hidden.length > 0) {
+		const rule = matchingRule(rules, hidden[0]);
+		throw new ExportError('export-hidden', `the sync filter hides ${hidden.length} of ${uploadProbePaths(rel).length} probe paths of "${shown}"${rule ? ` (first: filter line ${rule.line})` : ''}; uploads must reach Drive, so change or remove that filter line`);
+	}
+	return { where: 'synced', rel: shown };
 }
