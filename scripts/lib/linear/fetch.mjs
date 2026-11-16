@@ -43,7 +43,13 @@ export async function pageAll(client, name, variables = {}, { maxPages = MAX_PAG
 		if (conn === null || typeof conn !== 'object' || !Array.isArray(conn.nodes) || conn.pageInfo === null || typeof conn.pageInfo !== 'object') {
 			throw new FetchError('bad-response', `${name}: page ${page} has no nodes or no pageInfo`);
 		}
-		for (const node of conn.nodes) nodes.push(node);
+		if (typeof conn.pageInfo.hasNextPage !== 'boolean') {
+			throw new FetchError('bad-response', `${name}: page ${page} has no true or false "hasNextPage"; stopped (${nodes.length} records read, nothing written)`);
+		}
+		for (const node of conn.nodes) {
+			if (node === null || typeof node !== 'object' || Array.isArray(node)) throw new FetchError('bad-response', `${name}: page ${page} has a record that is not an object`);
+			nodes.push(node);
+		}
 		if (conn.pageInfo.hasNextPage !== true) return nodes;
 		const cursor = conn.pageInfo.endCursor;
 		if (typeof cursor !== 'string' || cursor === '' || seen.has(cursor)) {
@@ -58,7 +64,9 @@ export async function pageAll(client, name, variables = {}, { maxPages = MAX_PAG
 function nestedNodes(connection, name, what) {
 	if (connection === null || connection === undefined) return [];
 	if (!Array.isArray(connection.nodes)) throw new FetchError('bad-response', `${name}: ${what} has no node list`);
-	if (connection.pageInfo?.hasNextPage === true) {
+	if (connection.nodes.some((n) => n === null || typeof n !== 'object' || Array.isArray(n))) throw new FetchError('bad-response', `${name}: ${what} has a record that is not an object`);
+	if (typeof connection.pageInfo?.hasNextPage !== 'boolean') throw new FetchError('bad-response', `${name}: ${what} has no true or false "hasNextPage"`);
+	if (connection.pageInfo.hasNextPage === true) {
 		throw new FetchError('nested-truncated', `${name}: a nested list (${what}) has more items than one page; the fetcher cannot read it whole; stopped`);
 	}
 	return connection.nodes;

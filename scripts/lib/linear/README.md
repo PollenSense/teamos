@@ -10,7 +10,11 @@ LINEAR_API_KEY=... node scripts/board-fetch-linear.mjs --workspace <synced folde
 
 Exit 0 ok, 1 error, 2 usage, 3 stopped on a budget or the rate limit (nothing written). Output is counts only.
 `--dry-run` reads everything, checks every record against the export format and writes nothing. The export folder is
-checked with the sync guard (`board-export/sync-filter.mjs`) **before the first request**.
+checked with the sync guard (`board-export/sync-filter.mjs`) **before the first request**. `--types` reads only the
+named types: the export is then marked `complete: false` (the importer refuses it unless told otherwise) and the run
+refuses to write into a folder that already holds an export, so a partial read can never replace a full one (naming
+every type is a full read). The command line is `lib/linear/cli.mjs` (`runCli`, tested against the fake Linear); the
+script only calls it.
 
 ## Read-only by construction
 
@@ -18,11 +22,11 @@ checked with the sync guard (`board-export/sync-filter.mjs`) **before the first 
   not on the list (`__proto__`, `constructor`, anything) and a variable the document does not declare are refused before a
   request. A test checks that every document is exactly one query with no mutation, subscription or fragment, and that
   the whole run sends nothing else. The key's own read-only scope is the real lock; this is the second one.
-- The key is read from the environment only (`LINEAR_API_KEY`, or `LINEAR_API_KEY_RO` as `scripts/linear-api.sh`
-  accepts). No argument, option or file carries it. It is sent as the `Authorization` header (no `Bearer`) and is scrubbed
+- The key is read from the environment only (`LINEAR_API_KEY_RO` first, then `LINEAR_API_KEY`: the order of
+  `scripts/linear-api.sh`). No argument, option or file carries it. It is sent as the `Authorization` header (no `Bearer`) and is scrubbed
   from every error text, along with anything shaped like a Linear key.
 - Optionally validate the documents against Linear's public schema:
-  `LINEAR_SCHEMA_FILE=<schema.graphql> GRAPHQL_MODULE=<graphql/index.mjs> node --test scripts/lib/linear/` (schema:
+  `LINEAR_SCHEMA_FILE=<schema.graphql> GRAPHQL_MODULE=<graphql/index.mjs> node --test scripts/lib/linear/documents.test.mjs` (schema:
   `github.com/linear/linear`, `packages/sdk/src/schema.graphql`; `graphql@16` from npm). One field is swapped before the
   check: label `retiredAt` is served by the live API (probed read-only on 2026-11-13: 2 of 15 labels have it, `archivedAt`
   none) but is missing from the public master schema. If Linear drops it, the first run says "Cannot query field".
@@ -31,10 +35,13 @@ checked with the sync guard (`board-export/sync-filter.mjs`) **before the first 
 
 - Every connection pages with `pageInfo`; `includeArchived: true` everywhere, `includeDisabled: true` for users
   (suspended users are former members). A page with fewer nodes than the page size is normal. `hasNextPage: true` with a
-  missing, empty or repeated cursor stops the run. A nested list (a project's milestones, an issue's labels) with a
-  second page also stops it (`nested-truncated`) instead of losing records.
+  missing, empty or repeated cursor stops the run, and so does a `hasNextPage` that is not true or false (a missing
+  one used to read as "no more pages") or a record that is not an object. A nested list (a project's milestones, an
+  issue's labels) with a second page also stops it (`nested-truncated`) instead of losing records.
 - 429, and Linear's `RATELIMITED` answer (HTTP 400), pause for `Retry-After` (or until the request limit resets) and retry;
-  a pause longer than 10 minutes, or more than 5 tries, ends the run. 5xx and network errors retry with a growing pause.
+  the request counts that came with a 429 are dropped after the pause (they describe the window just waited out; the
+  retry's own answer brings fresh ones). The reset time is read as epoch milliseconds or seconds, whichever falls inside
+  the hour. A pause longer than 10 minutes, or more than 5 tries, ends the run. 5xx and network errors retry with a growing pause.
   401 and 403 stop at once. Requests are paced 300 ms apart.
 - The run stops, before the next request, with fewer than 200 requests left in the hour or less than 10 percent of the
   complexity budget (3,000,000 an hour, shared by every key on the account). The export is written only after the whole

@@ -171,3 +171,31 @@ test('an export written from a read passes the reader, and no file holds the key
 		rmSync(root, { recursive: true, force: true });
 	}
 });
+
+// ---- the independent review of 2026-11-16 ----
+
+test('paging: a missing, null or text hasNextPage is an error, never a quiet end of the list', async () => {
+	for (const bad of [undefined, null, 'true', 1, 'false']) {
+		const { client } = setup({}, { hook: () => json(200, { data: { teams: { pageInfo: { hasNextPage: bad, endCursor: 'c1' }, nodes: [{ id: 'a' }] } } }) });
+		await assert.rejects(pageAll(client, 'teams'), (e) => e instanceof FetchError && e.code === 'bad-response' && /hasNextPage/.test(e.message), String(bad));
+	}
+});
+
+test('paging: an empty page that says there is more is followed, and a record that is not an object is an error', async () => {
+	let n = 0;
+	const { client } = setup({}, { hook: () => (++n === 1 ? connection([], true, 'c1') : connection([{ id: 'late' }], false, null)) });
+	assert.deepEqual((await pageAll(client, 'teams')).map((x) => x.id), ['late']);
+	for (const node of [null, 5, 'x', ['a']]) {
+		const bad = setup({}, { hook: () => connection([{ id: 'a' }, node], false, null) });
+		await assert.rejects(pageAll(bad.client, 'teams'), (e) => e instanceof FetchError && e.code === 'bad-response' && /not an object/.test(e.message), String(node));
+	}
+});
+
+test('a nested list with no true-or-false hasNextPage, or a record that is not an object, is an error', async () => {
+	const data = inventedWorkspace();
+	data['issues:t-1'][0].labels = { nodes: [{ id: 'l-2' }] };
+	await assert.rejects(fetchWorkspace(setup(data).client, { types: ['issues'] }), (e) => e.code === 'bad-response' && /hasNextPage/.test(e.message));
+	const data2 = inventedWorkspace();
+	data2['issues:t-1'][0].labels = nested([null], false);
+	await assert.rejects(fetchWorkspace(setup(data2).client, { types: ['issues'] }), (e) => e.code === 'bad-response' && /not an object/.test(e.message));
+});

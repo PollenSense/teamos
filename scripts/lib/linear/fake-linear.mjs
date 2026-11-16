@@ -68,7 +68,7 @@ export function makeFakeLinear(data, opts = {}) {
 		n++;
 		const body = JSON.parse(init.body);
 		const name = byText.get(body.query);
-		requests.push({ n, url, name: name ?? null, query: body.query, variables: body.variables, authorization: init.headers.Authorization, method: init.method });
+		requests.push({ n, url, name: name ?? null, query: body.query, variables: body.variables, authorization: init.headers.Authorization, method: init.method, hasSignal: init.signal instanceof AbortSignal });
 		const headers = { 'Content-Type': 'application/json', ...(opts.headers?.(n) ?? {}) };
 		const hooked = name ? opts.hook?.(n, name, body.variables) : undefined;
 		if (hooked) return hooked;

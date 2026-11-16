@@ -56,7 +56,7 @@ test('nested connections say whether they are truncated', () => {
 });
 
 // Needs the schema (github.com/linear/linear, packages/sdk/src/schema.graphql) and graphql-js:
-//   LINEAR_SCHEMA_FILE=<schema.graphql> GRAPHQL_MODULE=<path of graphql/index.mjs> node --test scripts/lib/linear/
+//   LINEAR_SCHEMA_FILE=<schema.graphql> GRAPHQL_MODULE=<path of graphql/index.mjs> node --test scripts/lib/linear/documents.test.mjs
 // `retiredAt` on labels is served by the live API (probed read-only on 2026-11-13: 2 of 15 labels have it set,
 // `archivedAt` none) but is missing from the public master schema, so that one field is swapped before checking.
 const schemaOk = process.env.LINEAR_SCHEMA_FILE && process.env.GRAPHQL_MODULE;

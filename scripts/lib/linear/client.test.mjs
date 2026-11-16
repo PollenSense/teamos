@@ -170,3 +170,64 @@ test('answers that are not what Linear sends are errors, not empty results', asy
 	const { client } = setup({ hook: () => json(404, {}) });
 	await assert.rejects(client.run('teams'), code('http'));
 });
+
+// ---- the independent review of 2026-11-16 ----
+
+test('a 429 that reports no requests left is retried after the pause, not stopped on its own stale count', async () => {
+	let n = 0;
+	const { client, sleeps, fake } = setup({ hook: () => (++n === 1 ? json(429, { errors: [{ message: 'x' }] }, { 'Retry-After': '7', 'X-RateLimit-Requests-Remaining': '0', 'X-RateLimit-Complexity-Remaining': '0', 'X-RateLimit-Complexity-Limit': '3000000' }) : undefined) });
+	const data = await client.run('teams');
+	assert.ok(data.teams, 'the retry went through');
+	assert.deepEqual(sleeps, [7000]);
+	assert.equal(fake.requests.length, 2);
+	assert.equal(client.requests, 2, 'every send is counted, the retry too');
+});
+
+test('a budget that the retry itself reports is still enforced', async () => {
+	let n = 0;
+	const { client } = setup({ hook: () => (++n === 1 ? json(429, {}, { 'Retry-After': '1' }) : undefined), headers: (k) => (k >= 2 ? { 'X-RateLimit-Requests-Remaining': '5' } : {}) });
+	await client.run('teams');
+	await assert.rejects(client.run('teams'), code('budget'));
+});
+
+test('the request-limit reset time is read as milliseconds or as seconds, whichever lands inside the hour', async () => {
+	const NOW = 1_800_000_000_000; // a real epoch time in ms: the two readings cannot be confused
+	const waits = async (reset) => {
+		let n = 0;
+		const { client, sleeps } = setup({ hook: () => (++n === 1 ? json(429, {}, { 'X-RateLimit-Requests-Reset': String(reset) }) : undefined) }, { now: () => NOW });
+		await client.run('teams');
+		return sleeps;
+	};
+	assert.deepEqual(await waits(NOW + 12_000), [12_000], 'milliseconds');
+	assert.deepEqual(await waits((NOW + 12_000) / 1000), [12_000], 'seconds');
+	assert.deepEqual(await waits(NOW * 1000), [60_000], 'a value that fits neither reading gets the default pause');
+});
+
+test('the read-only key is preferred over the general one, as the wrapper does', async () => {
+	const fake = makeFakeLinear(inventedWorkspace());
+	const client = createClient({ env: { LINEAR_API_KEY: 'general-key-aaa', LINEAR_API_KEY_RO: 'read-only-key-bbb' }, fetchImpl: fake.fetchImpl, paceMs: 0 });
+	await client.run('teams');
+	assert.equal(fake.requests[0].authorization, 'read-only-key-bbb');
+});
+
+test('a key that does not look like a Linear key is still scrubbed from what Linear echoes back', async () => {
+	const odd = 'plain-secret-0123456789abcdef';
+	const fake = makeFakeLinear(inventedWorkspace(), { hook: () => json(200, { errors: [{ message: `bad input ${odd} in header` }] }) });
+	const client = createClient({ env: { LINEAR_API_KEY: odd }, fetchImpl: fake.fetchImpl, paceMs: 0 });
+	await assert.rejects(client.run('teams'), (e) => e.code === 'graphql' && !e.message.includes(odd) && /\[key\]/.test(e.message));
+});
+
+test('401 and 403 stop at once with no retry', async () => {
+	for (const status of [401, 403]) {
+		const { client, fake, sleeps } = setup({ hook: () => json(status, {}) });
+		await assert.rejects(client.run('teams'), code('auth'));
+		assert.equal(fake.requests.length, 1, String(status));
+		assert.deepEqual(sleeps, []);
+	}
+});
+
+test('every request carries an abort signal, so a hung connection ends', async () => {
+	const { client, fake } = setup();
+	await client.run('teams');
+	assert.equal(fake.requests[0].hasSignal, true);
+});

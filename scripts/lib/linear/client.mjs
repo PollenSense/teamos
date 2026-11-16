@@ -4,8 +4,8 @@
  * - Sends only documents from `documents.mjs`, chosen by NAME. Nothing else can be sent: a name that is
  *   not on the list (including `__proto__`, `constructor`) is refused before any request, and so is a
  *   variable the document does not declare.
- * - The key comes from the environment only (`LINEAR_API_KEY`; `LINEAR_API_KEY_RO` is accepted as the
- *   wrapper `scripts/linear-api.sh` does). There is no option, argument or file that carries it. It is sent
+ * - The key comes from the environment only (`LINEAR_API_KEY_RO` first, then `LINEAR_API_KEY`: the same order
+ *   as the wrapper `scripts/linear-api.sh`). There is no option, argument or file that carries it. It is sent
  *   as the `Authorization` header (no `Bearer`) and appears in no error message, event or log line: text
  *   that comes back from Linear is scrubbed of it, and of anything shaped like a Linear key, before it is
  *   used in a message.
@@ -66,7 +66,7 @@ export function createClient(options = {}) {
 	const maxWaitMs = options.maxWaitMs ?? 10 * 60 * 1000;
 	const onEvent = options.onEvent ?? (() => {});
 
-	const key = env.LINEAR_API_KEY || env.LINEAR_API_KEY_RO || '';
+	const key = env.LINEAR_API_KEY_RO || env.LINEAR_API_KEY || '';
 	if (key === '') throw new FetchError('no-key', 'LINEAR_API_KEY is not set in this environment');
 	if (typeof fetchImpl !== 'function') throw new FetchError('no-fetch', 'no fetch implementation is available');
 
@@ -103,7 +103,15 @@ export function createClient(options = {}) {
 		const retryAfter = headerNumber(headers, 'retry-after');
 		if (retryAfter !== null) return Math.max(0, retryAfter) * 1000;
 		const reset = headerNumber(headers, 'x-ratelimit-requests-reset');
-		if (reset !== null) return Math.max(1000, reset - now());
+		if (reset !== null) {
+			// An epoch time, in milliseconds or in seconds (the unit is not stated where we read it): take the
+			// reading that puts the reset inside the hour window around now. Neither: the default pause below.
+			const inWindow = (w) => w >= -3_600_000 && w <= 7_200_000;
+			const asMs = reset - now();
+			const asSeconds = reset * 1000 - now();
+			if (inWindow(asMs)) return Math.max(1000, asMs);
+			if (inWindow(asSeconds)) return Math.max(1000, asSeconds);
+		}
 		return 60_000;
 	}
 
@@ -163,6 +171,10 @@ export function createClient(options = {}) {
 				if (wait > maxWaitMs) throw new FetchError('rate-limited', `${name}: Linear asks for a pause of ${Math.round(wait / 1000)} s, longer than this run waits (${Math.round(maxWaitMs / 1000)} s); nothing was written; try again later`);
 				onEvent({ name, status: res.status, waitedMs: wait, requestsRemaining: state.requestsRemaining, complexityRemaining: state.complexityRemaining });
 				await sleep(wait);
+				// The counts that came with the 429 describe the window we just waited out; the answer to the retry
+				// brings fresh ones. Checked against the old ones, the retry would stop on a budget it no longer has.
+				state.requestsRemaining = null;
+				state.complexityRemaining = null;
 				continue;
 			}
 			if (res.status >= 500) {
