@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { FORMAT, FORMAT_VERSION, MANIFEST_FILE, TYPE_NAMES, readExport, writeExport } from './index.mjs';
@@ -275,6 +275,35 @@ test('a folder with other files and no manifest is not written into', async () =
 		writeFileSync(join(s.out, 'notes.txt'), 'mine');
 		await assert.rejects(writeExport(s.out, { source: 'fixture', entities: buildFixture() }, s.guard), code('not-export-folder'));
 		assert.deepEqual(readdirSync(s.out), ['notes.txt']);
+	} finally {
+		s.cleanup();
+	}
+});
+
+test('a first write that was killed (only its temp files left, no manifest) is retried and cleans them up', async () => {
+	const s = sandbox();
+	try {
+		mkdirSync(s.out);
+		writeFileSync(join(s.out, 'issues.json.tmp-4242-0a1b2c3d'), 'half');
+		writeFileSync(join(s.out, 'export.json.tmp-4242-0a1b2c3d'), 'half');
+		await writeExport(s.out, { source: 'fixture', entities: buildFixture() }, s.guard);
+		assert.ok(!readdirSync(s.out).some((n) => n.includes('.tmp-')), 'no temp file is left');
+		assert.ok(readdirSync(s.out).includes('export.json'));
+		// a temp-looking name next to somebody's own file is still refused, and nothing is removed
+		const t = sandbox();
+		try {
+			mkdirSync(t.out);
+			writeFileSync(join(t.out, 'issues.json.tmp-4242-0a1b2c3d'), 'half');
+			writeFileSync(join(t.out, 'notes.txt'), 'mine');
+			await assert.rejects(writeExport(t.out, { source: 'fixture', entities: buildFixture() }, t.guard), code('not-export-folder'));
+			assert.deepEqual(readdirSync(t.out).sort(), ['issues.json.tmp-4242-0a1b2c3d', 'notes.txt']);
+			// a name that only resembles a temp file (wrong suffix) is not one
+			rmSync(join(t.out, 'notes.txt'));
+			renameSync(join(t.out, 'issues.json.tmp-4242-0a1b2c3d'), join(t.out, 'issues.json.tmp-x'));
+			await assert.rejects(writeExport(t.out, { source: 'fixture', entities: buildFixture() }, t.guard), code('not-export-folder'));
+		} finally {
+			t.cleanup();
+		}
 	} finally {
 		s.cleanup();
 	}
