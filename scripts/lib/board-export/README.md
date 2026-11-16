@@ -22,7 +22,7 @@ The field list of every type, and its kind, is `ENTITY_TYPES` in `format.mjs` (t
 
 - `writeExport(dir, { source, fetchedAt?, complete?, entities }, { workspaceRoot, filterText })` validates every record,
   asks the sync guard (below), writes each file through a temp file and a rename, writes the manifest last, and removes
-  the files of types left out (fixed names only). It refuses a folder that has files but no manifest.
+  the files of types left out (fixed names only). It refuses a folder that has files but no manifest, except one that holds only the temp files of a first write that was killed (those are removed and the write goes on).
 - `readExport(dir, { require?, allowIncomplete?, maxFileBytes? })` opens only the fixed file name of each known type
   (never a path from the manifest, never a link), compares size limit, sha256 and record count with the manifest, and
   validates every record. A run that stopped half-way leaves files that no longer match the manifest: refused as

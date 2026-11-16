@@ -47,6 +47,9 @@ async function writeAtomic(path, text) {
 	}
 }
 
+/** The name `writeAtomic` gives a file while it is being written: `<fixed file name>.tmp-<pid>-<8 hex digits>`. */
+const TEMP_LEFTOVER = /^[A-Za-z]+\.json\.tmp-\d+-[0-9a-f]{8}$/;
+
 /**
  * Write a complete export.
  *
@@ -56,7 +59,8 @@ async function writeAtomic(path, text) {
  * @returns {Promise<{manifest: object}>}
  *
  * Types that are not in `data.entities` are removed from the folder (their fixed file names only: nothing
- * else in the folder is touched). A folder that has files but no manifest is refused.
+ * else in the folder is touched). A folder that has files but no manifest is refused, unless every file is a temp
+ * file left by a first write that was killed (those are removed).
  */
 export async function writeExport(dir, data, guard) {
 	if (!guard || typeof guard !== 'object') throw new ExportError('export-synced', 'writeExport needs the sync guard (workspaceRoot and filterText)');
@@ -73,7 +77,12 @@ export async function writeExport(dir, data, guard) {
 	await mkdir(dir, { recursive: true, mode: 0o700 });
 	const existing = await readdir(dir);
 	if (existing.length > 0 && !existing.includes(MANIFEST_FILE)) {
-		throw new ExportError('not-export-folder', 'the folder has files but no export manifest; refusing to write into it');
+		// A first write that was killed leaves only the temp files `writeAtomic` names; they are removed. Anything
+		// else in a folder with no manifest is somebody's, and the write is refused.
+		if (existing.some((name) => !TEMP_LEFTOVER.test(name))) {
+			throw new ExportError('not-export-folder', 'the folder has files but no export manifest; refusing to write into it');
+		}
+		for (const name of existing) await rm(join(dir, name), { force: true });
 	}
 
 	const manifestEntities = {};
