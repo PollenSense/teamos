@@ -38,3 +38,30 @@ export function buildInventorySizedExport() {
 	};
 	return e;
 }
+
+/**
+ * The inventory-sized export plus 1,464 invented issues with the inventory's shape (design 1.1): PSE 1,030, INS 178, REV
+ * 130, AER 126; 573 archived (439, 118, 6, 10); 600 carry one earlier key (549, 0, 41, 10); about one in eight has a parent.
+ * Nothing here comes from a tracker. Earlier keys are `<TEAM>-9<nnnn>`, numbers no issue has. `divisor` shrinks every count
+ * (a write is O(files) in the store, so the full size takes about 40 s per run: tests use a tenth unless asked).
+ */
+export function buildInventorySizedIssues(divisor = 1) {
+	const e = buildInventorySizedExport();
+	const teams = [['PSE', 1030, 439, 549], ['INS', 178, 118, 0], ['REV', 130, 6, 41], ['AER', 126, 10, 10]].map(([key, total, archived, moved]) => [key, Math.ceil(total / divisor), Math.round(archived / divisor), Math.round(moved / divisor)]);
+	e.issues = [];
+	e.milestones = e.milestones ?? [];
+	let day = 0;
+	teams.forEach(([key, total, archived, moved], t) => {
+		for (let n = 1; n <= total; n++) {
+			const created = new Date(Date.UTC(2024, 0, 1) + (day++) * 3_600_000).toISOString();
+			e.issues.push({
+				id: `i-${key}-${n}`, key: `${key}-${n}`, teamKey: key, number: n, title: `Invented issue ${key} ${n}`, description: n % 3 === 0 ? `Invented description ${n}.` : null,
+				priority: n % 5, estimate: n % 4 === 0 ? n % 8 : null, dueDate: null, createdAt: created, updatedAt: created, archivedAt: n <= archived ? created : null,
+				completedAt: null, canceledAt: null, startedAt: null, stateId: `s-${t}-${n % 3}`, projectId: n % 7 === 0 ? `p-${n % 63}` : null, milestoneId: null, cycleId: null,
+				parentId: n > 1 && n % 8 === 0 ? `i-${key}-${n - 1}` : null, assigneeId: n % 2 === 0 ? `u-${n % 18}` : null, creatorId: `u-${(n + 1) % 18}`,
+				labelIds: n % 5 === 0 ? [`l-${n % 15}`] : [], previousKeys: n <= moved ? [`${key}-9${String(n).padStart(4, '0')}`] : [], branchName: null,
+			});
+		}
+	});
+	return e;
+}

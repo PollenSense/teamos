@@ -69,3 +69,38 @@ as failed and the rest of the run goes on.
 `node --test scripts/lib/board-import/*.test.mjs scripts/board-import-reference.test.mjs` (and `scripts/lib/board/store-extensions.test.mjs`).
 Fixtures are invented (`fixture.mjs`, built on the export fixture); an export of the inventory's size (63 projects, 15
 labels, 17 documents, 18 users, 4 teams) checks the dry-run counts. The guards were mutation-checked (removed, then a test failed).
+
+## Issues (ticket A5)
+
+```
+node scripts/board-import-issues.mjs --workspace <repo root> --export <export folder>          # dry run: counts per team, writes nothing
+node scripts/board-import-issues.mjs --workspace <repo root> --export <export folder> --apply  # needs board.importer true and the reference import done
+```
+
+The options are the reference importer's (`--members`, `--people-map`, `--tag-hints`, `--filter`): they feed the same plan,
+so people, project codes, label names and cycles in an issue always equal the reference files. `--apply` refuses until
+`board-import-reference.mjs --apply` has written `people.json`.
+
+One file per issue, `issues/<TEAM>/<KEY>.md`, in the layout of design 2.2: status and type from the workflow state, priority
+(0 to 4; any other value kept as text), assignee and creator as board names, project code, milestone name, cycle `PSE-37`,
+parent key, labels (`group/name`, plain order), estimate (a number; anything else kept as text), due date, branch, the dates,
+and `aliases` (every earlier key: an issue moved between teams is ONE card and its old keys open it). The description is the
+body (an empty text when Linear has none, so a cleared text is cleared). Oldest first. Relations, pull requests, links and
+comments are A6; the next-number counters are set at cutover.
+
+- **Rule A** as in A4: a title or description with an outside address or phone number is redacted in the file, the original
+  goes to `raw/issues/<KEY>.json` (local only), written before the synced file. The names of states, labels and milestones are
+  A4's (their originals are in `raw/names` and the project records); they read the same here.
+- **Order does not matter**: a child before its parent, a parent that is archived or in another team, all resolve by key.
+  A parent that is not in the export, an unknown state, project, cycle, milestone, label, assignee or creator is counted as
+  dangling and the issue is still written without it.
+- **Aliases**: one that is another issue's key, or that two issues claim, is reported as a CONFLICT in the dry run and the store
+  refuses that write (`alias-conflict`); the rest go on and the run exits 1.
+- **Checked after a real run, against the files**: every alias opens the card that claims it, every parent is a card
+  (`checked on the files: ...`); a broken one makes the run exit 1.
+- **Runs twice, changes nothing**, as A4. A write is O(files) in the store (an index refresh per write): 1,464 issues take about
+  40 s a run. The tests use a tenth of that size; `BOARD_FULL_SIZE=1 node --test scripts/lib/board-import/apply.test.mjs` runs the full size.
+
+On the real export (read-only dry run, 2026-11-16, counts only): 1,464 issues (PSE 1,030, INS 178, REV 130, AER 126), 573
+archived (439, 118, 6, 10), 600 issues with 1,214 earlier keys, 177 with a parent, 29 with a title or description redacted,
+no dangling reference. These equal the inventory.

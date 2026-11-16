@@ -13,7 +13,7 @@ import { ImportError } from './reference.mjs';
  */
 
 const RAW_NAME = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
-const RAW_TYPES = ['projects', 'documents', 'names'];
+const RAW_TYPES = ['projects', 'documents', 'names', 'issues'];
 
 function rawPath(rawDir, type, id) {
 	if (!RAW_TYPES.includes(type)) throw new ImportError('bad-raw', 'a raw record has a type the importer does not know');
@@ -51,15 +51,12 @@ export async function writeRaw(rawDir, type, id, record, { dryRun = false } = {}
 }
 
 /**
- * `{ applied, failures }`: `applied[kind]` = `{ created, changed, unchanged, failed }` (files), `failures` = count per
- * error code. A write the store refuses (`changed` since read, `damaged`) is counted and the run goes on; anything else throws.
+ * What a run counts: `applied[kind]` = `{ created, changed, unchanged, failed }` (files), `failures` = count per error
+ * code. `attempt(kind, read, write)` reads the current file, writes with the hash it read (or `'new'`), and counts the
+ * outcome; a write the store refuses (`changed` since read, `damaged`, `alias-conflict`) is counted and the run goes on,
+ * anything else throws.
  */
-export async function applyReference(plan, store, { rawDir, guard } = {}) {
-	const dryRun = store.dryRun === true;
-	if (!dryRun) {
-		if (typeof guard !== 'function' || !rawDir) throw new ImportError('no-guard', 'a real run needs the raw folder and the sync-filter check');
-		await guard();
-	}
+export function recorder() {
 	const applied = {};
 	const failures = {};
 	const tally = (kind, state) => {
@@ -77,6 +74,20 @@ export async function applyReference(plan, store, { rawDir, guard } = {}) {
 			failures[err.code] = (failures[err.code] ?? 0) + 1;
 		}
 	};
+	return { applied, failures, tally, attempt };
+}
+
+/**
+ * `{ applied, failures }`: `applied[kind]` = `{ created, changed, unchanged, failed }` (files), `failures` = count per
+ * error code. A write the store refuses (`changed` since read, `damaged`) is counted and the run goes on; anything else throws.
+ */
+export async function applyReference(plan, store, { rawDir, guard } = {}) {
+	const dryRun = store.dryRun === true;
+	if (!dryRun) {
+		if (typeof guard !== 'function' || !rawDir) throw new ImportError('no-guard', 'a real run needs the raw folder and the sync-filter check');
+		await guard();
+	}
+	const { applied, failures, tally, attempt } = recorder();
 
 	for (const r of plan.raw) {
 		const result = rawDir ? await writeRaw(rawDir, r.type, r.id, r.record, { dryRun }) : { changed: true }; // a dry run without a raw folder counts them as new
@@ -124,6 +135,85 @@ export function formatSummary(plan, { applied, failures }, { dryRun }) {
 	const dangling = Object.entries(c.dangling);
 	lines.push(dangling.length === 0 ? 'dangling references: none' : `dangling references: ${dangling.map(([k, n]) => `${k} ${n}`).join(', ')}`);
 	if (c.damagedProjectFiles > 0) lines.push(`damaged project files left alone: ${c.damagedProjectFiles}`);
+	const failed = Object.entries(failures);
+	if (failed.length > 0) lines.push(`FAILED writes: ${failed.map(([k, n]) => `${k} ${n}`).join(', ')}`);
+	return lines.join('\n');
+}
+
+/**
+ * Writes an issue plan (`planIssues`) through the store. Raw copies of flagged texts first, then the issues oldest
+ * first; every issue is written with the hash of the file it read, so a file somebody changed since is refused
+ * (`changed`), not overwritten. A real run asks the guard first, as `applyReference` does.
+ *
+ * After a real run the two promises of the ticket are checked against the files: every alias opens the card that
+ * claims it, and every parent is a card. `checks` counts what held and what did not. A dry run has no files to check.
+ */
+export async function applyIssues(plan, store, { rawDir, guard } = {}) {
+	const dryRun = store.dryRun === true;
+	if (!dryRun) {
+		if (typeof guard !== 'function' || !rawDir) throw new ImportError('no-guard', 'a real run needs the raw folder and the sync-filter check');
+		await guard();
+	}
+	const { applied, failures, tally, attempt } = recorder();
+	for (const r of plan.raw) {
+		const result = rawDir ? await writeRaw(rawDir, r.type, r.id, r.record, { dryRun }) : { changed: true };
+		tally(`raw ${r.type}`, result.changed ? 'created' : 'unchanged');
+	}
+	for (const issue of plan.issues) {
+		const id = issue.fields.id;
+		// `readIssue` also answers for an alias; a card that is somebody else's alias is not this issue's file (the store
+		// refuses that write as `alias-conflict` either way; this keeps the other card's hash out of the write).
+		await attempt(`issues ${issue.fields.team}`, async () => {
+			const current = await store.readIssue(id);
+			return current && current.id === id ? current : null;
+		}, (expect) => store.writeIssue(issue, { expect }));
+	}
+	const checks = { aliasesChecked: 0, aliasesBroken: 0, parentsChecked: 0, parentsBroken: 0 };
+	if (!dryRun) {
+		// A file the store cannot read (damaged: already counted as a failed write) does not open, so its promise is broken too.
+		const open = async (id) => {
+			try {
+				return await store.readIssue(id);
+			} catch (err) {
+				if (!(err instanceof BoardError)) throw err;
+				return null;
+			}
+		};
+		for (const issue of plan.issues) {
+			for (const alias of issue.fields.aliases ?? []) {
+				checks.aliasesChecked++;
+				const found = await open(alias);
+				if (!found || found.id !== issue.fields.id) checks.aliasesBroken++;
+			}
+			if (issue.fields.parent) {
+				checks.parentsChecked++;
+				if (!(await open(issue.fields.parent))) checks.parentsBroken++;
+			}
+		}
+	}
+	return { applied, failures, checks };
+}
+
+/** The counts-only report of an issue run: per team read and what each file did, aliases, parents, dangling, flagged. Never a title, text or name. */
+export function formatIssuesSummary(plan, { applied, failures, checks }, { dryRun }) {
+	const c = plan.counts;
+	const lines = [dryRun ? 'Issue import: DRY RUN, nothing written' : 'Issue import: written'];
+	lines.push('read = issues in the export; new, changed, same, failed = files');
+	lines.push(`${'team'.padEnd(8)}${pad('read', 6)}${pad(dryRun ? 'new' : 'created', 9)}${pad('changed', 9)}${pad('same', 7)}${pad('failed', 8)}${pad('archived', 10)}`);
+	for (const team of Object.keys(c.byTeam).sort()) {
+		const t = c.byTeam[team];
+		const a = applied[`issues ${team}`];
+		lines.push(`${team.padEnd(8)}${pad(t.read, 6)}${a ? `${pad(a.created, 9)}${pad(a.changed, 9)}${pad(a.unchanged, 7)}${pad(a.failed, 8)}` : `${pad('-', 9)}${pad('-', 9)}${pad('-', 7)}${pad('-', 8)}`}${pad(t.archived, 10)}`);
+	}
+	lines.push(`${'all'.padEnd(8)}${pad(c.read, 6)}`);
+	lines.push(`aliases: ${c.aliases.issues} issues carry ${c.aliases.total} earlier keys${c.aliases.conflicts ? `; ${c.aliases.conflicts} CONFLICT (an alias that is another issue's key, or claimed twice: those writes will be refused)` : ''}`);
+	if (checks && checks.aliasesChecked + checks.parentsChecked > 0) {
+		lines.push(`checked on the files: ${checks.aliasesChecked - checks.aliasesBroken} of ${checks.aliasesChecked} aliases open their card, ${checks.parentsChecked - checks.parentsBroken} of ${checks.parentsChecked} parents are cards`);
+	}
+	lines.push(`parents: ${c.parents} issues have a parent`);
+	lines.push(`person data: ${c.flagged} issues had a title or description redacted (originals only in the local raw folder)`);
+	const dangling = Object.entries(c.dangling);
+	lines.push(dangling.length === 0 ? 'dangling references: none' : `dangling references: ${dangling.map(([k, n]) => `${k} ${n}`).join(', ')}`);
 	const failed = Object.entries(failures);
 	if (failed.length > 0) lines.push(`FAILED writes: ${failed.map(([k, n]) => `${k} ${n}`).join(', ')}`);
 	return lines.join('\n');

@@ -4,8 +4,8 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, 
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { BoardStore } from '../board/index.mjs';
-import { ImportError, applyReference, formatSummary, loadExisting, planReference, writeRaw } from './index.mjs';
-import { MEMBERS, buildExport, buildInventorySizedExport } from './fixture.mjs';
+import { ImportError, applyIssues, applyReference, formatIssuesSummary, formatSummary, loadExisting, planIssues, planReference, writeRaw } from './index.mjs';
+import { MEMBERS, buildExport, buildInventorySizedExport, buildInventorySizedIssues } from './fixture.mjs';
 
 function sandbox() {
 	const root = mkdtempSync(join(tmpdir(), 'board-import-'));
@@ -289,6 +289,227 @@ test('rule A on disk for names: the synced files hold [email], the raw names rec
 		assert.match(formatSummary(r.plan, r, { dryRun: false }), /2 team, state, label or cycle names had text redacted/);
 		const again = await run(s, e);
 		assert.equal(again.applied['raw names'].unchanged, 1);
+	} finally {
+		s.cleanup();
+	}
+});
+
+// ---- issues (A5) ----
+
+async function runIssues(s, entities, { dry = false, guard = async () => ({ where: 'test' }) } = {}) {
+	const store = s.store(dry);
+	const existing = await loadExisting(store);
+	const reference = planReference(entities, { members: MEMBERS, existing });
+	const plan = planIssues(entities, reference);
+	const result = await applyIssues(plan, store, { rawDir: s.rawDir, guard });
+	return { plan, ...result };
+}
+
+test('issues: a real run writes one file per issue under its team, with the text as the body', async () => {
+	const s = sandbox();
+	try {
+		const r = await runIssues(s, buildExport());
+		assert.deepEqual(r.failures, {});
+		assert.equal(r.applied['issues PSE'].created, 2);
+		assert.equal(r.applied['issues INS'].created, 1);
+		const text = readFileSync(join(s.dir, 'issues', 'PSE', 'PSE-1.md'), 'utf8');
+		assert.match(text, /^---\n/);
+		assert.match(text, /\nid: "PSE-1"\n/);
+		assert.match(text, /\nstatus: "Todo"\n/);
+		assert.match(text, /\n---\n\nInvented description\.$/);
+		assert.ok(existsSync(join(s.dir, 'issues', 'INS', 'INS-9.md')));
+		assert.deepEqual(r.checks, { aliasesChecked: 1, aliasesBroken: 0, parentsChecked: 1, parentsBroken: 0 });
+	} finally {
+		s.cleanup();
+	}
+});
+
+test('issues: a second run writes nothing and touches no file; an old key opens the card that moved', async () => {
+	const s = sandbox();
+	try {
+		await runIssues(s, buildExport());
+		const before = snapshot(s.dir);
+		const again = await runIssues(s, buildExport());
+		assert.deepEqual(again.failures, {});
+		assert.equal(again.applied['issues PSE'].unchanged, 2);
+		assert.equal(again.applied['issues PSE'].created + again.applied['issues PSE'].changed, 0);
+		assert.deepEqual(snapshot(s.dir), before);
+		const moved = await s.store().readIssue('ins-5');
+		assert.equal(moved.id, 'PSE-2');
+	} finally {
+		s.cleanup();
+	}
+});
+
+test('issues: a dry run writes nothing, not even a folder, and says what would be new', async () => {
+	const s = sandbox();
+	try {
+		const r = await runIssues(s, buildExport(), { dry: true });
+		assert.equal(r.applied['issues PSE'].created, 2);
+		assert.equal(existsSync(join(s.dir, 'issues')), false);
+		assert.equal(existsSync(s.rawDir), false);
+		assert.deepEqual(r.checks, { aliasesChecked: 0, aliasesBroken: 0, parentsChecked: 0, parentsBroken: 0 });
+		assert.match(formatIssuesSummary(r.plan, r, { dryRun: true }), /DRY RUN, nothing written/);
+	} finally {
+		s.cleanup();
+	}
+});
+
+test('issues: a real run asks the guard first; a guard that refuses, or none, leaves nothing behind', async () => {
+	const s = sandbox();
+	try {
+		const plan = planIssues(buildExport(), planReference(buildExport(), { members: MEMBERS }));
+		await assert.rejects(applyIssues(plan, s.store(), { rawDir: s.rawDir, guard: async () => { throw new ImportError('export-synced', 'would sync'); } }), (e) => e.code === 'export-synced');
+		await assert.rejects(applyIssues(plan, s.store(), { rawDir: s.rawDir }), (e) => e.code === 'no-guard');
+		assert.equal(existsSync(join(s.dir, 'issues')), false);
+		assert.equal(existsSync(s.rawDir), false);
+	} finally {
+		s.cleanup();
+	}
+});
+
+test('issues, rule A on disk: the synced file holds [email], the raw file holds the original, written once', async () => {
+	const s = sandbox();
+	try {
+		const e = buildExport();
+		e.issues[0].description = 'Write to stranger@outside.example.invalid about it.';
+		const r = await runIssues(s, e);
+		assert.equal(r.applied['raw issues'].created, 1);
+		assert.match(readFileSync(join(s.rawDir, 'issues', 'PSE-1.json'), 'utf8'), /stranger@outside/);
+		const synced = readFileSync(join(s.dir, 'issues', 'PSE', 'PSE-1.md'), 'utf8');
+		assert.equal(synced.includes('stranger@'), false);
+		assert.match(synced, /\[email\]/);
+		const again = await runIssues(s, e);
+		assert.equal(again.applied['raw issues'].unchanged, 1);
+		const text = formatIssuesSummary(r.plan, r, { dryRun: false });
+		assert.match(text, /1 issues had a title or description redacted/);
+	} finally {
+		s.cleanup();
+	}
+});
+
+test('issues: a damaged file, or an alias that is another card, is counted as failed and the rest of the run goes on', async () => {
+	const s = sandbox();
+	try {
+		mkdirSync(join(s.dir, 'issues', 'PSE'), { recursive: true });
+		writeFileSync(join(s.dir, 'issues', 'PSE', 'PSE-1.md'), 'no front matter at all\n');
+		const e = buildExport();
+		e.issues[2].previousKeys = ['PSE-2'];
+		const r = await runIssues(s, e);
+		assert.equal(r.applied['issues PSE'].failed, 1, 'PSE-1 is damaged');
+		assert.equal(r.applied['issues INS'].failed, 1, 'INS-9 claims PSE-2, a real card');
+		assert.equal(r.applied['issues PSE'].created, 1, 'PSE-2 is written');
+		assert.deepEqual(r.failures, { damaged: 1, 'alias-conflict': 1 });
+		// the promises are checked on the files: INS-9's alias opens another card, PSE-2's parent cannot be opened
+		assert.deepEqual(r.checks, { aliasesChecked: 2, aliasesBroken: 1, parentsChecked: 1, parentsBroken: 1 });
+		assert.match(formatIssuesSummary(r.plan, r, { dryRun: false }), /checked on the files: 1 of 2 aliases open their card, 0 of 1 parents are cards/);
+		assert.equal(readFileSync(join(s.dir, 'issues', 'PSE', 'PSE-1.md'), 'utf8'), 'no front matter at all\n', 'never overwritten');
+		assert.match(formatIssuesSummary(r.plan, r, { dryRun: false }), /FAILED writes: damaged 1, alias-conflict 1/);
+	} finally {
+		s.cleanup();
+	}
+});
+
+test('issues: a raw write that fails stops the run before any synced issue file', async () => {
+	const s = sandbox();
+	try {
+		mkdirSync(s.dir, { recursive: true });
+		writeFileSync(s.rawDir, 'a file where the raw folder should be');
+		const e = buildExport();
+		e.issues[0].description = 'Write to stranger@outside.example.invalid about it.';
+		await assert.rejects(runIssues(s, e));
+		assert.equal(existsSync(join(s.dir, 'issues')), false, 'no synced file was written');
+	} finally {
+		s.cleanup();
+	}
+});
+
+test('issues: a field Linear cleared disappears, a field somebody added by hand stays, an earlier text is replaced', async () => {
+	const s = sandbox();
+	try {
+		const e = buildExport();
+		await runIssues(s, e);
+		const path = join(s.dir, 'issues', 'PSE', 'PSE-1.md');
+		writeFileSync(path, readFileSync(path, 'utf8').replace('\nid: "PSE-1"\n', '\nid: "PSE-1"\nmyfield: "kept"\n'));
+		e.issues[0].dueDate = null;
+		e.issues[0].description = 'A new text.';
+		const r = await runIssues(s, e);
+		assert.equal(r.applied['issues PSE'].changed, 1);
+		const text = readFileSync(path, 'utf8');
+		assert.equal(text.includes('dueDate'), false);
+		assert.match(text, /myfield: "kept"/);
+		assert.match(text, /\n---\n\nA new text\.$/);
+	} finally {
+		s.cleanup();
+	}
+});
+
+test('issues: an issue moved between teams keeps ONE card; the old key resolves to it', async () => {
+	const s = sandbox();
+	try {
+		const e = buildExport();
+		await runIssues(s, e);
+		// the card moved again: INS-5 was its first key, PSE-2 its second, REV-7 is now its key
+		e.teams.push({ id: 't-3', key: 'REV', name: 'Test Revops', private: false, cyclesEnabled: false });
+		Object.assign(e.issues[1], { key: 'REV-7', teamKey: 'REV', number: 7, previousKeys: ['INS-5', 'PSE-2'] });
+		const r = await runIssues(s, e);
+		// REV-7 claims PSE-2, which is a real file from the earlier run: refused, never merged or overwritten
+		assert.deepEqual(r.failures, { 'alias-conflict': 1 });
+		assert.ok(existsSync(join(s.dir, 'issues', 'PSE', 'PSE-2.md')));
+		assert.equal(existsSync(join(s.dir, 'issues', 'REV', 'REV-7.md')), false);
+	} finally {
+		s.cleanup();
+	}
+});
+
+test('issues: the summary has counts only: no title, name, text or address', async () => {
+	const s = sandbox();
+	try {
+		const e = buildExport();
+		e.issues[0].description = 'Write to stranger@outside.example.invalid about it.';
+		const r = await runIssues(s, e);
+		const text = formatIssuesSummary(r.plan, r, { dryRun: false });
+		for (const secret of ['Invented', 'stranger', 'example.invalid', 'alice', 'Area', 'Todo']) assert.equal(text.includes(secret), false, `"${secret}" is not in the summary`);
+		assert.match(text, /PSE +2 /);
+		assert.match(text, /aliases: 1 issues carry 1 earlier keys/);
+		assert.match(text, /checked on the files: 1 of 1 aliases open their card, 1 of 1 parents are cards/);
+	} finally {
+		s.cleanup();
+	}
+});
+
+for (const [label, divisor, skip] of [['a tenth of', 10, false], ['the full', 1, process.env.BOARD_FULL_SIZE ? false : 'set BOARD_FULL_SIZE=1 (two runs of about 40 s)']]) {
+	test(`issues, ${label} inventory size: every issue written, a second run writes none, every alias opens its card`, { timeout: 400_000, skip }, async () => {
+		const s = sandbox();
+		try {
+			const e = buildInventorySizedIssues(divisor);
+			const first = await runIssues(s, e);
+			assert.deepEqual(first.failures, {});
+			const perTeam = first.plan.counts.byTeam;
+			for (const team of ['PSE', 'INS', 'REV', 'AER']) assert.equal(first.applied[`issues ${team}`].created, perTeam[team].read, team);
+			assert.equal(Object.values(first.applied).filter((a) => a.created > 0).length, 4);
+			assert.equal(first.checks.aliasesChecked, first.plan.counts.aliases.total);
+			assert.equal(first.checks.aliasesBroken, 0);
+			assert.equal(first.checks.parentsBroken, 0);
+			assert.equal(first.checks.parentsChecked, first.plan.counts.parents);
+			if (divisor === 1) assert.deepEqual([first.checks.aliasesChecked, first.plan.counts.read], [600, 1464]);
+			const before = snapshot(s.dir);
+			const again = await runIssues(s, e);
+			assert.deepEqual(again.failures, {});
+			assert.equal(Object.values(again.applied).reduce((n, a) => n + a.created + a.changed, 0), 0);
+			assert.deepEqual(snapshot(s.dir), before, 'a second run touches no file');
+		} finally {
+			s.cleanup();
+		}
+	});
+}
+
+test('issues: an error that is not the store\'s own refusal stops the run instead of being counted', async () => {
+	const s = sandbox();
+	try {
+		const plan = planIssues(buildExport(), planReference(buildExport(), { members: MEMBERS }));
+		const broken = { dryRun: false, readIssue: async () => null, writeIssue: async () => { throw new TypeError('a bug'); } };
+		await assert.rejects(applyIssues(plan, broken, { rawDir: s.rawDir, guard: async () => ({}) }), TypeError);
 	} finally {
 		s.cleanup();
 	}
