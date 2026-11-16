@@ -77,15 +77,79 @@ test('aliases: every earlier key is kept; the card own key, a repeat and a text 
 	assert.equal(p.counts.dangling['issues.alias'], 3, 'lower case, plain text and a leading zero are not keys; the repeat and the own key are skipped quietly');
 });
 
-test('aliases: one that is another issue\'s key, or that two issues claim, is counted as a conflict up front', () => {
+test('aliases: a real key is never an alias; a key two issues claim stays with the older one; the dry run counts what is not kept', () => {
 	const e = buildExport();
-	e.issues[1].previousKeys = ['INS-9'];
-	assert.equal(plan(e).counts.aliases.conflicts, 1, 'INS-9 is a real card');
+	e.issues[1].previousKeys = ['INS-9', 'INS-5'];
+	const a = plan(e);
+	assert.equal(a.counts.aliases.conflicts, 1, 'INS-9 is a real card: not kept');
+	assert.deepEqual(byId(a, 'PSE-2').fields.aliases, ['INS-5']);
 	const f = buildExport();
 	f.issues[0].previousKeys = ['INS-5'];
-	assert.equal(plan(f).counts.aliases.conflicts, 2, 'both claim INS-5');
+	const b = plan(f);
+	assert.equal(b.counts.aliases.conflicts, 1, 'both claim INS-5: the older issue (PSE-1) keeps it');
+	assert.deepEqual(byId(b, 'PSE-1').fields.aliases, ['INS-5']);
+	assert.equal(byId(b, 'PSE-2').fields.aliases, undefined);
+	assert.equal(b.counts.byTeam.PSE.withAliases, 1);
+	// an older issue that claims the key of a newer one does not take it from the real card
+	const g = buildExport();
+	g.issues[0].previousKeys = ['PSE-2'];
+	const c = plan(g);
+	assert.equal(byId(c, 'PSE-1').fields.aliases, undefined);
+	assert.equal(c.counts.aliases.conflicts, 1);
+	// one issue listing a key twice is not a conflict
+	const h = buildExport();
+	h.issues[1].previousKeys = ['INS-5', 'INS-5'];
+	assert.equal(plan(h).counts.aliases.conflicts, 0);
 	assert.equal(plan(buildExport()).counts.aliases.conflicts, 0);
 	assert.equal(plan(buildExport()).counts.aliases.total, 1);
+});
+
+test('aliases come in plain order whatever the order in the export', () => {
+	const e = buildExport();
+	e.issues[1].previousKeys = ['REV-3', 'INS-5', 'AER-9'];
+	assert.deepEqual(byId(plan(e), 'PSE-2').fields.aliases, ['AER-9', 'INS-5', 'REV-3']);
+});
+
+test('rule A: a branch name made from a redacted title is left out; so is one that reads as flagged with its hyphens spaced; the original is kept in raw', () => {
+	const e = buildExport();
+	e.issues[0].title = 'Call Pat on 555 010 0199 or mail pat@outside.example.invalid';
+	e.issues[0].branchName = 'me/pse-1-call-pat-on-555-010-0199-or-mail-pat-outside-example-invalid';
+	e.issues[1].branchName = 'me/pse-2-ring-555-010-0199'; // the title is clean (it was edited later), the branch is not
+	e.issues[2].title = 'Mail x@outside.example.invalid';
+	e.issues[2].branchName = 'me/ins-9-mail-x-outside-example-invalid'; // nothing in the branch reads as flagged: the redacted title decides
+	const p = plan(e);
+	assert.equal(byId(p, 'PSE-1').fields.branch, undefined);
+	assert.equal(byId(p, 'PSE-2').fields.branch, undefined);
+	assert.equal(JSON.stringify(p.issues).includes('0199'), false);
+	assert.equal(JSON.stringify(p.issues).includes('outside-example'), false);
+	assert.equal(byId(p, 'INS-9').fields.branch, undefined);
+	assert.equal(p.counts.branchesLeftOut, 3);
+	assert.equal(p.counts.flagged, 3);
+	assert.equal(p.raw.find((r) => r.id === 'PSE-1').record.branch, 'me/pse-1-call-pat-on-555-010-0199-or-mail-pat-outside-example-invalid');
+	assert.equal(p.raw.find((r) => r.id === 'PSE-2').record.branch, 'me/pse-2-ring-555-010-0199');
+	// a clean one stays, and a flagged DESCRIPTION alone does not take the branch (it is made from the title)
+	const f = buildExport();
+	f.issues[0].description = 'Call 555-010-0199.';
+	f.issues[0].branchName = 'me/pse-1-invented-parent-issue';
+	const q = plan(f);
+	assert.equal(byId(q, 'PSE-1').fields.branch, 'me/pse-1-invented-parent-issue');
+	assert.equal(q.counts.branchesLeftOut, 0);
+	assert.equal(q.raw[0].record.branch, undefined);
+});
+
+test('the order is by instant, not by text: an offset does not reorder issues; ties go to team, number, key; started and canceled dates are kept', () => {
+	const e = buildExport();
+	e.issues[0].createdAt = '2025-01-20T10:00:00.000Z';
+	e.issues[1].createdAt = '2025-01-20T11:00:00.000+02:00'; // 09:00Z: earlier than the first although the text sorts later
+	e.issues[2].createdAt = '2025-01-20T10:00:00.000Z'; // ties with PSE-1: INS before PSE
+	e.issues[0].startedAt = '2025-01-21T10:00:00.000Z';
+	e.issues[2].canceledAt = '2025-01-22T10:00:00.000Z';
+	const p = plan(e);
+	assert.deepEqual(p.issues.map((i) => i.fields.id), ['PSE-2', 'INS-9', 'PSE-1']);
+	assert.equal(byId(p, 'PSE-1').fields.started, '2025-01-21T10:00:00.000Z');
+	assert.equal(byId(p, 'INS-9').fields.canceled, '2025-01-22T10:00:00.000Z');
+	const q = plan({ ...e, issues: [...e.issues].reverse() });
+	assert.equal(JSON.stringify(q.issues), JSON.stringify(p.issues));
 });
 
 test('parents resolve by key whatever the order, the team or the state of the parent; a parent that is not there is counted', () => {
@@ -141,6 +205,7 @@ test('rule A: an outside address or phone number in a title or description is re
 	assert.match(JSON.stringify(p.raw[0].record), /stranger@outside/);
 	assert.match(JSON.stringify(p.raw[0].record), /0199/);
 	assert.match(p.report.format(), /PSE +title +2 +1 +0 +1/, 'the report counts texts and holds no value');
+	assert.match(p.report.format(), /PSE +description +1 +0 +1 +1/, 'the description is counted too');
 	assert.equal(p.report.format().includes('stranger'), false);
 });
 

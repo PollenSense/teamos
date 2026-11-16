@@ -4,13 +4,13 @@
  * labels, estimate, branch, dates, and every earlier key as an alias. Relations, pull requests and comments are A6.
  *
  *   node scripts/board-import-issues.mjs --workspace <repo root> --export <export folder> [--apply]
- *        [--members <members.json>] [--people-map <file>] [--tag-hints <file>] [--filter <filter file>]
+ *        [--members <members.json>] [--people-map <file>] [--filter <filter file>]
  *
  * Without `--apply` this is the dry run: it reads the export and the board, and prints per team what each file would do
  * (new, changed, same). Nothing is written. `--apply` writes, only when `board.importer` is `true` in the config, only
  * after the reference data was imported (`board-import-reference.mjs --apply`: people and projects), and only after the
- * sync filter was asked whether `<board>/raw` stays off Drive. The options are those of the reference importer: they feed
- * the same plan, so issues and reference files always agree.
+ * sync filter was asked whether `<board>/raw` stays off Drive. The options are those of the reference importer that matter for
+ * issues (`--members`, `--people-map`, `--filter`): they feed the same plan, so issues and reference files always agree.
  *
  * Prints counts only: no title, text, name or address. Exit 0 ok, 1 a write failed or the guard refused, 2 usage.
  */
@@ -26,7 +26,7 @@ const TYPES = ['users', 'teams', 'states', 'labels', 'cycles', 'projects', 'mile
 
 function usage(message) {
 	if (message) process.stderr.write(`${message}\n`);
-	process.stderr.write('usage: board-import-issues.mjs --workspace <dir> --export <dir> [--apply] [--members <file>] [--people-map <file>] [--tag-hints <file>] [--filter <file>]\n');
+	process.stderr.write('usage: board-import-issues.mjs --workspace <dir> --export <dir> [--apply] [--members <file>] [--people-map <file>] [--filter <file>]\n');
 	process.exit(2);
 }
 
@@ -50,7 +50,7 @@ let apply = false;
 for (let i = 0; i < args.length; i++) {
 	const a = args[i];
 	if (a === '--apply') apply = true;
-	else if (['--workspace', '--export', '--members', '--people-map', '--tag-hints', '--filter'].includes(a) && args[i + 1]) opt[a.slice(2)] = args[++i];
+	else if (['--workspace', '--export', '--members', '--people-map', '--filter'].includes(a) && args[i + 1]) opt[a.slice(2)] = args[++i];
 	else usage(`unknown argument "${a}"`);
 }
 if (!opt.workspace || !opt.export) usage('--workspace and --export are required');
@@ -65,7 +65,6 @@ const membersFile = readJson(opt.members ? resolve(opt.members) : join(workspace
 if (!Array.isArray(membersFile?.members)) usage('members.json has no "members" list');
 const members = membersFile.members;
 const overrides = opt['people-map'] ? readObject(resolve(opt['people-map']), 'the people map') : {};
-const tagHints = opt['tag-hints'] ? readObject(resolve(opt['tag-hints']), 'the tag hints') : {};
 const filterPath = opt.filter ? resolve(opt.filter) : join(workspace, 'scripts', 'rclone-filter.txt');
 
 try {
@@ -76,7 +75,7 @@ try {
 		usage('the reference data is not imported yet (no people.json): run board-import-reference.mjs --apply first');
 	}
 	const existing = await loadExisting(store);
-	const reference = planReference(entities, { members, overrides, tagHints, existing });
+	const reference = planReference(entities, { members, overrides, existing });
 	const plan = planIssues(entities, reference);
 	const rawDir = join(board.dir, 'raw');
 	let filterText = '';

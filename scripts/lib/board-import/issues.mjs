@@ -14,6 +14,13 @@ import { ImportError, SOURCE } from './reference.mjs';
  * Rule A (as in A4): title and description are typed text. An outside e-mail address or phone number is redacted in the
  * synced file; when a text was changed the original goes to the local-only `raw/issues/<KEY>.json`, written first.
  * Nothing here has a time of its own, so a second run writes the same bytes and changes no file.
+ *
+ * The branch name Linear makes from the title is typed text too (`me/pse-1-call-pat-on-555-010-0199`), and a number glued
+ * to words by hyphens is not found by the scan. So it is left out of the synced file when the title was redacted, or when
+ * it reads as flagged once its hyphens are spaces; the original is kept in the raw record.
+ *
+ * An earlier key that is another issue's real key is not kept (the real card wins), and one that two issues claim stays
+ * with the older issue: the store would refuse both writes, and the dry run must show what a real run does.
  */
 
 const cmp = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
@@ -60,6 +67,7 @@ export function planIssues(entities, reference) {
 		aliases: { issues: 0, total: 0, conflicts: 0 },
 		parents: 0,
 		archived: 0,
+		branchesLeftOut: 0,
 	};
 	const dangle = (what) => {
 		counts.dangling[what] = (counts.dangling[what] ?? 0) + 1;
@@ -81,14 +89,10 @@ export function planIssues(entities, reference) {
 		return entry?.name;
 	};
 
-	// Alias bookkeeping: an alias that is another issue's own key, or that two issues claim, cannot be written by the
-	// store (`alias-conflict`); the dry run says so up front.
 	const keys = new Set(issues.map((i) => i.key));
-	const claimed = new Map();
-	for (const i of issues) for (const a of i.previousKeys ?? []) if (a !== i.key) claimed.set(a, (claimed.get(a) ?? 0) + 1);
-
+	const when = (issue) => Date.parse(issue.createdAt); // an instant, not a string: offsets may differ
 	const planned = [];
-	for (const issue of [...issues].sort((a, b) => cmp(String(a.createdAt), String(b.createdAt)) || cmp(a.teamKey, b.teamKey) || a.number - b.number || cmp(a.key, b.key))) {
+	for (const issue of [...issues].sort((a, b) => (when(a) - when(b)) || cmp(String(a.createdAt), String(b.createdAt)) || cmp(a.teamKey, b.teamKey) || a.number - b.number || cmp(a.key, b.key))) {
 		const t = team(issue.teamKey);
 		t.read++;
 		if (!teamKeys.has(issue.teamKey)) dangle('issues.team');
@@ -102,6 +106,7 @@ export function planIssues(entities, reference) {
 		// The names of states and milestones are shared texts: A4 already redacted them and kept their originals; here they
 		// only have to read the same, and they do not make an issue "flagged".
 		const shared = (value) => redactValue(value).value;
+		const titleRedacted = redactValue(issue.title);
 		const title = red(issue.title);
 		const body = red(issue.description ?? '');
 		report.add(issue.teamKey, 'title', issue.title);
@@ -148,12 +153,14 @@ export function planIssues(entities, reference) {
 				continue;
 			}
 			aliases.push(a);
-			if (keys.has(a) || claimed.get(a) > 1) counts.aliases.conflicts++;
 		}
-		if (aliases.length > 0) {
-			counts.aliases.issues++;
-			counts.aliases.total += aliases.length;
-			t.withAliases++;
+		let branch = issue.branchName ?? undefined;
+		let branchOriginal;
+		if (typeof branch === 'string' && (titleRedacted.flagged || redactValue(branch.replace(/[-_/]+/g, ' ')).flagged)) {
+			branchOriginal = branch;
+			branch = undefined;
+			flagged = true;
+			counts.branchesLeftOut++;
 		}
 		if (issue.archivedAt) {
 			counts.archived++;
@@ -162,12 +169,13 @@ export function planIssues(entities, reference) {
 		if (flagged) {
 			counts.flagged++;
 			t.flagged++;
-			raw.push({ type: 'issues', id: issue.key, record: { title: issue.title, description: issue.description ?? null } });
+			raw.push({ type: 'issues', id: issue.key, record: { title: issue.title, description: issue.description ?? null, ...(branchOriginal === undefined ? {} : { branch: branchOriginal }) } });
 		}
 		planned.push({
 			fields: compact({
 				id: issue.key,
-				aliases: aliases.length > 0 ? aliases : undefined,
+				aliases: undefined, // set below, once every issue's candidates are known
+
 				linearId: issue.id,
 				team: issue.teamKey,
 				title,
@@ -183,7 +191,7 @@ export function planIssues(entities, reference) {
 				labels: labels.length > 0 ? labels.sort(cmp) : undefined,
 				estimate: boardEstimate(issue.estimate),
 				dueDate: issue.dueDate,
-				branch: issue.branchName,
+				branch,
 				created: issue.createdAt,
 				updated: issue.updatedAt,
 				started: issue.startedAt,
@@ -193,7 +201,29 @@ export function planIssues(entities, reference) {
 				source: SOURCE,
 			}),
 			body,
+			candidates: aliases,
 		});
+	}
+
+	// Earlier keys, oldest issue first: a real key is never an alias, and a key two issues claim stays with the older one.
+	const owner = new Map();
+	for (const p of planned) {
+		const kept = [];
+		for (const a of p.candidates) {
+			if (keys.has(a) || (owner.has(a) && owner.get(a) !== p.fields.id)) {
+				counts.aliases.conflicts++;
+				continue;
+			}
+			owner.set(a, p.fields.id);
+			kept.push(a);
+		}
+		delete p.candidates;
+		if (kept.length > 0) {
+			p.fields.aliases = kept.sort(cmp);
+			counts.aliases.issues++;
+			counts.aliases.total += kept.length;
+			team(p.fields.team).withAliases++;
+		}
 	}
 	return { issues: planned, raw, counts, report };
 }

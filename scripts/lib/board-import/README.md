@@ -77,8 +77,8 @@ node scripts/board-import-issues.mjs --workspace <repo root> --export <export fo
 node scripts/board-import-issues.mjs --workspace <repo root> --export <export folder> --apply  # needs board.importer true and the reference import done
 ```
 
-The options are the reference importer's (`--members`, `--people-map`, `--tag-hints`, `--filter`): they feed the same plan,
-so people, project codes, label names and cycles in an issue always equal the reference files. `--apply` refuses until
+The options are the reference importer's that matter for issues (`--members`, `--people-map`, `--filter`): they feed the same
+plan, so people, project codes, label names and cycles in an issue always equal the reference files. `--apply` refuses until
 `board-import-reference.mjs --apply` has written `people.json`.
 
 One file per issue, `issues/<TEAM>/<KEY>.md`, in the layout of design 2.2: status and type from the workflow state, priority
@@ -89,18 +89,29 @@ body (an empty text when Linear has none, so a cleared text is cleared). Oldest 
 comments are A6; the next-number counters are set at cutover.
 
 - **Rule A** as in A4: a title or description with an outside address or phone number is redacted in the file, the original
-  goes to `raw/issues/<KEY>.json` (local only), written before the synced file. The names of states, labels and milestones are
+  goes to `raw/issues/<KEY>.json` (local only), written before the synced file. The branch name Linear makes from the title
+  (`me/pse-1-call-pat-on-555-010-0199`) is typed text the scan cannot read (a number glued to words by hyphens is not found), so
+  it is left out of the synced file when the title was redacted or when it reads as flagged with its hyphens spaced; the
+  original is in the raw record. The names of states, labels and milestones are
   A4's (their originals are in `raw/names` and the project records); they read the same here.
 - **Order does not matter**: a child before its parent, a parent that is archived or in another team, all resolve by key.
   A parent that is not in the export, an unknown state, project, cycle, milestone, label, assignee or creator is counted as
   dangling and the issue is still written without it.
-- **Aliases**: one that is another issue's key, or that two issues claim, is reported as a CONFLICT in the dry run and the store
-  refuses that write (`alias-conflict`); the rest go on and the run exits 1.
-- **Checked after a real run, against the files**: every alias opens the card that claims it, every parent is a card
-  (`checked on the files: ...`); a broken one makes the run exit 1.
+- **Aliases**: a key that is another issue's real key is not kept (the real card wins), and a key two issues claim stays with
+  the older issue; the dry run and the real run both print `N NOT KEPT`. A key that is the file or alias of a card this export
+  does not know is refused by the store (`alias-conflict`): that card is not written and the run exits 1.
+- **A card that moved teams since an earlier run** is the same Linear issue under an older key: the new file is written and
+  the old one retired in the same step (`moved: N`), with its thread file, and with what a later ticket put in it
+  (`relations`, `prs`, `links`, `deleted` are never cleared by a rerun of the text). A file of any other card is never touched.
+- **A held lock stops the run** at the first write (each later write would wait ten seconds for it).
+- **Checked after a real run, against the files**: every card is there, every alias opens the card that claims it, every child's
+  file names its parent and the parent is a card (`checked on the files: ...`); a broken one makes the run exit 1.
+- **Estimates and priorities**: the export format carries an estimate as a number and a priority as a whole number, which is
+  what Linear's API serves; a whole number outside 0 to 4 is kept as text. A text value cannot arrive (the export is refused first).
 - **Runs twice, changes nothing**, as A4. A write is O(files) in the store (an index refresh per write): 1,464 issues take about
   40 s a run. The tests use a tenth of that size; `BOARD_FULL_SIZE=1 node --test scripts/lib/board-import/apply.test.mjs` runs the full size.
 
 On the real export (read-only dry run, 2026-11-16, counts only): 1,464 issues (PSE 1,030, INS 178, REV 130, AER 126), 573
-archived (439, 118, 6, 10), 600 issues with 1,214 earlier keys, 177 with a parent, 29 with a title or description redacted,
-no dangling reference. These equal the inventory.
+archived (439, 118, 6, 10), 600 issues with 1,214 earlier keys, 177 with a parent, 43 with a title, description or branch name
+redacted or left out (29 by title or description; 14 more only through the branch name, 17 branch names left out in all), no
+dangling reference. The counts equal the inventory.

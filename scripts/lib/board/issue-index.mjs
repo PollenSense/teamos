@@ -222,6 +222,14 @@ export class IssueIndex {
 		this.dirty = true;
 	}
 
+	/** After the store removed `rel` itself (a card retired by a move): forget it without waiting for the next refresh. */
+	noteRemoved(rel) {
+		this.cache.delete(rel);
+		const files = [...this.cache.keys()].map((r) => ({ rel: r, team: r.split('/')[0], id: r.split('/')[1].replace(/\.md$/, '') }));
+		this._rebuild(files);
+		this.dirty = true;
+	}
+
 	/** Save the cache file if a write of our own changed it since the last save (a batch calls this once at the end). */
 	async flush() {
 		if (this.dirty) await this._saveCacheFile();
