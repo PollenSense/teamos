@@ -178,3 +178,17 @@ test('a write the store refuses makes the run exit 1 and say so; the clean files
 		s.cleanup();
 	}
 });
+
+test('a members file with an entry that is not a member stops the run (exit 1) and names no value', async () => {
+	const s = sandbox();
+	try {
+		await exported(s);
+		writeFileSync(join(s.workspace, 'team', 'members.json'), JSON.stringify({ members: [null] }));
+		const r = cli(s);
+		assert.equal(r.code, 1, r.out + r.err);
+		assert.match(r.err, /stopped \(bad-members\)/);
+		assert.ok(!/at .*\.mjs:\d+/.test(r.err), 'no stack trace');
+	} finally {
+		s.cleanup();
+	}
+});

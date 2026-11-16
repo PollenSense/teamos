@@ -77,6 +77,10 @@ function firstName(user) {
  * `overrides` maps a Linear user id to a member name for the user whose address differs between the two systems.
  */
 export function buildPeople(users, members, overrides = {}) {
+	// An entry that is not a member with a name (`null`, a bare string) is a wrong file, not an empty list.
+	for (const m of members) {
+		if (m === null || typeof m !== 'object' || typeof m.name !== 'string' || m.name === '') throw new ImportError('bad-members', 'members.json has an entry that is not a member with a name');
+	}
 	const memberNames = new Set(members.map((m) => m.name));
 	const byEmail = new Map();
 	for (const m of members) {

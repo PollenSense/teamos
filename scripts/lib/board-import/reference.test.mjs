@@ -350,3 +350,10 @@ test('people: a display name that is a phone number (first word harmless) never 
 	const { file } = buildPeople([{ id: 'u-1', name: '+1 555 010 0199', email: null, active: true }], MEMBERS);
 	assert.deepEqual(Object.values(file.people).map((x) => x.name), ['linear:unknown']);
 });
+
+test('people: a members list with an entry that is not a member with a name is refused, not read as fewer members', () => {
+	for (const bad of [[null], [{}], [{ name: 5 }], ['alice'], [{ name: '' }], [{ name: 'alice', email: 'a@example.invalid' }, null]]) {
+		assert.throws(() => buildPeople([], bad), (e) => e instanceof ImportError && e.code === 'bad-members', JSON.stringify(bad));
+	}
+	assert.doesNotThrow(() => buildPeople([], [{ name: 'alice' }, { name: 'bob', email: 'b@example.invalid' }]));
+});

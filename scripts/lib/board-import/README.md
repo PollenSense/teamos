@@ -57,7 +57,8 @@ as failed and the rest of the run goes on.
   whose id is not a plain name are skipped (not written).
 - Two teams with one key, or two cycles with one team and number, stop the run (`duplicate`): one would overwrite the other.
 - A `members.json` without a `members` list, and a `--people-map` or `--tag-hints` that is not a JSON object, stop the run
-  with exit 2 (read as empty, every member would be written as `linear:<first name>`).
+  with exit 2 (read as empty, every member would be written as `linear:<first name>`); an entry in that list that is not a
+  member with a name (`null`, a bare string) stops it as `bad-members` (exit 1).
 - `raw/` files of a text that is no longer flagged stay (they are local and the next full import removes nothing).
 - Project updates carry their text in a front-matter line (one line of JSON per value); 29 updates in Linear's workspace,
   so the files stay readable. A5 does the same for nothing: issue text goes in the body.
