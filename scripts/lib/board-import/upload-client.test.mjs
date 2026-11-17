@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto';
 import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { UploadError, createUploadClient, scrub } from './upload-client.mjs';
+import { UploadError, createUploadClient } from './upload-client.mjs';
 import { brokenStream, fakeUploadHost } from './fake-uploads.mjs';
 import { UPLOAD_HOST } from './uploads.mjs';
 
@@ -121,32 +121,29 @@ test('requests are paced', async () => {
 	assert.deepEqual(sleeps, [300, 300], 'none before the first request, one before each later one');
 });
 
-test('a redirect on the upload host is followed with the key; to another host without it; to an address, an http link or too far, never', async () => {
-	const other = 'https://files.example.invalid/signed/xyz';
+test('a redirect inside the upload host is followed with the key; to any other host, port, scheme or address it is refused, and the key goes nowhere else', async () => {
 	const { client, host } = make({
 		'/ws/a/one': { status: 302, location: `https://${UPLOAD_HOST}/ws/a/moved` },
 		'/ws/a/moved': { body: 'moved', type: 'text/plain' },
-		'/ws/a/two': { status: 302, location: other },
-		'/signed/xyz': { body: 'signed', type: 'text/plain', noLength: true },
+		'/ws/a/two': { status: 302, location: 'https://files.example.invalid/signed/xyz' },
+		'/ws/a/port': { status: 302, location: `https://${UPLOAD_HOST}:8443/ws/a/moved` },
 		'/ws/a/ip': { status: 302, location: 'https://127.0.0.1/x' },
-		'/ws/a/local': { status: 302, location: 'https://localhost/x' },
-		'/ws/a/plain': { status: 302, location: 'http://files.example.invalid/x' },
+		'/ws/a/local': { status: 302, location: 'https://localhost./x' },
+		'/ws/a/internal': { status: 302, location: 'https://metadata.internal/x' },
+		'/ws/a/plain': { status: 302, location: `http://${UPLOAD_HOST}/ws/a/moved` },
+		'/ws/a/user': { status: 302, location: `https://user:pw@${UPLOAD_HOST}/ws/a/moved` },
 		'/ws/a/loop': { status: 302, location: `https://${UPLOAD_HOST}/ws/a/loop` },
 		'/ws/a/none': { status: 302 },
 	});
 	assert.equal((await client.head(URLS.a)).bytes, 5);
 	assert.equal(host.calls.at(-1).auth, KEY);
-	const before = host.calls.length;
-	assert.equal((await client.head(URLS.b)).result, 'ok');
-	const hops = host.calls.slice(before);
-	assert.equal(hops[0].auth, KEY);
-	assert.equal(hops[1].host, 'files.example.invalid');
-	assert.equal(hops[1].auth, null, 'the key does not go to another host');
-	for (const path of ['ip', 'local', 'plain', 'loop', 'none']) {
+	for (const path of ['two', 'port', 'ip', 'local', 'internal', 'plain', 'user', 'loop', 'none']) {
 		const calls = host.calls.length;
 		await assert.rejects(() => client.head(`https://${UPLOAD_HOST}/ws/a/${path}`), (err) => err instanceof UploadError && err.code === 'redirect', path);
 		if (path === 'loop') assert.equal(host.calls.length - calls, 4, 'the first request and three redirects, then it gives up');
+		else assert.equal(host.calls.length - calls, 1, `${path}: the redirect is not followed`);
 	}
+	for (const c of host.calls) assert.equal(c.host, UPLOAD_HOST, 'no request left the upload host');
 });
 
 test('download writes the body to the file and returns its size, SHA-256, type and Content-Disposition', async () => {
@@ -216,10 +213,4 @@ test('download: a body that stops early or is shorter than announced is a failur
 	} finally {
 		rmSync(dir, { recursive: true, force: true });
 	}
-});
-
-test('scrub removes the key and anything shaped like a Linear key from a text', () => {
-	assert.equal(scrub(`error with ${KEY} inside`, KEY), 'error with [key] inside');
-	assert.equal(scrub('other lin_api_ABCDEFGH12345678 and lin_oauth_ZZZZ1111', KEY), 'other [key] and [key]');
-	assert.equal(scrub('no key here', KEY), 'no key here');
 });

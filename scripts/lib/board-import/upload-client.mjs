@@ -9,9 +9,9 @@ import { UPLOAD_HOST } from './uploads.mjs';
  * Reads one upload from Linear's upload host, read-only (ticket A6b): a HEAD request for the size and type, a GET that
  * streams the body into a file. Nothing here writes to Linear: the only methods are HEAD and GET.
  *
- * The key is the `Authorization` header of a request to the upload host itself and nothing else: not in a URL, not in
- * an error text, not in a log. A redirect is followed by hand (at most 3 hops, https only) and the key is sent to the
- * upload host only; a redirect to any other host (or to an address, `localhost`) is followed without it or refused.
+ * The key is the `Authorization` header of a request to the upload host itself (https, the default port) and nothing
+ * else: not in a URL, not in an error text, not in a log. A redirect is followed by hand (at most 3 hops) and only within
+ * that same host and port; a redirect anywhere else is refused, so the key and the run never leave the upload host.
  *
  * Answers: `ok`, `gone` (404, 410), `denied` (403) and `failed` (any other status after the retries) are results the
  * caller counts and goes on from; a 401 (the key is wrong or expired) and a network that never answers throw
@@ -28,16 +28,6 @@ export class UploadError extends Error {
 }
 
 const REDIRECTS = new Set([301, 302, 303, 307, 308]);
-const KEY_SHAPED = /lin_(?:api|oauth)_[A-Za-z0-9]+/g;
-
-/** `text` without the key and without anything shaped like a Linear key (for any error text that might carry one). */
-export function scrub(text, key) {
-	let out = String(text);
-	if (typeof key === 'string' && key.length >= 8) out = out.split(key).join('[key]');
-	return out.replace(KEY_SHAPED, '[key]');
-}
-
-const isAddress = (host) => /^[0-9.]+$/.test(host) || host.includes(':') || host === 'localhost' || host.endsWith('.localhost');
 
 /**
  * @param {object} options
@@ -74,10 +64,9 @@ export function createUploadClient({ key, fetchImpl = globalThis.fetch, sleep = 
 		let tries = 0;
 		for (;;) {
 			if (requests++ > 0 && paceMs > 0) await sleep(paceMs);
-			const own = target.hostname === host;
 			let res;
 			try {
-				res = await fetchImpl(target.href, { method, redirect: 'manual', headers: own ? { Authorization: key } : {} });
+				res = await fetchImpl(target.href, { method, redirect: 'manual', headers: { Authorization: key } });
 			} catch {
 				tries++;
 				if (tries >= maxTries) throw new UploadError('network', 'the upload host did not answer', { fatal: true });
@@ -95,8 +84,8 @@ export function createUploadClient({ key, fetchImpl = globalThis.fetch, sleep = 
 				} catch {
 					throw new UploadError('redirect', 'a redirect to something that is not a link');
 				}
-				if (next.protocol !== 'https:' || next.username !== '' || next.password !== '' || (next.hostname !== host && isAddress(next.hostname))) {
-					throw new UploadError('redirect', 'a redirect to a place the downloader does not follow');
+				if (next.protocol !== 'https:' || next.hostname !== host || next.port !== '' || next.username !== '' || next.password !== '') {
+					throw new UploadError('redirect', 'a redirect to somewhere other than the upload host');
 				}
 				target = next;
 				continue;

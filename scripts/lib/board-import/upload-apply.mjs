@@ -1,12 +1,12 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { createReadStream } from 'node:fs';
-import { mkdir, readFile, readdir, rename, stat, unlink } from 'node:fs/promises';
+import { lstat, mkdir, readFile, readdir, rename, stat, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
-import { BoardError, redactValue, scanText } from '../board/index.mjs';
+import { BoardError, scanText } from '../board/index.mjs';
 import { writeRaw } from './apply.mjs';
 import { cmpKeys } from './links.mjs';
 import { UploadError } from './upload-client.mjs';
-import { dispositionFileName, extensionForType, isFileEntry, isSafeRelativePath, safeFileName, splitExtension, uniqueName } from './uploads.mjs';
+import { dispositionFileName, extensionForType, isFileEntry, isSafeRelativePath, needsTextScan, redactFileName, safeFileName, uniqueName } from './uploads.mjs';
 
 /**
  * Downloads the uploads of the issues of an import (ticket A6b) into `<board>/files/<card id>/` and links them: the
@@ -28,20 +28,26 @@ const cmp = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
 const STALE_TEMP_MS = 10 * 60 * 1000;
 const FAILURES_IN_A_ROW = 10;
 const SCAN_LIMIT = 5 * MB;
-const TEXT_TYPES = new Set(['application/json', 'application/xml', 'application/x-yaml', 'application/javascript', 'application/x-sh', 'application/sql', 'image/svg+xml']);
-const TEXT_EXTENSIONS = new Set(['csv', 'tsv', 'txt', 'md', 'json', 'xml', 'yml', 'yaml', 'html', 'htm', 'log', 'py', 'js', 'ts', 'sql', 'sh', 'svg']);
 
-/** A file a person can read as text, by its content type or, failing that, its extension. */
-function isTextLike(type, name) {
-	if (typeof type === 'string' && (type.startsWith('text/') || TEXT_TYPES.has(type))) return true;
-	const dot = name.lastIndexOf('.');
-	return dot > 0 && TEXT_EXTENSIONS.has(name.slice(dot + 1).toLowerCase());
-}
-
-/** True when the file holds an outside e-mail address or a phone-shaped number, or is too big to look at (then it is not trusted). */
+/**
+ * True when the file holds an outside e-mail address or a phone-shaped number, or is too big to look at (then it is not
+ * trusted). The bytes are read as UTF-8, as one byte per character and as UTF-16 (both byte orders: Excel's "Unicode text"
+ * is UTF-16), so an address in any of them is found.
+ */
 async function holdsPersonData(path, bytes, maxScanBytes) {
 	if (bytes > maxScanBytes) return true;
-	return scanText(await readFile(path, 'utf8')).flagged;
+	const buffer = await readFile(path);
+	const readings = [buffer.toString('utf8'), buffer.toString('latin1'), buffer.toString('utf16le'), buffer.subarray(1).toString('utf16le')];
+	return readings.some((text) => scanText(text).flagged);
+}
+
+/** Refuses a folder that is a link or not a folder: a write through it would land somewhere else. */
+async function assertPlainFolder(path) {
+	const st = await lstat(path).catch((err) => {
+		if (err.code === 'ENOENT') return null;
+		throw err;
+	});
+	if (st !== null && (st.isSymbolicLink() || !st.isDirectory())) throw new BoardError('bad-folder', 'a folder the uploads go into is a link or not a folder');
 }
 
 async function sha256Of(path) {
@@ -67,7 +73,7 @@ function emptyCounts() {
 		uploads: { found: 0, notPlaced: 0, present: 0, toFetch: 0 },
 		head: { ok: 0, gone: 0, denied: 0, failed: 0, bytesKnown: 0, sizeUnknown: 0, largest: 0 },
 		cards: { withUploads: 0, missing: 0, damaged: 0, failed: 0, changed: 0 },
-		got: { downloaded: 0, adopted: 0, gone: 0, denied: 0, failed: 0, bytes: 0, namesFlagged: 0, namesChanged: 0, keptLocal: 0 },
+		got: { downloaded: 0, adopted: 0, gone: 0, denied: 0, failed: 0, bytes: 0, namesFlagged: 0, namesChanged: 0, keptLocal: 0, unscanned: 0 },
 		threads: { read: 0, missing: 0, entriesLinked: 0, written: 0, failed: 0, commentsNotInThread: 0 },
 		checks: { filesChecked: 0, filesBroken: 0 },
 	};
@@ -143,6 +149,7 @@ export async function applyUploads(found, store, { client, boardDir, rawDir, gua
 
 	// --- sizes first (HEAD): the dry run stops here; a real run stops here too when a known size is over a cap ---
 	const heads = new Map(); // upload id -> head answer
+	let headFailures = 0;
 	if (client) {
 		for (const { card, upload } of todo) {
 			if (heads.has(upload.id)) continue;
@@ -159,6 +166,11 @@ export async function applyUploads(found, store, { client, boardDir, rawDir, gua
 			}
 			heads.set(upload.id, answer);
 			counts.head[answer.result]++;
+			headFailures = answer.result === 'failed' ? headFailures + 1 : 0;
+			if (headFailures >= FAILURES_IN_A_ROW) {
+				stopped = { reason: 'many-failures', card, upload: upload.id };
+				break;
+			}
 			if (answer.result === 'gone' || answer.result === 'denied') failures.push({ card, upload: upload.id, result: answer.result, status: answer.status });
 			if (answer.result === 'ok') {
 				if (answer.bytes === null) counts.head.sizeUnknown++;
@@ -171,7 +183,11 @@ export async function applyUploads(found, store, { client, boardDir, rawDir, gua
 		if (stopped === null) {
 			const over = todo.filter(({ upload }) => (heads.get(upload.id)?.bytes ?? 0) > maxFileBytes);
 			if (over.length > 0) stopped = { reason: 'file-cap', card: over[0].card, upload: over[0].upload.id, count: over.length, bytes: heads.get(over[0].upload.id).bytes };
-			else if (counts.head.bytesKnown > maxTotalBytes) stopped = { reason: 'total-cap', bytes: counts.head.bytesKnown };
+			else {
+				// A link used on two cards is downloaded twice, so it counts twice.
+				const pairs = todo.reduce((sum, { upload }) => sum + (heads.get(upload.id)?.bytes ?? 0), 0);
+				if (pairs > maxTotalBytes) stopped = { reason: 'total-cap', bytes: pairs };
+			}
 		}
 	}
 	if (dryRun || stopped !== null) return { counts, failures, stopped };
@@ -192,7 +208,10 @@ export async function applyUploads(found, store, { client, boardDir, rawDir, gua
 			if (name.startsWith('.up-') && name.endsWith('.tmp') && age > STALE_TEMP_MS) await unlink(join(tempDir, name)).catch(() => {});
 		}
 	};
+	await assertPlainFolder(join(boardDir, 'files'));
+	await assertPlainFolder(join(rawDir, 'files'));
 	let inARow = 0;
+	let fetched = 0; // bytes asked for in this run, adopted files too: what the total cap is about
 	const linked = new Map(); // card id -> Map(upload id -> entry) of what the card lists now
 	outer: for (const cardId of order) {
 		const mine = todo.filter((t) => t.card === cardId).map((t) => t.upload).sort((a, b) => cmp(a.id, b.id));
@@ -204,6 +223,7 @@ export async function applyUploads(found, store, { client, boardDir, rawDir, gua
 			const rel = local ? `raw/files/${cardId}` : `files/${cardId}`;
 			if (!places.has(rel)) {
 				const dir = join(boardDir, rel);
+				await assertPlainFolder(dir);
 				await mkdir(dir, { recursive: true, ...(local ? { mode: 0o700 } : {}) });
 				places.set(rel, { dir, rel, taken: new Set((await readdir(dir)).map((n) => n.toLowerCase())) });
 			}
@@ -211,7 +231,6 @@ export async function applyUploads(found, store, { client, boardDir, rawDir, gua
 		};
 		const listedEntries = entryList((await store.readIssue(cardId)).fields);
 		const listed = new Set(listedEntries.map((e) => e?.path));
-		const ownPath = new Map(listedEntries.filter(isFileEntry).map((e) => [e.upload, e.path]));
 		for (const upload of mine) {
 			const head = heads.get(upload.id);
 			if (head && (head.result === 'gone' || head.result === 'denied')) {
@@ -222,7 +241,7 @@ export async function applyUploads(found, store, { client, boardDir, rawDir, gua
 			const tmp = join(tempDir, `.up-${process.pid}-${randomBytes(4).toString('hex')}.tmp`);
 			let got;
 			try {
-				got = await client.download(upload.url, tmp, { maxBytes: maxFileBytes });
+				got = await client.download(upload.url, tmp, { maxBytes: Math.min(maxFileBytes, Math.max(0, maxTotalBytes - fetched)) });
 			} catch (err) {
 				if (!(err instanceof UploadError)) throw err;
 				if (err.fatal) {
@@ -232,7 +251,7 @@ export async function applyUploads(found, store, { client, boardDir, rawDir, gua
 				got = { result: 'failed', status: 0 };
 			}
 			if (got.result === 'toobig') {
-				stopped = { reason: 'file-cap', card: cardId, upload: upload.id, bytes: got.bytes };
+				stopped = { reason: maxTotalBytes - fetched < maxFileBytes ? 'total-cap' : 'file-cap', card: cardId, upload: upload.id, bytes: got.bytes };
 				break outer;
 			}
 			if (got.result !== 'ok') {
@@ -248,29 +267,26 @@ export async function applyUploads(found, store, { client, boardDir, rawDir, gua
 
 			// The name: what the host says, else the link text; typed text goes through rule A before it is a name or an entry.
 			const original = dispositionFileName(got.disposition) ?? upload.labels[0] ?? '';
-			const { stem: originalStem, ext: originalExt } = splitExtension(original);
-			const redStem = redactValue(originalStem);
-			const red = { value: originalExt === '' ? redStem.value : `${redStem.value}.${originalExt}`, flagged: redStem.flagged };
+			const red = redactFileName(original);
 			if (red.flagged) {
 				await writeRaw(rawDir, 'uploads', upload.id, { card: cardId, name: original }, { dryRun: false });
 				counts.got.namesFlagged++;
 			}
 			const safe = safeFileName(red.value, { fallbackExt: extensionForType(got.type) });
-			if (safe !== original) counts.got.namesChanged++;
+			if (safe.toLowerCase() !== red.value.toLowerCase()) counts.got.namesChanged++;
 
 			// A text file that holds an outside address or a phone-shaped number is person data that can be read, so rule A
 			// applies: it stays in the local-only raw folder (listed in the card all the same). A picture or a PDF cannot be
 			// scanned and goes to Drive as Van decided; a text too big to scan counts as flagged.
-			const local = isTextLike(got.type, safe) && (await holdsPersonData(tmp, got.bytes, maxScanBytes));
+			const scanned = needsTextScan(got.type, safe);
+			const local = scanned && (await holdsPersonData(tmp, got.bytes, maxScanBytes));
 			if (local) counts.got.keptLocal++;
+			if (!scanned) counts.got.unscanned++;
 			const where = await place(local);
 			let finalName = safe;
 			let adopted = false;
-			// The file this upload's own entry names, cut short or changed since: fetched again into the same name, not beside it.
-			const own = ownPath.get(upload.id);
-			const ownName = own !== undefined && own.startsWith(`${where.rel}/`) && isSafeRelativePath(own) ? own.split('/').at(-1) : null;
-			if (ownName !== null && where.taken.has(ownName.toLowerCase())) finalName = ownName;
-			else if (where.taken.has(safe.toLowerCase())) {
+			// A file already under that name is never overwritten: it may have been edited by hand.
+			if (where.taken.has(safe.toLowerCase())) {
 				// A file of that name that no entry lists is what a killed run left: the same bytes are the same upload.
 				const existing = join(where.dir, safe);
 				if (!listed.has(`${where.rel}/${safe}`) && (await sizeOf(existing)) === got.bytes && (await sha256Of(existing)) === got.sha256) adopted = true;
@@ -282,7 +298,8 @@ export async function applyUploads(found, store, { client, boardDir, rawDir, gua
 				where.taken.add(finalName.toLowerCase());
 			}
 			counts.got[adopted ? 'adopted' : 'downloaded']++;
-			counts.got.bytes += got.bytes;
+			fetched += got.bytes;
+			if (!adopted) counts.got.bytes += got.bytes;
 			const entry = { upload: upload.id, path: `${where.rel}/${finalName}`, name: red.value === '' ? finalName : red.value, bytes: got.bytes, sha256: got.sha256, ...(got.type === '' ? {} : { type: got.type }), ...(local ? { local: true } : {}) };
 
 			// The card's entry, written with the hash read just now (a card somebody changed meanwhile is read again once).
@@ -323,7 +340,6 @@ export async function applyUploads(found, store, { client, boardDir, rawDir, gua
 			if (!entry) continue;
 			for (const text of upload.texts) if (text.kind === 'comment') (byComment.get(text.comment) ?? byComment.set(text.comment, new Set()).get(text.comment)).add(entry.path);
 		}
-		if (byComment.size === 0) continue;
 		for (let attempt = 0; attempt < 2; attempt++) {
 			let thread;
 			try {
@@ -334,9 +350,10 @@ export async function applyUploads(found, store, { client, boardDir, rawDir, gua
 				break;
 			}
 			if (!thread) {
-				counts.threads.missing++;
+				if (byComment.size > 0) counts.threads.missing++;
 				break;
 			}
+			if (attempt === 0 && byComment.size === 0 && !thread.entries.some((e) => e.extra?.files !== undefined)) break;
 			if (attempt === 0) {
 				counts.threads.read++;
 				const here = new Set(thread.entries.map((e) => e.id));
@@ -345,7 +362,14 @@ export async function applyUploads(found, store, { client, boardDir, rawDir, gua
 			let changed = 0;
 			const entries = thread.entries.map((e) => {
 				const wanted = byComment.get(e.id);
-				if (!wanted) return e;
+				if (!wanted) {
+					// A comment edited in Linear until it holds no upload link has no files to list any more.
+					if (e.source !== 'linear' || e.extra?.files === undefined) return e;
+					changed++;
+					const { files: _gone, ...rest } = e.extra;
+					const { extra: _extra, ...bare } = e;
+					return Object.keys(rest).length === 0 ? bare : { ...e, extra: rest };
+				}
 				const files = [...wanted].sort();
 				if (JSON.stringify(e.extra?.files) === JSON.stringify(files)) return e;
 				changed++;
@@ -396,7 +420,7 @@ export function formatUploadsSummary(found, { counts, failures, stopped }, { dry
 		lines.push('sizes not asked (no key in the environment)');
 	}
 	if (!dryRun) {
-		lines.push(`downloaded ${c.got.downloaded} (${mb(c.got.bytes)}), adopted ${c.got.adopted}, gone ${c.got.gone}, denied ${c.got.denied}, failed ${c.got.failed}; names redacted ${c.got.namesFlagged}, names made safe ${c.got.namesChanged}; text files with an address or phone number kept local-only (raw/files, not synced): ${c.got.keptLocal}`);
+		lines.push(`downloaded ${c.got.downloaded} (${mb(c.got.bytes)}), adopted ${c.got.adopted}, gone ${c.got.gone}, denied ${c.got.denied}, failed ${c.got.failed}; names redacted ${c.got.namesFlagged}, names made safe ${c.got.namesChanged}; text files with an address or phone number kept local-only (raw/files, not synced): ${c.got.keptLocal}; not scanned (pictures, video, PDF, archives): ${c.got.unscanned}`);
 		lines.push(`card entries written ${c.cards.changed}, refused ${c.cards.failed}; thread entries linked ${c.threads.entriesLinked} in ${c.threads.written} threads (${c.threads.missing} cards without a thread, ${c.threads.commentsNotInThread} comments not in a thread, ${c.threads.failed} failed)`);
 		lines.push(`checks: ${c.checks.filesChecked} listed files looked at, ${c.checks.filesBroken} broken`);
 	}

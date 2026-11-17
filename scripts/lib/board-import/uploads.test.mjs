@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { UPLOAD_HOST, dispositionFileName, extensionForType, findUploads, isFileEntry, isSafeRelativePath, parseUploadUrl, safeFileName, splitExtension, uniqueName, uploadId } from './uploads.mjs';
+import { UPLOAD_HOST, dispositionFileName, extensionForType, findUploads, isFileEntry, isSafeName, isSafeRelativePath, needsTextScan, parseUploadUrl, redactFileName, safeFileName, splitExtension, uniqueName, uploadId } from './uploads.mjs';
 
 /** Invented data only: hosts are the real upload host (a pattern, not data); ids, names and texts are made up. */
 
@@ -77,7 +77,7 @@ test('safeFileName: nothing leaves its folder, nothing a sync client or Windows 
 	const nasty = [
 		'../../etc/passwd', '..\\..\\boot.ini', '/abs/path.png', 'C:\\x\\y.png', '.hidden.png', '...', '..', '.', ' ', '', 'a:b*c?"d<e>f|g.png',
 		'con.png', 'NUL', 'Lpt1.txt', 'name.', 'name .png', ' lead.png', 'tab\there.png', 'line\nbreak.png', `u${String.fromCharCode(0x2028)}sep.png`, `bom${String.fromCharCode(0xfeff)}.png`,
-		'x'.repeat(300) + '.png', 'a/b/c/d.png', 'dots....png', '.png', 'png.', 'weird.ext-too-long',
+		'x'.repeat(300) + '.png', String.fromCodePoint(0x1f600).repeat(79) + '.png', 'con.tar.gz', 'CONIN$', 'Conout$.txt', 'COM' + String.fromCharCode(0xb9) + '.txt', 'a/b/c/d.png', 'dots....png', '.png', 'png.', 'weird.ext-too-long',
 	];
 	for (const text of nasty) {
 		const name = safeFileName(text);
@@ -87,11 +87,14 @@ test('safeFileName: nothing leaves its folder, nothing a sync client or Windows 
 		assert.equal(name.includes('..'), false, `${JSON.stringify(text)} has ..`);
 		assert.equal(/[. ]$/.test(name), false, `${JSON.stringify(text)} ends in a dot or space`);
 		assert.ok(name.length > 0 && [...name].length <= 80 + 9, `${JSON.stringify(text)} length`);
+		assert.ok(Buffer.byteLength(name) <= 200, `${JSON.stringify(text)} is more than 200 bytes`);
+		assert.equal(isSafeName(name), true, `${JSON.stringify(text)} -> ${JSON.stringify(name)} is not a safe name by the reading check`);
 		assert.equal(/^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\.|$)/i.test(name), false, `${JSON.stringify(text)} is a device name`);
 	}
 	assert.equal(safeFileName('Shot One.PNG'), 'Shot One.png', 'the extension goes to lower case, the stem stays');
 	assert.equal(safeFileName('a:b*c?.png'), 'a_b_c_.png');
 	assert.equal(safeFileName('con.png'), '_con.png');
+	assert.equal(safeFileName('con.tar.gz'), '_con.tar.gz', 'on Windows CON.anything is the device');
 	assert.equal(safeFileName('.hidden.png'), 'hidden.png');
 	assert.equal(safeFileName(''), 'upload');
 	assert.equal(safeFileName('', { fallbackExt: 'PNG' }), 'upload.png');
@@ -151,4 +154,22 @@ test('splitExtension takes the last dot as the extension only when 1 to 8 letter
 	assert.deepEqual(splitExtension('x.abcdefghi'), { stem: 'x.abcdefghi', ext: '' }, 'nine characters are no extension');
 	assert.deepEqual(splitExtension('x.abcdefgh'), { stem: 'x', ext: 'abcdefgh' });
 	assert.deepEqual(splitExtension(undefined), { stem: '', ext: '' });
+});
+
+test('redactFileName scans the whole name and the stem: an address that ends the name, and one before an extension', () => {
+	assert.deepEqual(redactFileName('jane.roe@outside.example.org'), { value: '[email]', flagged: true }, 'the whole name: org looks like an extension to the stem scan');
+	assert.deepEqual(redactFileName('from jane@outside.example.invalid.png'), { value: 'from [email].png', flagged: true }, 'the stem without the extension');
+	assert.deepEqual(redactFileName('call 555-010-0199 notes.txt'), { value: 'call [phone] notes.txt', flagged: true });
+	for (const fine of ['Screenshot 2026-05-01 at 10.12.45.png', 'image', 'a@b.png', 'photo@2x.png', '', undefined]) assert.equal(redactFileName(fine).flagged, false, String(fine));
+	assert.equal(redactFileName('plain name.png').value, 'plain name.png');
+});
+
+test('needsTextScan: everything is scanned except pictures, video, audio, PDF and archives', () => {
+	for (const [type, name] of [['text/csv', 'a.csv'], ['application/octet-stream', 'contacts.vcf'], ['application/octet-stream', 'mail.eml'], ['application/json', 'a.json'], ['image/svg+xml', 'a.svg'], ['', 'noext'], [undefined, 'a.txt']]) assert.equal(needsTextScan(type, name), true, `${type} ${name}`);
+	for (const [type, name] of [['image/png', 'a.png'], ['video/mp4', 'a.mp4'], ['audio/mpeg', 'a.mp3'], ['application/pdf', 'a.pdf'], ['application/zip', 'a.zip'], ['application/octet-stream', 'a.PNG'], ['application/octet-stream', 'model.glb'], ['application/octet-stream', 'sheet.xlsx']]) assert.equal(needsTextScan(type, name), false, `${type} ${name}`);
+});
+
+test('isSafeName refuses what safeFileName never makes: a trailing dot or space, a device name, a hidden file, too many bytes', () => {
+	for (const bad of ['', '.', '..', '.hidden', 'a.', 'a ', 'con.txt', 'a/b', 'a\\b', 'x'.repeat(300), 'tab\there', 5, null, undefined]) assert.equal(isSafeName(bad), false, JSON.stringify(bad));
+	assert.equal(isSafeName('ok name (1).png'), true);
 });

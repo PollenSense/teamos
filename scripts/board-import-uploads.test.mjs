@@ -115,3 +115,19 @@ test('the caps must be numbers of megabytes', async () => {
 		s.cleanup();
 	}
 });
+
+test('an error the importer does not know prints its kind only, never a message or a path', async () => {
+	const s = sandbox();
+	try {
+		await exported(s);
+		mkdirSync(s.board, { recursive: true });
+		writeFileSync(join(s.board, 'raw'), 'not a folder'); // the raw folder is a file: mkdir under it fails with ENOTDIR
+		const r = run(s, { LINEAR_API_KEY_RO: 'lin_api_DUMMYDUMMYDUMMY' }, '--apply');
+		assert.equal(r.code, 1);
+		assert.match(r.err, /stopped \(unexpected: ENOTDIR\)/);
+		assert.equal(r.err.includes(s.root), false, 'no path in the error text');
+		assert.equal(r.err.includes('at '), false, 'no stack');
+	} finally {
+		s.cleanup();
+	}
+});

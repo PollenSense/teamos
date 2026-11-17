@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { BoardError, BoardStore, parseDocument, parseThread } from '../board/index.mjs';
@@ -322,20 +322,34 @@ test('a body that grows past the cap stops the run, leaves no partial file and n
 	}
 });
 
-test('ten failures in a row stop the run', async () => {
-	const routes = {};
+test('ten failures in a row stop the run, in the size pass and in the download pass', async () => {
 	const e = buildExport();
 	const links = Array.from({ length: 12 }, (_, i) => link(`many/${i}`));
-	for (const l of links) routes[new URL(l).pathname] = { status: 500 };
 	e.issues[0].description = links.map((l) => `![](${l})`).join(' ');
-	const w = world(routes, e);
+	const broken = {};
+	for (const l of links) broken[new URL(l).pathname] = { status: 500 };
+	const w = world(broken, e);
 	try {
 		await importCards(w.s, e);
 		const r = await w.run();
 		assert.equal(r.stopped.reason, 'many-failures');
-		assert.equal(r.counts.got.failed, 10);
+		assert.equal(r.counts.head.failed, 10, 'the size pass stops at ten, it does not wait out two more dead links');
+		assert.equal(r.counts.got.failed, 0);
+		assert.equal(existsSync(w.s.filesDir), false);
 	} finally {
 		w.s.cleanup();
+	}
+	const getOnly = {};
+	for (const l of links) getOnly[new URL(l).pathname] = (call) => (call.method === 'HEAD' ? { body: 'x', type: 'image/png' } : { status: 500 });
+	const v = world(getOnly, e);
+	try {
+		await importCards(v.s, e);
+		const r = await v.run();
+		assert.equal(r.stopped.reason, 'many-failures');
+		assert.equal(r.counts.head.ok, 12);
+		assert.equal(r.counts.got.failed, 10);
+	} finally {
+		v.s.cleanup();
 	}
 });
 
@@ -351,6 +365,7 @@ test('a file left by a killed run is adopted when name and bytes agree; a differ
 		assert.equal(statSync(join(w.s.filesDir, 'PSE-1', 'shot-one.png')).ino, inode, 'the adopted file itself stays; the new copy is thrown away');
 		assert.equal(r.counts.got.adopted, 1);
 		assert.equal(r.counts.got.downloaded, 3);
+		assert.equal(r.counts.got.bytes, 3 + 11 + 4, 'the adopted file was not written, so its bytes are not counted');
 		assert.deepEqual(filesOf(w.s, 'PSE-1'), ['photo.jpg', 'report-2.pdf', 'report.pdf', 'shot-one.png']);
 		assert.equal(readFileSync(join(w.s.filesDir, 'PSE-1', 'report.pdf'), 'utf8'), 'TWX', 'same size, other bytes: not the same upload');
 		assert.equal(readFileSync(join(w.s.filesDir, 'PSE-1', 'report-2.pdf'), 'utf8'), 'TWO');
@@ -426,18 +441,21 @@ test('a phone-shaped number in a text file keeps it local; a text too big to loo
 	}
 });
 
-test('a file deleted by hand, or cut short, is fetched again on the next run, into the same name', async () => {
+test('a file deleted by hand is fetched again; a file somebody edited is never overwritten: the new copy is numbered and the entry follows it', async () => {
 	const w = world();
 	try {
 		await importCards(w.s, w.entities);
 		await w.run();
 		rmSync(join(w.s.filesDir, 'PSE-1', 'report.pdf'));
-		writeFileSync(join(w.s.filesDir, 'PSE-1', 'shot-one.png'), 'ONE');
+		writeFileSync(join(w.s.filesDir, 'PSE-1', 'shot-one.png'), 'ONE annotated by hand');
 		const r = await w.run();
 		assert.equal(r.counts.uploads.present, 2);
 		assert.equal(r.counts.got.downloaded, 2);
-		assert.deepEqual(filesOf(w.s, 'PSE-1'), ['photo.jpg', 'report.pdf', 'shot-one.png'], 'no numbered copy beside the short one');
-		assert.equal(readFileSync(join(w.s.filesDir, 'PSE-1', 'shot-one.png'), 'utf8'), 'ONE-BYTES');
+		assert.deepEqual(filesOf(w.s, 'PSE-1'), ['photo.jpg', 'report.pdf', 'shot-one-2.png', 'shot-one.png']);
+		assert.equal(readFileSync(join(w.s.filesDir, 'PSE-1', 'shot-one.png'), 'utf8'), 'ONE annotated by hand', 'the edited file is as it was');
+		assert.equal(readFileSync(join(w.s.filesDir, 'PSE-1', 'shot-one-2.png'), 'utf8'), 'ONE-BYTES');
+		const entry = card(w.s, 'PSE-1').fields.files.find((f) => f.upload === uploadId(L.one));
+		assert.equal(entry.path, 'files/PSE-1/shot-one-2.png');
 		assert.equal(card(w.s, 'PSE-1').fields.files.length, 3);
 		assert.equal(r.counts.checks.filesBroken, 0);
 	} finally {
@@ -607,6 +625,162 @@ test('a card write that is refused is counted and leaves the file for the next r
 		assert.equal(next.counts.got.downloaded, 0);
 		assert.deepEqual(filesOf(w.s, 'PSE-1'), ['photo.jpg', 'report.pdf', 'shot-one.png'], 'no numbered copies');
 		assert.equal(card(w.s, 'PSE-1').fields.files.length, 3);
+	} finally {
+		w.s.cleanup();
+	}
+});
+
+test('an address that ends the name is redacted too: the file name, the entry and the thread line hold none of it', async () => {
+	const routes = ROUTES();
+	routes['/ws/pse1/one'].name = 'jane.roe@outside.example.org';
+	const w = world(routes);
+	try {
+		await importCards(w.s, w.entities);
+		const r = await w.run();
+		assert.equal(r.counts.got.namesFlagged, 1);
+		const entry = card(w.s, 'PSE-1').fields.files.find((f) => f.upload === uploadId(L.one));
+		assert.equal(entry.name, '[email]');
+		assert.equal(entry.path, 'files/PSE-1/[email].png');
+		assert.match(readFileSync(join(w.s.rawDir, 'uploads', `${uploadId(L.one)}.json`), 'utf8'), /jane\.roe@outside\.example\.org/);
+		for (const path of Object.keys(snapshot(w.s.dir))) {
+			if (path.startsWith(w.s.rawDir)) continue;
+			assert.equal(path.includes('jane.roe'), false, 'no file name has the address');
+			if (path.endsWith('.md')) assert.equal(readFileSync(path, 'utf8').includes('jane.roe'), false, path);
+		}
+	} finally {
+		w.s.cleanup();
+	}
+});
+
+test('text in another encoding or another type is still looked at: UTF-16 text and an octet-stream contacts file stay local; a picture is not read', async () => {
+	const bom = String.fromCharCode(0xfeff);
+	const routes = ROUTES();
+	routes['/ws/pse1/one'] = { body: Buffer.from(`${bom}name,email\r\nOne,one@outside.example.org\r\n`, 'utf16le'), type: 'application/octet-stream', name: 'export.csv' };
+	routes['/ws/pse1/two'] = { body: 'BEGIN:VCARD\nEMAIL:two@outside.example.org\nEND:VCARD\n', type: 'application/octet-stream', name: 'contacts.vcf' };
+	routes['/ws/pse1/three'] = { body: 'three@outside.example.org inside a picture', type: 'image/png', name: 'picture.bin' }; // the type says picture, the extension says nothing
+	const w = world(routes);
+	try {
+		await importCards(w.s, w.entities);
+		const r = await w.run();
+		assert.equal(r.counts.got.keptLocal, 2);
+		assert.equal(r.counts.got.unscanned, 2, 'the picture and the moved.png are counted as not scanned');
+		assert.deepEqual(readdirSync(join(w.s.rawDir, 'files', 'PSE-1')).sort(), ['contacts.vcf', 'export.csv']);
+		assert.deepEqual(filesOf(w.s, 'PSE-1'), ['picture.bin']);
+	} finally {
+		w.s.cleanup();
+	}
+});
+
+test('the total cap holds for files whose size is not known beforehand', async () => {
+	const e = buildExport();
+	const three = [link('nosize/a'), link('nosize/b'), link('nosize/c')];
+	e.issues[0].description = three.map((l) => `![](${l})`).join(' ');
+	const routes = {};
+	for (const l of three) routes[new URL(l).pathname] = { body: 'x'.repeat(4000), type: 'image/png', noLength: true };
+	const w = world(routes, e);
+	try {
+		await importCards(w.s, e);
+		const r = await w.run({ maxTotalBytes: 5000 });
+		assert.equal(r.stopped.reason, 'total-cap');
+		assert.equal(r.counts.got.downloaded, 1, 'the second would have gone past 5000');
+		assert.deepEqual(readdirSync(join(w.s.rawDir, 'files', '.tmp')), []);
+	} finally {
+		w.s.cleanup();
+	}
+});
+
+test('a link used on two cards is downloaded twice, so it counts twice against the total cap', async () => {
+	const e = buildExport();
+	e.issues[0].description = `![](${L.one})`;
+	e.issues[2].description = `![](${L.one})`;
+	e.comments = [];
+	const w = world(ROUTES(), e);
+	try {
+		await importCards(w.s, e);
+		const r = await w.run({ maxTotalBytes: 15 });
+		assert.equal(r.stopped.reason, 'total-cap');
+		assert.equal(r.stopped.bytes, 18);
+		assert.equal(existsSync(w.s.filesDir), false);
+		const ok = await w.run({ maxTotalBytes: 18 });
+		assert.equal(ok.stopped, null);
+		assert.equal(ok.counts.got.downloaded, 2);
+		assert.equal(ok.counts.threads.missing, 0, 'cards with no comment links do not miss a thread');
+	} finally {
+		w.s.cleanup();
+	}
+});
+
+test('a very long name with many-byte characters is cut to a size the file system takes; the run goes on', async () => {
+	const routes = ROUTES();
+	// a header value is Latin-1 on the wire, so the host sends many-byte names in the extended form
+	routes['/ws/pse1/one'].disposition = `inline; filename*=UTF-8''${encodeURIComponent(`${String.fromCodePoint(0x1f600).repeat(79)}.png`)}`;
+	const w = world(routes);
+	try {
+		await importCards(w.s, w.entities);
+		const r = await w.run();
+		assert.equal(r.stopped, null);
+		assert.equal(r.counts.got.downloaded, 4);
+		for (const name of filesOf(w.s, 'PSE-1')) assert.ok(Buffer.byteLength(name) <= 200, `${Buffer.byteLength(name)} bytes`);
+		assert.equal(r.counts.checks.filesBroken, 0);
+	} finally {
+		w.s.cleanup();
+	}
+});
+
+test('a card folder that is a link is refused: nothing is written where it points', async () => {
+	const w = world();
+	try {
+		await importCards(w.s, w.entities);
+		const outside = join(w.s.root, 'outside');
+		mkdirSync(outside);
+		mkdirSync(w.s.filesDir, { recursive: true });
+		symlinkSync(outside, join(w.s.filesDir, 'PSE-1'));
+		await assert.rejects(() => w.run(), (err) => err instanceof BoardError && err.code === 'bad-folder');
+		assert.deepEqual(readdirSync(outside), []);
+		const real = join(w.s.root, 'elsewhere');
+		mkdirSync(real);
+		rmSync(w.s.filesDir, { recursive: true });
+		symlinkSync(real, w.s.filesDir);
+		await assert.rejects(() => w.run(), (err) => err instanceof BoardError && err.code === 'bad-folder');
+		assert.deepEqual(readdirSync(real), []);
+	} finally {
+		w.s.cleanup();
+	}
+});
+
+test('a second run asks only about the uploads that are gone, one size request each, and downloads nothing', async () => {
+	const routes = ROUTES();
+	routes['/ws/pse1/two'] = { status: 404 };
+	const w = world(routes);
+	try {
+		await importCards(w.s, w.entities);
+		await w.run();
+		const before = w.host.calls.length;
+		const again = await w.run();
+		const asked = w.host.calls.slice(before);
+		assert.deepEqual(asked.map((c) => c.method), ['HEAD']);
+		assert.equal(again.counts.got.downloaded, 0);
+		assert.deepEqual(again.failures.map((f) => f.result), ['gone']);
+	} finally {
+		w.s.cleanup();
+	}
+});
+
+test('a comment edited in Linear until it holds no upload link loses its file list', async () => {
+	const w = world();
+	try {
+		await importCards(w.s, w.entities);
+		await w.run();
+		assert.equal(thread(w.s, 'PSE-1').find((e) => e.id === 'cm-1').extra.files.length, 2);
+		w.entities.comments[0].body = 'Edited: no link any more.';
+		await importCards(w.s, w.entities);
+		assert.equal(thread(w.s, 'PSE-1').find((e) => e.id === 'cm-1').extra.files.length, 2, 'the issue importer carries what it was given');
+		const r = await w.run();
+		const entry = thread(w.s, 'PSE-1').find((e) => e.id === 'cm-1');
+		assert.equal(entry.extra, undefined);
+		assert.match(entry.body, /Edited/);
+		assert.equal(r.counts.threads.written, 1);
+		assert.equal(card(w.s, 'PSE-1').fields.files.length, 3, 'the files themselves stay: nothing is deleted');
 	} finally {
 		w.s.cleanup();
 	}

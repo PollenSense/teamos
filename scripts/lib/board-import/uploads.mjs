@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { parseId } from '../board/index.mjs';
+import { parseId, redactValue } from '../board/index.mjs';
 
 /**
  * What the uploads importer (ticket A6b) knows without a network or a disk: which upload links the texts of the
@@ -121,8 +121,11 @@ export function findUploads(entities) {
 }
 
 const FORBIDDEN = new Set(['/', '\\', ':', '*', '?', '"', '<', '>', '|']);
-const RESERVED = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i;
+const SUPERSCRIPTS = String.fromCharCode(0xb9, 0xb2, 0xb3);
+/** Windows device names (and `CON.anything`: the device wins whatever follows the first dot). */
+const RESERVED = new RegExp(`^(con|prn|aux|nul|conin\\$|conout\\$|com[1-9${SUPERSCRIPTS}]|lpt[1-9${SUPERSCRIPTS}])$`, 'i');
 const EXTENSION = /^[A-Za-z0-9]{1,8}$/;
+const MAX_NAME_BYTES = 200;
 const BREAKS = new Set([0x85, 0x2028, 0x2029, 0xfeff, 0x200b, 0x202e]);
 
 const TYPE_EXTENSIONS = {
@@ -150,6 +153,35 @@ export function splitExtension(name) {
 }
 
 /**
+ * Rule A for a file name: `{ value, flagged }`. The whole name is scanned (an address that ends the name, `jane@example.org`, is
+ * taken for an extension below) and so is the stem without its extension (the person-data scan takes `a@b.example.png` for a
+ * file name and skips it). A flagged name is redacted by whichever scan found something.
+ */
+export function redactFileName(name) {
+	const text = typeof name === 'string' ? name : '';
+	const whole = redactValue(text);
+	if (whole.flagged) return { value: whole.value, flagged: true };
+	const { stem, ext } = splitExtension(text);
+	const part = redactValue(stem);
+	if (part.flagged) return { value: ext === '' ? part.value : `${part.value}.${ext}`, flagged: true };
+	return { value: text, flagged: false };
+}
+
+/**
+ * Whether a downloaded file is looked at for e-mail addresses and phone numbers. Pictures, video, audio, PDF and archives
+ * are not (Van decided they go to Drive; their content cannot be scanned as text); anything else is, whatever type the
+ * host gave it: a contacts file served as `application/octet-stream` is still text.
+ */
+const MEDIA_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'heic', 'bmp', 'tif', 'tiff', 'ico', 'mp4', 'mov', 'webm', 'mkv', 'avi', 'm4v', 'mp3', 'wav', 'm4a', 'ogg', 'pdf', 'glb', 'zip', 'gz', 'tgz', '7z', 'rar', 'xlsx', 'docx', 'pptx']);
+export function needsTextScan(type, name) {
+	const t = typeof type === 'string' ? type.split(';')[0].trim().toLowerCase() : '';
+	if (t === 'image/svg+xml') return true;
+	if (t.startsWith('image/') || t.startsWith('video/') || t.startsWith('audio/') || t === 'application/pdf' || t === 'application/zip') return false;
+	const dot = name.lastIndexOf('.');
+	return !(dot > 0 && MEDIA_EXTENSIONS.has(name.slice(dot + 1).toLowerCase()));
+}
+
+/**
  * A file name that is safe on every machine that syncs the folder: no path separator or `..`, none of the characters
  * Windows refuses, no control or line-end character, no leading dot (hidden file) or trailing dot or space, no device
  * name (`CON`), at most `maxStem` characters before the extension. The extension (up to 8 letters or digits) is kept
@@ -168,10 +200,14 @@ export function safeFileName(original, { fallbackExt = '', maxStem = 80 } = {}) 
 	let ext = split.ext.toLowerCase();
 	while (stem.includes('..')) stem = stem.split('..').join('.');
 	stem = stem.replace(/^[.\s]+/, '').replace(/[.\s]+$/, '');
-	stem = [...stem].slice(0, maxStem).join('').replace(/[.\s]+$/, '');
-	if (stem === '') stem = 'upload';
-	if (RESERVED.test(stem)) stem = `_${stem}`;
 	if (ext === '' && typeof fallbackExt === 'string' && EXTENSION.test(fallbackExt)) ext = fallbackExt.toLowerCase();
+	// At most `maxStem` characters and at most MAX_NAME_BYTES bytes in all (file systems count bytes: 255, and `-99999` may follow).
+	stem = [...stem].slice(0, maxStem).join('');
+	const room = MAX_NAME_BYTES - (ext === '' ? 0 : ext.length + 1) - 6;
+	while (Buffer.byteLength(stem) > room) stem = [...stem].slice(0, -1).join('');
+	stem = stem.replace(/[.\s]+$/, '');
+	if (stem === '') stem = 'upload';
+	if (RESERVED.test(stem.split('.')[0])) stem = `_${stem}`;
 	return ext === '' ? stem : `${stem}.${ext}`;
 }
 
@@ -229,6 +265,15 @@ export function isSafeRelativePath(path) {
 	const parts = path.split('/');
 	const head = parts[0] === 'raw' ? 2 : 1;
 	if (parts.length !== head + 2 || parts[head - 1] !== 'files' || parseId(parts[head]) === null) return false;
-	const name = parts[head + 1];
-	return name !== '' && name !== '.' && name !== '..' && !name.startsWith('.') && ![...name].some((ch) => FORBIDDEN.has(ch) || ch.codePointAt(0) < 0x20);
+	return isSafeName(parts[head + 1]);
+}
+
+/** A file name as `safeFileName` makes them, checked the other way round for a name read back from a card (which a person may have edited). */
+export function isSafeName(name) {
+	if (typeof name !== 'string' || name === '' || name === '.' || name === '..' || name.startsWith('.') || /[. ]$/.test(name)) return false;
+	if (Buffer.byteLength(name) > 255 || RESERVED.test(name.split('.')[0])) return false;
+	return ![...name].some((ch) => {
+		const n = ch.codePointAt(0);
+		return FORBIDDEN.has(ch) || n < 0x20 || n === 0x7f || BREAKS.has(n);
+	});
 }

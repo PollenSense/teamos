@@ -176,44 +176,56 @@ Options: `--max-file-mb` (default 100), `--max-total-mb` (default 1024), `--filt
 itself; never in a URL, an argument, a log or an error. Without a key the dry run only counts the links.
 
 - **Read-only toward Linear.** Only HEAD and GET, only `https://uploads.linear.app/...` (a link on any other host is a link, not an
-  upload; A6 keeps those). A redirect is followed by hand, at most 3 hops, https only; the key goes to the upload host only, and
-  a redirect to an address (`127.0.0.1`, `localhost`) is refused. 401 stops the run (the key is wrong); 403 and 404 are named
-  in the report (issue key, upload id, status) and the run goes on; 429 waits for `Retry-After`; a 5xx or a dropped connection
-  is tried again with a growing pause, 5 tries; ten failed uploads in a row stop the run. Requests are 300 ms apart.
+  upload; A6 keeps those). The key is sent only to that host on the default https port. A redirect is followed by hand, at most 3
+  hops, and only inside the same host and port; a redirect anywhere else is refused (none was seen on the real export). 401 stops
+  the run (the key is wrong); 403 and 404 are named in the report (issue key, upload id, status) and the run goes on; 429 waits for
+  `Retry-After`; a 5xx or a dropped connection is tried again with a growing pause, 5 tries; ten failed uploads in a row stop the
+  run, in the size pass and in the download pass. Requests are 300 ms apart. The key is read from `LINEAR_API_KEY_RO`, else
+  `LINEAR_API_KEY` (the order of `scripts/linear-api.sh`); only HEAD and GET are ever sent, so a read-write key could not write.
 - **Where files go.** `team/board/files/<card id>/<name>` (the card that holds the issue key, or the earlier key the text used).
-  A file used in a description and in a comment of one card is saved once. A link used on two cards is saved once per card.
-  A download lands first in `raw/files/.tmp/` (never synced) and is renamed into its folder when whole, so Drive never sees a
-  half file; a temp file older than 10 minutes (a killed run) is removed at the next run.
+  A file used in a description and in a comment of one card is saved once. A link used on two cards is saved once per card (and
+  counts twice against the total cap). A download lands first in `raw/files/.tmp/` (never synced) and is renamed into its folder when
+  whole, so Drive never sees a half file; a temp file older than 10 minutes (a killed run) is removed at the next run. A card
+  folder (or `files/`, or `raw/files/`) that is a link or not a folder is refused, so nothing is written where a link points.
 - **Names.** The host's `Content-Disposition` name (every real upload had one, with an extension), else the link text, else
-  `upload`; the extension comes from the content type when the name has none. Rule A first: an outside address or phone number in a name is
-  redacted (the extension is taken off before the scan: the person-data scan takes `a@b.example.png` for a file name), the
-  original goes to `raw/uploads/<id>.json`. Then the name is made safe: no `/ \ : * ? " < > |`, control or line-end character,
-  no `..`, no leading dot (a hidden file), no trailing dot or space, no Windows device name (`CON` becomes `_CON`), at most
-  80 characters before the extension. A name the folder has already (case does not count: Mac and Windows) is numbered `-2`, `-3`.
-- **Text that holds person data stays local.** A file a person reads as text (`text/*`, JSON, SVG, a known extension) is scanned
-  with the person-data scan; one with an outside e-mail address or a phone-shaped number, or one over 5 MB (not looked at), goes to
-  `raw/files/<card id>/` instead (never synced) and is listed in the card with `local: true`. A picture, a video or a PDF
-  cannot be scanned and goes to Drive, as decided. On the real export 4 of the 5 text files were kept local (one CSV with 54
-  addresses; a script, a note and an SVG with phone-shaped numbers).
+  `upload`; the extension comes from the content type when the name has none. Rule A first: the whole name is scanned, and the
+  stem without its extension too (the person-data scan takes `a@b.example.png` for a file name and skips it, and takes
+  `jane@example.org` as stem `jane@example` plus extension `org`); an outside address or phone number is redacted and the original goes to
+  `raw/uploads/<id>.json`. Then the name is made safe: no `/ \ : * ? " < > |`, control or line-end character, no `..`, no
+  leading dot (a hidden file), no trailing dot or space, no Windows device name (`CON`, `CON.tar.gz`, `CONIN$`, `COM1` become `_CON...`), at
+  most 80 characters and 200 bytes in all (file systems count bytes). A name the folder has already (case does not count: Mac
+  and Windows) is numbered `-2`, `-3`; a file that is already there under that name is never overwritten, it may have been edited.
+- **Text that holds person data stays local.** Every downloaded file except pictures, video, audio, PDF and archives (by content type, and
+  by extension when the type says nothing) is scanned with the person-data scan, read as UTF-8, as one byte per character and as UTF-16
+  in both byte orders, so Excel's "Unicode text" is covered and a contacts file served as `application/octet-stream` is too. One with an outside e-mail
+  address or a phone-shaped number, or one over 5 MB (not looked at), goes to `raw/files/<card id>/` instead (never synced) and is
+  listed in the card with `local: true`. Pictures, videos, PDFs and archives cannot be scanned as text and go to Drive, as decided; the
+  report counts them as not scanned. On the real export 4 of the 5 text files were kept local (one CSV with 54 addresses; a script, a note and an SVG
+  with phone-shaped numbers).
 - **Linking.** The card's front matter gets `files: [{upload, path, name, bytes, sha256, type?, local?}]`, sorted by path (a
   field the store keeps through rewrites: the issue importer does not own it); `name` is the host's name after rule A, `path`
   is relative to the board folder. A comment's thread entry gets `files: ["files/PSE-1/a.png", ...]` in its meta line for the files
-  its text used; the issue importer keeps those entries when it rewrites a thread.
+  its text used; the issue importer keeps those entries when it rewrites a thread, and the next uploads run drops the list of a
+  comment that no longer holds an upload link (for a card that still holds one).
 - **Dry run first.** HEAD for every link not yet on the board: statuses, the size known, the largest, how many give no size (88
   of the real 192 answer HEAD without `Content-Length`). A real run does the same pass first and stops before writing anything
-  when a known size is over a cap; a body that grows past the cap while it streams stops the run and removes the partial file.
-- **A second run asks for nothing** that is on the board (an entry whose file exists with the same size). A file deleted by hand
-  or cut short is fetched again into the same name. A file a killed run left before its entry was written is adopted when name and
-  SHA-256 agree (never overwritten otherwise; the new copy is numbered). The card's entry is written right after each file.
+  when a known size is over a cap or the known sizes (a link counts once per card) together are over the total cap. A body that
+  grows past the cap while it streams stops the run and removes the partial file; the total cap also holds for files whose size was
+  not known (each download may use only what is left of it).
+- **A second run asks for nothing that is on the board** (an entry whose file exists with the same size); an upload that is gone
+  (404) gets one size request each run and is named again. A file deleted by hand is fetched again. A file whose size no longer
+  matches (edited by hand) is not touched: the upload is fetched into a numbered name and the entry follows it. A file a killed run
+  left before its entry was written is adopted when name and SHA-256 agree (otherwise the new copy is numbered, never overwriting).
+  The card's entry is written right after each file.
 - **Checked after a real run, against the files:** every listed file is there with the bytes the card says; a broken one makes the
-  run exit 1.
+  run exit 1. An error the importer does not know prints its kind only (`stopped (unexpected: ENOTDIR)`), never a message or a path.
 
-Limits: nothing is ever deleted (a link Linear drops later leaves its file and its entry); a card that moves teams keeps the old
+Limits: nothing is ever deleted (a link Linear drops later leaves its file and its entry; the file list of a comment that no longer holds a link is dropped only when its card still holds an upload); a card that moves teams keeps the old
 folder name (its entries carry the real path); a file that a person puts in `raw/files` by hand is not looked at; 9 more links
 exist only in documents, project updates, attachments or comments on projects and are counted, not downloaded. Everything saved
 is person data under the vendor rule: open for the work, never copied into a message, ticket or doc.
 
 On the real export (read-only key, a scratch board in `/tmp`, 2026-11-17, counts only): 192 distinct links on 127 cards; 190
 answered (190 saved, 102.0 MB; largest 8.7 MB) and 2 were gone (404). 186 files went to the synced folder and 4 text files stayed local.
-39 comment entries in 27 threads link their files. The apply took under 3 minutes; the second run asked for nothing and changed no
+39 comment entries in 27 threads link their files. The apply took under 3 minutes; the second run asked only about the 2 gone uploads and changed no
 file; the issue importer run again changed no file and kept every list.

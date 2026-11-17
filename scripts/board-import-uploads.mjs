@@ -92,5 +92,7 @@ try {
 		process.stderr.write(`stopped (${err.code}): ${err.message}\n`);
 		process.exit(1);
 	}
-	throw err;
+	// Anything else may carry a path with a file name in its text: print the kind of error only.
+	process.stderr.write(`stopped (unexpected: ${typeof err?.code === 'string' ? err.code : (err?.name ?? 'error')})\n`);
+	process.exit(1);
 }
