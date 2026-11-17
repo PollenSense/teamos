@@ -135,7 +135,7 @@ export interface SendMessageArgs {
 	projectCode?: string;
 	/** Tokens from `uploadAttachment`; the body places them with `![caption](attachment:<token>)`, the rest go at the end. */
 	attachments?: string[];
-	/** The sender wants a written answer: the message waits in each recipient's Needs you until they reply. */
+	/** The sender wants a written answer: the message waits in each To recipient's Needs you until they reply (a Cc stays in FYI). */
 	expectsReply?: boolean;
 }
 

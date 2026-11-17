@@ -30,6 +30,22 @@ describe('compose links', () => {
 		assert.deepEqual(prefillRecipients({ to: 'cy' }, []), []);
 	});
 
+	it('an exact name wins; another letter case matches only when exactly one member does', () => {
+		const twins = [
+			{ name: 'cy', active: true },
+			{ name: 'Cy', active: true },
+			{ name: 'Ivy', active: true },
+			{ name: 'Old', active: true },
+			{ name: 'old', active: false },
+		];
+		assert.deepEqual(prefillRecipients({ to: 'cy' }, twins), ['cy'], 'exact, not the later member of the same name');
+		assert.deepEqual(prefillRecipients({ to: 'Cy' }, twins), ['Cy']);
+		assert.deepEqual(prefillRecipients({ to: 'cy,Cy' }, twins), ['cy', 'Cy'], 'both, each once');
+		assert.deepEqual(prefillRecipients({ to: 'CY' }, twins), [], 'two members match in another case: ambiguous, dropped');
+		assert.deepEqual(prefillRecipients({ to: 'ivy' }, twins), ['Ivy'], 'one member matches in another case');
+		assert.deepEqual(prefillRecipients({ to: 'old' }, twins), ['Old'], 'an inactive member does not take part');
+	});
+
 	it('a link made by composeHref reads back to the same names', () => {
 		const href = composeHref(['van', 'cy']);
 		const query = Object.fromEntries(new URLSearchParams(href.split('?')[1]));
