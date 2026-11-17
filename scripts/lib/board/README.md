@@ -52,7 +52,7 @@ Every write says what it replaces: `expect: 'new'` or the content hash it read e
 place. A different hash is `changed`; identical text writes nothing (`changed: false`). Errors are `BoardError`
 with a `code` (`errors.mjs`). Phase (a) has one writer, the importer; field-level merge is phase (c).
 
-`store.nextNumber(key)` allocates IDs (never reuses one); `raiseNextNumber` is for the importer's last step. `nextNumber` belongs to the allocator: `writeTeam` keeps it from the existing file and only ever raises it. A lock file with no readable content (empty, half-written) is judged by its age on disk; a stale lock that cannot be removed ends in `locked` at the deadline.
+`store.nextNumber(key)` allocates IDs (never reuses one); `raiseNextNumber` is for the importer's last step. `nextNumber` belongs to the allocator: `writeTeam` keeps it from the existing file and only ever raises it. A lock file with no readable content (empty, half-written) is judged by its age on disk; a stale lock that cannot be removed ends in `locked` at the deadline. A lock file that exists but cannot be read or inspected (permissions, I/O error) is `unreadable`: only "gone" (ENOENT) means released, and release never removes a lock it cannot read.
 
 ## Index (`issue-index.mjs`)
 
@@ -60,7 +60,7 @@ with a `code` (`errors.mjs`). Phase (a) has one writer, the importer; field-leve
 cache (Drive can restore an older mtime on a changed file, so "newer than" is not the test). The cache lives in
 memory and in `team/.logs/board/index.json`. `byId`, `resolve(idOrAlias)`, `entries()`, `problems` (damaged,
 misplaced, id-mismatch, alias-shadowed, alias-taken; a shared alias goes to the lower issue number). A folder the index cannot read makes
-`refresh()` throw: an unreadable folder is never taken for an empty one. 1,500 issues: about 125 ms cold, 30 ms warm. Each write
+`refresh()` throw: an unreadable folder is never taken for an empty one; the same holds for an issue file that cannot be inspected or read (`unreadable`, the index stays as it was): only a missing file (ENOENT) is dropped. `refresh`, `noteWritten` and `flush` run one after the other inside the process, so a note of our own write is never pruned by a refresh that began earlier. The store gives `noteWritten` the mtime and size of the temp file taken before the rename, so a file a sync replaces right after is re-read. 1,500 issues: about 125 ms cold, 30 ms warm. Each write
 refreshes first (to check aliases), so a write costs a stat per issue: about 4 ms at 600 issues, linear.
 
 ## Config (`config.mjs`)
