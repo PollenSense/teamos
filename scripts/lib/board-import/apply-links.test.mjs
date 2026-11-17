@@ -238,3 +238,96 @@ test('a card whose write was refused (a damaged file) gets no thread written', a
 		s.cleanup();
 	}
 });
+
+test('dangling links, relations and comments are in the report, next to the issue plan\'s', async () => {
+	const s = sandbox();
+	try {
+		const e = exportWith({
+			relations: [rel('r1', 'blocks', 'PSE-1', 'ZZZ-77')],
+			attachments: [{ id: 'a9', issueKey: 'ZZZ-77', sourceType: 'jira', url: 'https://tracker.example.invalid/x' }],
+			comments: [com('c1', 'ZZZ-77', 'Lost.'), com('c2', 'PSE-1', 'Author unknown.', { authorId: 'u-missing' })],
+		});
+		const r = await runLinks(s, e, { dry: true });
+		const text = formatIssuesSummary(r.plan, r, { dryRun: true });
+		assert.match(text, /dangling references: .*relations\.issue 1/);
+		assert.match(text, /attachments\.issue 1/);
+		assert.match(text, /comments\.issue 1/);
+		assert.match(text, /comments\.author 1/);
+		assert.doesNotMatch(text, /dangling references: none/);
+		const clean = await runLinks(s, exportWith(), { dry: true });
+		assert.match(formatIssuesSummary(clean.plan, clean, { dryRun: true }), /dangling references: none/);
+	} finally {
+		s.cleanup();
+	}
+});
+
+test('a native entry whose id a Linear comment now uses stops that thread (counted, exit-worthy), and nothing is lost', async () => {
+	const s = sandbox();
+	try {
+		await runLinks(s, exportWith());
+		const store = s.store();
+		const current = await store.readThread('PSE-1');
+		await store.writeThread('PSE-1', [...current.entries, { time: '2025-02-03T09:00:00.000Z', author: 'bob', id: 'n1', source: 'teamos', body: 'Native.' }], { expect: current.hash });
+		const before = threadText(s, 'PSE-1');
+		const r = await runLinks(s, exportWith({ comments: [com('n1', 'PSE-1', 'A Linear comment that reuses the id.')] }));
+		assert.equal(r.failures['bad-value'], 1);
+		assert.equal(threadText(s, 'PSE-1'), before, 'the thread is as it was');
+	} finally {
+		s.cleanup();
+	}
+});
+
+test('a dry run says the same about a moved card\'s thread as the real run does', async () => {
+	const s = sandbox();
+	try {
+		const earlier = exportWith();
+		earlier.issues = earlier.issues.map((i) => (i.id === 'i-2' ? { ...i, key: 'INS-5', teamKey: 'INS', number: 5, previousKeys: [], stateId: 's-3' } : i));
+		earlier.relations = [];
+		earlier.attachments = [];
+		earlier.comments = [com('c3', 'INS-5', 'On the card before it moved.')];
+		await runLinks(s, earlier);
+		const store = s.store();
+		const old = await store.readThread('INS-5');
+		await store.writeThread('INS-5', [...old.entries, { time: '2025-02-03T09:00:00.000Z', author: 'bob', id: 'n1', source: 'teamos', body: 'Native.' }], { expect: old.hash });
+		const e = exportWith({ relations: [], attachments: [], comments: [com('c3', 'INS-5', 'On the card before it moved.')] });
+		const dry = await runLinks(s, e, { dry: true });
+		assert.deepEqual(dry.applied.threads, { created: 0, changed: 0, unchanged: 1, failed: 0 }, 'the thread exists already under the old key, native entry included: nothing new');
+		const real = await runLinks(s, e);
+		assert.deepEqual(real.applied.threads, dry.applied.threads, 'the real run says the same');
+		assert.match(threadText(s, 'PSE-2'), /"id":"n1","source":"teamos"/);
+		assert.equal(existsSync(join(s.dir, 'issues', 'INS', 'INS-5.thread.md')), false);
+	} finally {
+		s.cleanup();
+	}
+});
+
+test('the check after a real run notices an issue file that does not say what the plan said about relations', async () => {
+	const s = sandbox();
+	try {
+		const real = s.store();
+		let tamper = false;
+		const store = new Proxy(real, {
+			get(target, key) {
+				if (key === 'writeIssue') return async (...args) => {
+					const result = await target.writeIssue(...args);
+					if (args[0].fields.id === 'PSE-1') tamper = true;
+					return result;
+				};
+				if (key === 'readIssue') return async (id) => {
+					const card = await target.readIssue(id);
+					return tamper && card && card.id === 'PSE-1' ? { ...card, fields: { ...card.fields, relations: { blocks: ['PSE-9999'] } } } : card;
+				};
+				const value = target[key];
+				return typeof value === 'function' ? value.bind(target) : value;
+			},
+		});
+		const e = exportWith();
+		const reference = planReference(e, { members: MEMBERS });
+		const issues = planIssues(e, reference);
+		const plan = withLinks(issues, planLinks(e, issues, reference, { report: issues.report }));
+		const r = await applyIssues(plan, store, { rawDir: s.rawDir, guard: async () => ({}) });
+		assert.ok(r.checks.relationsBroken >= 1, JSON.stringify(r.checks));
+	} finally {
+		s.cleanup();
+	}
+});

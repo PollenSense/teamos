@@ -85,6 +85,8 @@ test('a file the parser does not understand is damaged, never guessed', () => {
 		['an entry without text', '### 2025-02-01T09:00:00Z alice\n<!-- {"id":"a","source":"linear"} -->\n\n'],
 		['a text line without the prefix', '### 2025-02-01T09:00:00Z alice\n<!-- {"id":"a","source":"linear"} -->\n> ok\nbad\n'],
 		['a bad time', '### someday alice\n<!-- {"id":"a","source":"linear"} -->\n> text\n'],
+		['an author with a space at the end', '### 2025-02-01T09:00:00Z alice \n<!-- {"id":"a","source":"linear"} -->\n> text\n'],
+		['an author with a tab', '### 2025-02-01T09:00:00Z ali\tce\n<!-- {"id":"a","source":"linear"} -->\n> text\n'],
 	]) {
 		assert.throws(() => parseThread(text), code('damaged'), what);
 	}

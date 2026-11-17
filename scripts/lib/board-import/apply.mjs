@@ -180,6 +180,7 @@ export async function applyIssues(plan, store, { rawDir, guard } = {}) {
 	const { applied, failures, tally, attempt } = recorder();
 	let moved = 0;
 	const failedIds = new Set();
+	const movedFrom = new Map(); // card id -> the earlier ids whose files were (or, in a dry run, would be) retired into it
 	for (const r of plan.raw) {
 		const result = rawDir ? await writeRaw(rawDir, r.type, r.id, r.record, { dryRun }) : { changed: true };
 		tally(`raw ${r.type}`, result.changed ? 'created' : 'unchanged');
@@ -197,6 +198,7 @@ export async function applyIssues(plan, store, { rawDir, guard } = {}) {
 			}
 			if (found && found.id === alias && found.fields.linearId === issue.fields.linearId) old.push(found);
 		}
+		if (old.length > 0) movedFrom.set(id, old.map((o) => o.id));
 		const carry = plan.threads === undefined ? LATER_FIELDS : LATER_FIELDS.filter((k) => !PLANNED_BY_LINKS.includes(k));
 		let carried = {};
 		const outcome = await attempt(`issues ${issue.fields.team}`, async () => {
@@ -223,13 +225,29 @@ export async function applyIssues(plan, store, { rawDir, guard } = {}) {
 			if (failedIds.has(id)) continue; // its card was refused: no thread without one
 			const linear = planned.get(id) ?? [];
 			let merged = linear;
+			let current = null;
+			let heldByOldId = false;
 			await attempt('threads', async () => {
-				const current = await store.readThread(id); // a damaged thread file throws `damaged`: counted, never overwritten
+				current = await store.readThread(id); // a damaged thread file throws `damaged`: counted, never overwritten
+				// A dry run retires nothing, so the thread of a card that moved is still under its old id: read it there.
+				if (!current && dryRun) {
+					for (const oldId of movedFrom.get(id) ?? []) {
+						current = await store.readThread(oldId);
+						if (current) {
+							heldByOldId = true;
+							break;
+						}
+					}
+				}
 				if (!current && linear.length === 0) return SKIP;
 				const native = (current?.entries ?? []).filter((e) => e.source !== 'linear');
 				merged = [...linear, ...native].sort(byTimeThenId);
 				return current;
-			}, (expect) => store.writeThread(id, merged, { expect }));
+			}, async (expect) => {
+				if (!heldByOldId) return store.writeThread(id, merged, { expect });
+				const check = await store.writeThread(id, merged, { expect: 'new' }); // validates and says what the text would be
+				return { ...check, changed: check.hash !== current.hash };
+			});
 		}
 	}
 	const checks = { cardsChecked: 0, cardsMissing: 0, aliasesChecked: 0, aliasesBroken: 0, parentsChecked: 0, parentsBroken: 0 };
@@ -325,7 +343,7 @@ export function formatIssuesSummary(plan, { applied, failures, checks, moved = 0
 	lines.push(`parents: ${c.parents} issues have a parent`);
 	if (c.links) lines.push(...formatLinksLines(c.links, { applied, checks, dryRun }));
 	lines.push(`person data: ${c.flagged} issues had a title, description or branch name redacted or left out (originals only in the local raw folder; ${c.branchesLeftOut} branch names left out)`);
-	const dangling = Object.entries(c.dangling);
+	const dangling = Object.entries({ ...c.dangling, ...(c.links ? Object.fromEntries(Object.entries(c.links.dangling).map(([k, n]) => [k, (c.dangling[k] ?? 0) + n])) : {}) });
 	lines.push(dangling.length === 0 ? 'dangling references: none' : `dangling references: ${dangling.map(([k, n]) => `${k} ${n}`).join(', ')}`);
 	const failed = Object.entries(failures);
 	if (failed.length > 0) lines.push(`FAILED writes: ${failed.map(([k, n]) => `${k} ${n}`).join(', ')}`);

@@ -161,6 +161,14 @@ test('pull requests: the same address twice on one issue is one entry; a github 
 	assert.equal(fieldsOf(r, 'PSE-1').links.length, 3);
 });
 
+test('pull requests: an address that holds a phone-shaped text is left out, not written', () => {
+	const e = exportWith({ attachments: [att('a1', 'PSE-1', 'https://github.com/555-010-0199/tool/pull/3'), att('a2', 'PSE-1', 'https://github.com/example-org/example-repo/pull/4')] });
+	const r = run(e);
+	assert.deepEqual(fieldsOf(r, 'PSE-1').prs.map((p) => p.number), [4]);
+	assert.equal(r.links.counts.prs.flagged, 1);
+	assert.equal(JSON.stringify([...r.links.fields]).includes('555-010-0199'), false);
+});
+
 test('pull requests: a pull request on an issue nobody holds is dangling', () => {
 	const r = run(exportWith({ attachments: [att('a1', 'PSE-404', 'https://github.com/example-org/example-repo/pull/12'), att('a2', 'PSE-404', 'https://example.invalid/page')] }));
 	assert.deepEqual(r.links.counts.dangling, { 'attachments.issue': 2 });
@@ -329,6 +337,15 @@ test('comments: an outside address or phone number is redacted in the thread and
 	const rows = r.links.report.summary();
 	assert.ok(rows.some((row) => row.field === 'comments' && row.texts === 3 && row.flagged === 1), 'the person-data report counts the comment texts');
 	assert.ok(rows.some((row) => row.field === 'comment-authors' && row.texts === 1 && row.flagged === 1), 'and the outside author names');
+});
+
+test('comments: a long author name is cut on whole characters, never in the middle of one', () => {
+	const emoji = String.fromCodePoint(0x1f600);
+	const e = exportWith({ comments: [com('c1', 'PSE-1', 'x', { authorId: undefined, botName: `${'a'.repeat(79)}${emoji}${emoji}` })] });
+	const author = threadOf(run(e), 'PSE-1')[0].author;
+	assert.equal(author, `bot:${'a'.repeat(79)}${emoji}`, '80 characters of the name, the emoji whole');
+	assert.equal(author.includes(String.fromCharCode(0xfffd)), false);
+	assert.doesNotThrow(() => serializeThread([{ time: '2025-02-01T09:00:00Z', author, id: 'c1', source: 'linear', body: 'x' }]));
 });
 
 test('comments: an author name is one line, a line-break in a body does not start a new entry, an id that is not a plain name is left out', () => {

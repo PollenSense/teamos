@@ -59,7 +59,7 @@ function oneLine(text) {
 		const n = ch.codePointAt(0);
 		out += n < 0x20 || n === 0x7f || n === 0x85 || n === 0x2028 || n === 0x2029 ? ' ' : ch;
 	}
-	return out.split(' ').filter(Boolean).join(' ').slice(0, MAX_AUTHOR).trim();
+	return [...out.split(' ').filter(Boolean).join(' ')].slice(0, MAX_AUTHOR).join('').trim();
 }
 
 /** A link a person can open: http or https, no user name or password in it. Anything else is not kept (a `javascript:` link would run when shown). */

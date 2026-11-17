@@ -145,6 +145,12 @@ dangling reference. The counts equal the inventory.
   from the old file. In a thread, Linear's own entries are replaced by what the export says now (a comment deleted in Linear
   goes) and entries from any other source stay. A thread file that cannot be read as a thread is counted as failed, never
   overwritten, and the run exits 1. A card whose write was refused gets no thread.
+  A native entry and a Linear comment with the same id cannot share a thread: that thread is counted as failed (`bad-value`), left as
+  it was, and the run exits 1 (nothing is lost; native ids must not look like Linear's, which is a phase (b) rule). When every
+  Linear comment of an issue is gone, its thread file stays as an empty file (or holds the native entries). The dry run reads the
+  thread of a card that moved under its old key, so it says what the real run will do.
+  The report's `dangling references` line adds the link plan's kinds (`relations.issue`, `attachments.issue`, `comments.issue`,
+  `comments.author`, `comments.parent`, `comments.target`) to the issue plan's.
 - **Checked after a real run, against the files**: every issue a relation names is a card and the file holds the planned relations;
   every thread holds the planned comments, in order. A broken one makes the run exit 1. The run's second `--apply` changes no file.
 
