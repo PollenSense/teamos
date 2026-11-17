@@ -11,6 +11,7 @@
  *   missing         a write expected a file that is not there
  *   damaged         a file that cannot be read as what it should be (no front matter, not JSON); never overwritten
  *   locked          the write lock is held by someone else and did not free up in time
+ *   unreadable      a file the store needs is there but cannot be read or inspected (permissions, I/O error): never treated as gone
  */
 export class BoardError extends Error {
 	constructor(code, message, details) {
