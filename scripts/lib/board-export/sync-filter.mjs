@@ -28,9 +28,12 @@
  * exactly the failure this guard exists to catch.
  */
 
-import { existsSync, realpathSync } from 'node:fs';
+import { existsSync, readdirSync, realpathSync } from 'node:fs';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
-import { ExportError } from './format.mjs';
+import { ExportError, MANIFEST_FILE, TYPE_NAMES, fileNameFor } from './format.mjs';
+
+/** A folder under the uploads that belongs to one issue: `PSE-1061` (the card's ID when the files were saved). */
+const ISSUE_FOLDER = /^[A-Z][A-Z0-9]{1,9}-[1-9][0-9]{0,8}$/;
 
 /** Characters that mean something in a regular expression and nothing in a glob. */
 function escapeRegexChar(ch) {
@@ -243,28 +246,57 @@ export function probePaths(folderRel) {
 }
 
 /**
+ * The files an export writer creates in its folder: the manifest and one file per entity type, by their fixed
+ * names. The four generic probes above would pass a filter that keeps one of these synced by name
+ * (`+ /team/board/raw/users.json` ahead of `- /team/board/raw/**`; `users.json` holds e-mail addresses).
+ */
+export function exportFilePaths(folderRel) {
+	const base = normalisePath(folderRel).join('/');
+	return [MANIFEST_FILE, ...TYPE_NAMES.map(fileNameFor)].map((name) => `${base}/${name}`);
+}
+
+/**
  * Probe paths for a folder that must reach Drive (uploads): the shape a downloader really writes,
  * `<folder>/<issue key>/<name>.<ext>`, for every extension an upload can have, in lower and upper case, plus
  * one at the top, one deeper and a name with a dot. A filter that hides any one of them hides some uploads.
+ *
+ * The shape is tried for `PSE-1` and for each name in `issueFolders` (the issue folders that exist now: a
+ * filter line for one card, `- /team/board/files/PSE-2/**`, hides that card's uploads and no other probe).
+ * A card whose folder does not exist yet cannot be probed; the check runs again at the next import.
  */
 export const UPLOAD_EXTENSIONS = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'heic', 'svg', 'mp4', 'mov', 'webm', 'pdf', 'txt', 'zip', 'PNG', 'JPG', 'MOV', ''];
 
-export function uploadProbePaths(folderRel) {
+export function uploadProbePaths(folderRel, issueFolders = []) {
 	const base = folderRel === '' ? '' : normalisePath(folderRel).join('/');
 	const prefix = base === '' ? '' : `${base}/`;
-	const paths = [`${prefix}probe.json`, `${prefix}.probe`, `${prefix}PSE-1/.probe`, `${prefix}PSE-1/a/b/shot.png`];
-	for (const ext of UPLOAD_EXTENSIONS) paths.push(`${prefix}PSE-1/shot${ext === '' ? '' : `.${ext}`}`);
+	const paths = [`${prefix}probe.json`, `${prefix}.probe`];
+	for (const folder of new Set(['PSE-1', ...issueFolders])) {
+		paths.push(`${prefix}${folder}/.probe`, `${prefix}${folder}/a/b/shot.png`);
+		for (const ext of UPLOAD_EXTENSIONS) paths.push(`${prefix}${folder}/shot${ext === '' ? '' : `.${ext}`}`);
+	}
 	return paths;
 }
 
-/** Where a folder is, relative to the synced workspace: `{ rel, outside }` (`rel` is '' for the workspace itself). */
+/** The issue folders (`PSE-1061`) that exist directly under `abs`, sorted; none when it does not exist yet. */
+function existingIssueFolders(abs) {
+	let entries;
+	try {
+		entries = readdirSync(abs, { withFileTypes: true });
+	} catch (err) {
+		if (err.code === 'ENOENT' || err.code === 'ENOTDIR') return [];
+		throw new ExportError('bad-path', `the upload folder cannot be listed (${err.code ?? 'error'})`);
+	}
+	return entries.filter((e) => e.isDirectory() && ISSUE_FOLDER.test(e.name)).map((e) => e.name).sort();
+}
+
+/** Where a folder is, relative to the synced workspace: `{ rel, outside, abs }` (`rel` is '' for the workspace itself; `abs` the real path). */
 function locate(folder, workspaceRoot) {
 	if (typeof workspaceRoot !== 'string' || workspaceRoot === '') throw new ExportError('bad-path', 'the workspace root is not given');
 	const root = realPathLoose(workspaceRoot);
 	const abs = realPathLoose(isAbsolute(folder) ? folder : join(root, folder));
 	const rel = relative(root, abs);
 	const outside = rel === '' ? false : rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel);
-	return { rel, outside };
+	return { rel, outside, abs };
 }
 
 /**
@@ -279,11 +311,12 @@ export function assertLocalOnly(folder, { workspaceRoot, filterText }) {
 	if (outside) return { where: 'outside', rel: null };
 	if (rel === '') throw new ExportError('export-synced', 'the folder is the synced workspace itself');
 	const rules = parseFilter(filterText);
-	const unmatched = probePaths(rel).filter((p) => isSynced(rules, p));
+	const probes = [...probePaths(rel), ...exportFilePaths(rel)];
+	const unmatched = probes.filter((p) => isSynced(rules, p));
 	if (unmatched.length > 0) {
 		throw new ExportError(
 			'export-synced',
-			`the folder "${rel.split(sep).join('/')}" is inside the synced workspace and the sync filter does not keep it local (${unmatched.length} of 4 probe paths would sync); add "- /${rel.split(sep).join('/')}/**" to the filter and run the next bisync with --resync before writing here`,
+			`the folder "${rel.split(sep).join('/')}" is inside the synced workspace and the sync filter does not keep it local (${unmatched.length} of ${probes.length} probe paths would sync); add "- /${rel.split(sep).join('/')}/**" to the filter and run the next bisync with --resync before writing here`,
 		);
 	}
 	return { where: 'filtered', rel: rel.split(sep).join('/') };
@@ -293,18 +326,20 @@ export function assertLocalOnly(folder, { workspaceRoot, filterText }) {
  * The guard for uploads, the opposite question: does EVERY path an upload can take reach Drive? Throws
  * ExportError('export-hidden') when the folder is outside the synced workspace (nothing there syncs) or the
  * filter hides any probe path: a filter that names one extension or one depth hides some uploads and not
- * others, and one visible probe path must not make the folder look fine.
+ * others, and one visible probe path must not make the folder look fine. The probes cover `PSE-1` and every
+ * issue folder that exists now (see `uploadProbePaths`), not a card that has no folder yet.
  * Returns `{ where: 'synced', rel }`.
  */
 export function assertSynced(folder, { workspaceRoot, filterText }) {
-	const { rel, outside } = locate(folder, workspaceRoot);
+	const { rel, outside, abs } = locate(folder, workspaceRoot);
 	if (outside) throw new ExportError('export-hidden', 'the folder is outside the synced workspace, so nothing in it reaches Drive');
 	const rules = parseFilter(filterText);
-	const hidden = uploadProbePaths(rel).filter((p) => !isSynced(rules, p));
+	const probes = uploadProbePaths(rel, existingIssueFolders(abs));
+	const hidden = probes.filter((p) => !isSynced(rules, p));
 	const shown = rel.split(sep).join('/');
 	if (hidden.length > 0) {
 		const rule = matchingRule(rules, hidden[0]);
-		throw new ExportError('export-hidden', `the sync filter hides ${hidden.length} of ${uploadProbePaths(rel).length} probe paths of "${shown}"${rule ? ` (first: filter line ${rule.line})` : ''}; uploads must reach Drive, so change or remove that filter line`);
+		throw new ExportError('export-hidden', `the sync filter hides ${hidden.length} of ${probes.length} probe paths of "${shown}"${rule ? ` (first: filter line ${rule.line})` : ''}; uploads must reach Drive, so change or remove that filter line`);
 	}
 	return { where: 'synced', rel: shown };
 }
