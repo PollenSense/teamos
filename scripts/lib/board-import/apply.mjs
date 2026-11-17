@@ -13,7 +13,7 @@ import { ImportError } from './reference.mjs';
  */
 
 const RAW_NAME = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
-const RAW_TYPES = ['projects', 'documents', 'names', 'issues'];
+const RAW_TYPES = ['projects', 'documents', 'names', 'issues', 'links', 'comments'];
 
 function rawPath(rawDir, type, id) {
 	if (!RAW_TYPES.includes(type)) throw new ImportError('bad-raw', 'a raw record has a type the importer does not know');
@@ -56,6 +56,8 @@ export async function writeRaw(rawDir, type, id, record, { dryRun = false } = {}
  * outcome; a write the store refuses (`changed` since read, `damaged`, `alias-conflict`) is counted and the run goes on,
  * anything else throws.
  */
+export const SKIP = Symbol('skip');
+
 export function recorder() {
 	const applied = {};
 	const failures = {};
@@ -63,16 +65,21 @@ export function recorder() {
 		applied[kind] ??= { created: 0, changed: 0, unchanged: 0, failed: 0 };
 		applied[kind][state]++;
 	};
+	/** Returns what the file did (`created`, `changed`, `unchanged`, `failed`), or `undefined` when `read` answered `SKIP` (nothing to write, nothing counted). */
 	const attempt = async (kind, read, write) => {
 		try {
 			const current = await read();
+			if (current === SKIP) return undefined;
 			const result = await write(current ? current.hash : 'new');
-			tally(kind, !current ? 'created' : result.changed ? 'changed' : 'unchanged');
+			const state = !current ? 'created' : result.changed ? 'changed' : 'unchanged';
+			tally(kind, state);
+			return state;
 		} catch (err) {
 			// A held lock is not a refusal of one write: every later write would wait for it too (10 s each). Stop.
 			if (!(err instanceof BoardError) || err.code === 'locked') throw err;
 			tally(kind, 'failed');
 			failures[err.code] = (failures[err.code] ?? 0) + 1;
+			return 'failed';
 		}
 	};
 	return { applied, failures, tally, attempt };
@@ -141,8 +148,15 @@ export function formatSummary(plan, { applied, failures }, { dryRun }) {
 	return lines.join('\n');
 }
 
-/** The fields of an issue file that a later ticket (relations, pull requests, links) owns: a rewrite of the text must not clear them. */
+/**
+ * The fields of an issue file that a later ticket owns: a rewrite of the text must not clear them. A plan that carries
+ * `threads` is a plan made with `planLinks`: it says what `relations`, `prs` and `links` are (a relation Linear removed
+ * has to go), so only `deleted` is carried over then.
+ */
 const LATER_FIELDS = ['relations', 'prs', 'links', 'deleted'];
+const PLANNED_BY_LINKS = ['relations', 'prs', 'links'];
+
+const byTimeThenId = (a, b) => (Date.parse(a.time) - Date.parse(b.time)) || (a.time < b.time ? -1 : a.time > b.time ? 1 : 0) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
 
 /**
  * Writes an issue plan (`planIssues`) through the store. Raw copies of flagged texts first, then the issues oldest
@@ -165,6 +179,7 @@ export async function applyIssues(plan, store, { rawDir, guard } = {}) {
 	}
 	const { applied, failures, tally, attempt } = recorder();
 	let moved = 0;
+	const failedIds = new Set();
 	for (const r of plan.raw) {
 		const result = rawDir ? await writeRaw(rawDir, r.type, r.id, r.record, { dryRun }) : { changed: true };
 		tally(`raw ${r.type}`, result.changed ? 'created' : 'unchanged');
@@ -182,22 +197,43 @@ export async function applyIssues(plan, store, { rawDir, guard } = {}) {
 			}
 			if (found && found.id === alias && found.fields.linearId === issue.fields.linearId) old.push(found);
 		}
+		const carry = plan.threads === undefined ? LATER_FIELDS : LATER_FIELDS.filter((k) => !PLANNED_BY_LINKS.includes(k));
 		let carried = {};
-		await attempt(`issues ${issue.fields.team}`, async () => {
+		const outcome = await attempt(`issues ${issue.fields.team}`, async () => {
 			// `readIssue` also answers for an alias; a card that is somebody else's alias is not this issue's file (the store
 			// refuses that write as `alias-conflict` either way; this keeps the other card's hash out of the write).
 			const current = await store.readIssue(id);
 			const own = current && current.id === id ? current : null;
 			carried = {};
-			for (const source of [...old, ...(own ? [own] : [])]) for (const k of LATER_FIELDS) if (source.fields[k] !== undefined) carried[k] = source.fields[k];
+			for (const source of [...old, ...(own ? [own] : [])]) for (const k of carry) if (source.fields[k] !== undefined) carried[k] = source.fields[k];
 			return own;
 		}, async (expect) => {
 			const result = await store.writeIssue({ fields: { ...issue.fields, ...carried }, body: issue.body }, { expect, retire: old.map((o) => o.id) });
 			moved += result.retired?.length ?? 0;
 			return result;
 		});
+		if (outcome === 'failed') failedIds.add(id);
+	}
+	// Comments: the thread file of each issue, after its card. Entries from another source (a native comment, phase (b))
+	// stay; Linear's own entries are replaced by what the export says now, so a comment deleted in Linear goes too.
+	if (plan.threads !== undefined) {
+		const planned = new Map(plan.threads.map((t) => [t.id, t.entries]));
+		for (const issue of plan.issues) {
+			const id = issue.fields.id;
+			if (failedIds.has(id)) continue; // its card was refused: no thread without one
+			const linear = planned.get(id) ?? [];
+			let merged = linear;
+			await attempt('threads', async () => {
+				const current = await store.readThread(id); // a damaged thread file throws `damaged`: counted, never overwritten
+				if (!current && linear.length === 0) return SKIP;
+				const native = (current?.entries ?? []).filter((e) => e.source !== 'linear');
+				merged = [...linear, ...native].sort(byTimeThenId);
+				return current;
+			}, (expect) => store.writeThread(id, merged, { expect }));
+		}
 	}
 	const checks = { cardsChecked: 0, cardsMissing: 0, aliasesChecked: 0, aliasesBroken: 0, parentsChecked: 0, parentsBroken: 0 };
+	if (plan.threads !== undefined) Object.assign(checks, { relationsChecked: 0, relationsBroken: 0, threadsChecked: 0, threadsBroken: 0 });
 	if (!dryRun) {
 		// A file the store cannot read (damaged: already counted as a failed write) does not open, so its promise is broken too.
 		const open = async (key) => {
@@ -222,9 +258,51 @@ export async function applyIssues(plan, store, { rawDir, guard } = {}) {
 				const parent = await open(issue.fields.parent);
 				if (!card || card.fields.parent !== issue.fields.parent || !parent) checks.parentsBroken++;
 			}
+			// Every issue a relation names is a card (and the file says what the plan said).
+			const rel = issue.fields.relations;
+			if (rel) {
+				for (const key of [...(rel.blocks ?? []), ...(rel.blockedBy ?? []), ...(rel.related ?? []), ...(rel.duplicateOf ? [rel.duplicateOf] : [])]) {
+					checks.relationsChecked++;
+					const target = await open(key);
+					if (!target || target.id !== key || !card || JSON.stringify(card.fields.relations) !== JSON.stringify(rel)) checks.relationsBroken++;
+				}
+			}
+		}
+		// Every planned comment is in the thread file of its card, in order.
+		for (const t of plan.threads ?? []) {
+			checks.threadsChecked++;
+			let ok = false;
+			try {
+				const file = await store.readThread(t.id);
+				const ours = (file?.entries ?? []).filter((e) => e.source === 'linear').map((e) => e.id);
+				ok = ours.length === t.entries.length && ours.every((id, i) => id === t.entries[i].id);
+			} catch (err) {
+				if (!(err instanceof BoardError) || err.code === 'locked') throw err;
+			}
+			if (!ok) checks.threadsBroken++;
 		}
 	}
 	return { applied, failures, checks, moved };
+}
+
+/** The relation, pull request, link and comment lines of an issue run report (counts only). */
+function formatLinksLines(l, { applied, checks, dryRun }) {
+	const lines = [];
+	const w = l.relations.written;
+	lines.push(`relations: read ${l.relations.read}; kept blocks ${w.blocks}, duplicate ${w.duplicate}, related ${w.related}${l.relations.duplicateExtra ? `; ${l.relations.duplicateExtra} second "duplicate of" kept as related` : ''}${l.relations.selfRelations || l.relations.repeated || l.relations.unknownType ? `; left out: ${l.relations.selfRelations} on one issue, ${l.relations.repeated} repeated, ${l.relations.unknownType} of an unknown type` : ''}`);
+	const s = l.prs.byState;
+	lines.push(`pull requests: read ${l.prs.read}, kept ${l.prs.written} (merged ${s.merged}, closed ${s.closed}, open ${s.open})${l.prs.repeated ? `; ${l.prs.repeated} repeated on one issue` : ''}${l.prs.flagged ? `; ${l.prs.flagged} left out (the address held an e-mail or phone-shaped text)` : ''}`);
+	const sources = Object.entries(l.links.bySource).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)).map(([k, n]) => `${k} ${n}`).join(', ');
+	lines.push(`links: read ${l.links.read}, kept ${l.links.written}${sources ? ` (${sources})` : ''}${l.links.refused ? `; ${l.links.refused} refused (not an http or https address, or one with a password)` : ''}${l.links.repeated ? `; ${l.links.repeated} repeated on one issue` : ''}; ${l.links.flagged} had a title or address redacted`);
+	const c = l.comments;
+	const a = c.byAuthor;
+	lines.push(`comments: read ${c.read}; ${c.onIssues} on issues, ${c.written} written to threads (by people ${a.person}, bots ${a.bot}, outside users ${a.external}, unknown ${a.unknown}); ${c.replies} replies name the comment they answer; ${c.flagged} had text redacted (originals only in the local raw folder)${c.refused ? `; ${c.refused} left out (an id that is not a plain name)` : ''}`);
+	const later = c.leftForLater;
+	lines.push(`comments left for later (not on issues): ${later.projects} on projects, ${later.documents} on documents, ${later.projectUpdates} on project updates`);
+	const t = applied.threads;
+	if (t) lines.push(`thread files: ${t.created} ${dryRun ? 'new' : 'created'}, ${t.changed} changed, ${t.unchanged} same, ${t.failed} failed`);
+	if (checks && checks.threadsChecked > 0) lines.push(`checked on the files: ${checks.relationsChecked - checks.relationsBroken} of ${checks.relationsChecked} relation targets are cards, ${checks.threadsChecked - checks.threadsBroken} of ${checks.threadsChecked} threads hold the planned comments`);
+	return lines;
 }
 
 /** The counts-only report of an issue run: per team read and what each file did, aliases, parents, dangling, flagged. Never a title, text or name. */
@@ -245,6 +323,7 @@ export function formatIssuesSummary(plan, { applied, failures, checks, moved = 0
 		lines.push(`checked on the files: ${checks.cardsChecked - checks.cardsMissing} of ${checks.cardsChecked} cards present, ${checks.aliasesChecked - checks.aliasesBroken} of ${checks.aliasesChecked} aliases open their card, ${checks.parentsChecked - checks.parentsBroken} of ${checks.parentsChecked} children name their parent and the parent is a card`);
 	}
 	lines.push(`parents: ${c.parents} issues have a parent`);
+	if (c.links) lines.push(...formatLinksLines(c.links, { applied, checks, dryRun }));
 	lines.push(`person data: ${c.flagged} issues had a title, description or branch name redacted or left out (originals only in the local raw folder; ${c.branchesLeftOut} branch names left out)`);
 	const dangling = Object.entries(c.dangling);
 	lines.push(dangling.length === 0 ? 'dangling references: none' : `dangling references: ${dangling.map(([k, n]) => `${k} ${n}`).join(', ')}`);

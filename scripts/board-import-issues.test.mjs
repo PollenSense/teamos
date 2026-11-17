@@ -197,3 +197,50 @@ test('--people-map, --members and --filter are honoured; a board that is switche
 		s.cleanup();
 	}
 });
+
+test('relations, pull requests, links and comments: the dry run counts them, --apply writes them, a second --apply changes nothing', async () => {
+	const s = sandbox();
+	try {
+		await exported(s);
+		const dry = issues(s);
+		assert.equal(dry.code, 0, dry.err);
+		assert.match(dry.out, /relations: read 1; kept blocks 1, duplicate 0, related 0/);
+		assert.match(dry.out, /pull requests: read 0, kept 0/, 'the fixture\'s github link is not a pull request address');
+		assert.match(dry.out, /links: read 1, kept 1 \(github 1\)/);
+		assert.match(dry.out, /comments: read 5; 3 on issues, 3 written to threads \(by people 2, bots 1, outside users 0, unknown 0\); 1 replies/);
+		assert.match(dry.out, /comments left for later \(not on issues\): 1 on projects, 0 on documents, 1 on project updates/);
+		assert.match(dry.out, /thread files: 1 new, 0 changed, 0 same, 0 failed/);
+		for (const text of ['Invented comment', 'Invented bot comment', 'Test Bot', 'example.invalid']) assert.equal(dry.out.includes(text), false, `"${text}" is not printed`);
+		assert.equal(existsSync(s.board), false);
+		assert.equal(reference(s, '--apply').code, 0);
+		const first = issues(s, '--apply');
+		assert.equal(first.code, 0, first.out + first.err);
+		assert.match(first.out, /checked on the files: 2 of 2 relation targets are cards, 1 of 1 threads hold the planned comments/);
+		const thread = readFileSync(join(s.board, 'issues', 'PSE', 'PSE-1.thread.md'), 'utf8');
+		assert.match(thread, /Invented comment\./);
+		assert.match(thread, /replyTo":"cm-1"/);
+		assert.match(readFileSync(join(s.board, 'issues', 'PSE', 'PSE-1.md'), 'utf8'), /\nrelations: \{"blocks":\["PSE-2"\]\}\n/);
+		const second = issues(s, '--apply');
+		assert.equal(second.code, 0, second.err);
+		assert.match(second.out, /thread files: 0 created, 0 changed, 1 same, 0 failed/);
+	} finally {
+		s.cleanup();
+	}
+});
+
+test('a thread file that is not a thread makes the run exit 1 and is left as it was', async () => {
+	const s = sandbox();
+	try {
+		await exported(s);
+		assert.equal(reference(s, '--apply').code, 0);
+		assert.equal(issues(s, '--apply').code, 0);
+		const path = join(s.board, 'issues', 'PSE', 'PSE-1.thread.md');
+		writeFileSync(path, '<<<<<<< conflict\n');
+		const r = issues(s, '--apply');
+		assert.equal(r.code, 1, r.out + r.err);
+		assert.match(r.out, /FAILED writes: damaged 1/);
+		assert.equal(readFileSync(path, 'utf8'), '<<<<<<< conflict\n');
+	} finally {
+		s.cleanup();
+	}
+});

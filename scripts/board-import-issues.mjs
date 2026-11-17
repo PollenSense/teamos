@@ -1,7 +1,9 @@
 #!/usr/bin/env node
 /**
- * Import the issues of an export folder into the team work board (ticket A5): state, project, milestone, cycle, parent,
- * labels, estimate, branch, dates, and every earlier key as an alias. Relations, pull requests and comments are A6.
+ * Import the issues of an export folder into the team work board (tickets A5 and A6): state, project, milestone, cycle,
+ * parent, labels, estimate, branch, dates, every earlier key as an alias, then what ties an issue to other things:
+ * relations (blocks, blocked by, related, duplicate of), pull requests, other links, and the comments of each issue (one
+ * thread file per issue). Comments on projects, documents and project updates are counted and left for later.
  *
  *   node scripts/board-import-issues.mjs --workspace <repo root> --export <export folder> [--apply]
  *        [--members <members.json>] [--people-map <file>] [--filter <filter file>]
@@ -19,10 +21,10 @@ import { readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { BoardError, BoardStore, boardConfig } from './lib/board/index.mjs';
 import { ExportError, assertLocalOnly, readExport } from './lib/board-export/index.mjs';
-import { ImportError, applyIssues, formatIssuesSummary, loadExisting, planIssues, planReference } from './lib/board-import/index.mjs';
+import { ImportError, applyIssues, formatIssuesSummary, loadExisting, planIssues, planLinks, planReference, withLinks } from './lib/board-import/index.mjs';
 import { loadConfig } from './lib/config.mjs';
 
-const TYPES = ['users', 'teams', 'states', 'labels', 'cycles', 'projects', 'milestones', 'projectUpdates', 'documents', 'issues'];
+const TYPES = ['users', 'teams', 'states', 'labels', 'cycles', 'projects', 'milestones', 'projectUpdates', 'documents', 'issues', 'relations', 'attachments', 'comments'];
 
 function usage(message) {
 	if (message) process.stderr.write(`${message}\n`);
@@ -76,7 +78,8 @@ try {
 	}
 	const existing = await loadExisting(store);
 	const reference = planReference(entities, { members, overrides, existing });
-	const plan = planIssues(entities, reference);
+	const issuesPlan = planIssues(entities, reference);
+	const plan = withLinks(issuesPlan, planLinks(entities, issuesPlan, reference, { report: issuesPlan.report }));
 	const rawDir = join(board.dir, 'raw');
 	let filterText = '';
 	if (apply) {
@@ -88,7 +91,8 @@ try {
 	}
 	const result = await applyIssues(plan, store, { rawDir, guard: () => assertLocalOnly(rawDir, { workspaceRoot: workspace, filterText }) });
 	process.stdout.write(`${formatIssuesSummary(plan, result, { dryRun: !apply })}\n`);
-	const broken = result.checks.aliasesBroken + result.checks.parentsBroken;
+	const c = result.checks;
+	const broken = c.aliasesBroken + c.parentsBroken + (c.relationsBroken ?? 0) + (c.threadsBroken ?? 0);
 	process.exit(Object.keys(result.failures).length > 0 || broken > 0 ? 1 : 0);
 } catch (err) {
 	if (err instanceof ExportError || err instanceof ImportError || err instanceof BoardError) {

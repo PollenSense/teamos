@@ -10,7 +10,7 @@ Nothing here talks to Linear or knows what an importer is; later tickets build o
 team/board/
   teams/PSE.json            key, name, states, nextNumber, ...
   issues/PSE/PSE-1061.md    one issue: front matter + description
-  issues/PSE/PSE-1061.thread.md   (comments; later ticket)
+  issues/PSE/PSE-1061.thread.md   the comments of the issue (`thread.mjs`; `readThread` / `writeThread`)
   projects/<code>.md        one board project: front matter + description
   cycles/PSE/37.json        one cycle
   people.json               one object; its shape belongs to the importer
@@ -91,3 +91,16 @@ it again before every write; a flagged issue keeps its description and comments 
 ## Tests
 
 `node --test scripts/lib/board/*.test.mjs`
+
+## Thread files (`thread.mjs`)
+
+One entry per comment: a header line `### <ISO time> <author>`, one line `<!-- {"id":"...","source":"linear","replyTo":"..."} -->`,
+then the text with every line prefixed `> ` (an empty line is a lone `>`). Because every text line starts with `>`, a comment
+can never contain a header, a meta line or an entry break; entries are separated by a blank line. `source` says where an
+entry came from (`linear` for imported ones; a native comment of a later phase has its own source and is kept when the
+importer runs again). `serializeThread` refuses a value that could break the structure (an author with a line end, an id or
+source that is not a plain name, a time that is not ISO) and turns every kind of line end in a text (CR LF, CR, U+0085,
+U+2028, U+2029) into one line end. `parseThread` is strict: a line that belongs to no entry is a `damaged` error, and
+`writeThread` never overwrites a damaged thread, whatever hash the caller read. Same write rules as every other file
+(`expect: 'new'` or the hash read, an identical text is not a write, nothing in a dry run); in a real run the issue must
+have its file. Unknown keys of the meta object are kept on a rewrite.
