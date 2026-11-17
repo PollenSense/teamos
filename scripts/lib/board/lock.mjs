@@ -29,13 +29,20 @@ function alive(pid) {
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-/** `{ text, info }` (info null when the content is not JSON), or null when the file cannot be read (gone). */
-async function readHolder(path) {
+const lockedError = (name, info) => new BoardError('locked', `the board is locked by another writer (${name})`, { holder: info ? { pid: info.pid, host: info.host, at: info.at } : null });
+
+/**
+ * `{ text, info }` (info null when the content is not JSON), or null when the file is gone (ENOENT). Any other
+ * read error (permissions, I/O, the path is a folder) is an `unreadable` error: a lock we cannot read is not a
+ * lock that was released, and treating it as one would spin without ever reaching the deadline.
+ */
+async function readHolder(path, name) {
 	let text;
 	try {
 		text = await readFile(path, 'utf-8');
-	} catch {
-		return null;
+	} catch (err) {
+		if (err.code === 'ENOENT') return null;
+		throw new BoardError('unreadable', `the lock file of ${name} cannot be read (${err.code ?? 'error'})`, { code: err.code });
 	}
 	try {
 		return { text, info: JSON.parse(text) };
@@ -64,8 +71,12 @@ export async function withLock(dir, name, fn, { staleMs = 60_000, waitMs = 10_00
 		} catch (err) {
 			if (err.code !== 'EEXIST') throw err;
 		}
-		const holder = await readHolder(path);
-		if (!holder) continue; // it was released between our attempt and our look: try again at once
+		const holder = await readHolder(path, name);
+		if (!holder) {
+			// It was released between our attempt and our look: try again at once, but never past the deadline.
+			if (Date.now() >= deadline) throw lockedError(name, null);
+			continue;
+		}
 		const info = holder.info;
 		let stale;
 		if (info && typeof info.at === 'number') {
@@ -74,12 +85,17 @@ export async function withLock(dir, name, fn, { staleMs = 60_000, waitMs = 10_00
 			// No usable content (empty or half-written, e.g. the disk filled while it was being made): judge by the file's age.
 			try {
 				stale = Date.now() - (await stat(path)).mtimeMs > staleMs;
-			} catch {
-				continue; // gone
+			} catch (err) {
+				if (err.code === 'ENOENT') {
+					// Gone between the read and the stat: try again at once, but never past the deadline.
+					if (Date.now() >= deadline) throw lockedError(name, null);
+					continue;
+				}
+				throw new BoardError('unreadable', `the lock file of ${name} cannot be inspected (${err.code ?? 'error'})`, { code: err.code });
 			}
 		}
 		if (stale) {
-			const again = await readHolder(path);
+			const again = await readHolder(path, name);
 			if (again?.text === holder.text) {
 				try {
 					await unlink(path);
@@ -90,13 +106,15 @@ export async function withLock(dir, name, fn, { staleMs = 60_000, waitMs = 10_00
 				}
 			}
 		}
-		if (Date.now() >= deadline) throw new BoardError('locked', `the board is locked by another writer (${name})`, { holder: info ? { pid: info.pid, host: info.host, at: info.at } : null });
+		if (Date.now() >= deadline) throw lockedError(name, info);
 		await sleep(pollMs);
 	}
 	try {
 		return await fn();
 	} finally {
-		const now = await readHolder(path);
-		if (!now || now.text === mine) await unlink(path).catch(() => {});
+		// Release only a lock we can read and recognise as ours. One we cannot read is left alone (it goes stale on
+		// its own) and the error is not raised: it must not replace what `fn` returned or threw.
+		const now = await readHolder(path, name).catch(() => undefined);
+		if (now === null || now?.text === mine) await unlink(path).catch(() => {});
 	}
 }
