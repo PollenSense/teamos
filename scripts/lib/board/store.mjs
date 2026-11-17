@@ -38,7 +38,7 @@ export const SINGLE_FILES = ['people', 'labels', 'project-map'];
  * left alone and `{ changed: false }` comes back, which is what makes a second import run write nothing.
  * Files are written to a temp file in the same folder and renamed into place, so a reader never sees a half-written one.
  *
- * `lockDir` is `team/.logs/board/` (local). `hooks.beforeRename` is for tests only.
+ * `lockDir` is `team/.logs/board/` (local). `hooks.beforeRename` and `hooks.afterRename` are for tests only.
  */
 export class BoardStore {
 	constructor({ dir, lockDir, cachePath, lockOptions, hooks, dryRun } = {}) {
@@ -92,6 +92,11 @@ export class BoardStore {
 		}
 	}
 
+	/**
+	 * Write `text` to `path` through a temp file. Returns `{ m, s }`, the mtime and size of the temp file taken just
+	 * before the rename; the rename keeps both, so they describe the file we put in place even when a sync replaces
+	 * it a moment later (the index stores them with the fields we wrote).
+	 */
 	async _writeAtomic(path, text) {
 		await mkdir(dirname(path), { recursive: true });
 		const tmp = join(dirname(path), `.${process.pid}-${Math.random().toString(36).slice(2, 10)}.tmp`);
@@ -102,8 +107,11 @@ export class BoardStore {
 			} finally {
 				await handle.close();
 			}
+			const st = await stat(tmp);
 			if (this.hooks.beforeRename) await this.hooks.beforeRename(path);
 			await rename(tmp, path);
+			if (this.hooks.afterRename) await this.hooks.afterRename(path);
+			return { m: st.mtimeMs, s: st.size };
 		} catch (err) {
 			await unlink(tmp).catch(() => {});
 			throw err;
@@ -121,13 +129,19 @@ export class BoardStore {
 		}
 	}
 
-	/** The write step shared by every file type: check, skip when identical, write. */
-	async _put(path, text, expect, what) {
+	/**
+	 * The write step shared by every file type: check, skip when identical, write. `afterWrite(written)` is awaited
+	 * after a real write with the `{ m, s }` of `_writeAtomic`; it is not called when nothing was written.
+	 */
+	async _put(path, text, expect, what, afterWrite) {
 		const current = await this._read(path);
 		this._check(current, expect, what);
 		const hash = contentHash(text);
 		if (current && current.hash === hash) return { changed: false, hash };
-		if (!this.dryRun) await this._writeAtomic(path, text);
+		if (!this.dryRun) {
+			const written = await this._writeAtomic(path, text);
+			if (afterWrite) await afterWrite(written);
+		}
 		return { changed: true, hash };
 	}
 
@@ -212,8 +226,8 @@ export class BoardStore {
 			this._check(current && { hash: current.hash }, expect, `issue ${id}`);
 			const merged = mergeFields(current?.fields, { ...fields, ...(aliases ? { aliases } : {}), team }, ISSUE_FIELDS);
 			const text = serializeDocument(merged, body ?? current?.body ?? '');
-			const result = await this._put(path, text, expect, `issue ${id}`);
-			if (result.changed && !this.dryRun) await this.index.noteWritten(`${team}/${id}.md`, parseDocument(text).fields); // what the file says, not the caller's objects
+			// The index gets what the file says, not the caller's objects, with the stat of the file we wrote (a dry run writes nothing, so the index hears nothing).
+			const result = await this._put(path, text, expect, `issue ${id}`, (written) => this.index.noteWritten(`${team}/${id}.md`, parseDocument(text).fields, written));
 			return { id, ...result };
 		}, this.lockOptions);
 	}
