@@ -859,17 +859,38 @@ export class FileMessagingAdapter {
 		this._unpin(member, id);
 	}
 
-	/** `{ replyTo, sentAt }` of a message, read once; null when the message is not in the store. */
+	/** `{ replyTo, sentAt, supersedes }` of a message, read once; null when the message is not in the store. */
 	async _replyMetaOf(id) {
 		let meta = this._replyMeta.get(id);
 		if (!meta) {
 			const msg = await this._readRawMessage(id).catch(() => null);
 			if (!msg) return null;
-			meta = { replyTo: msg.replyTo, sentAt: msg.sentAt || '' };
+			meta = { replyTo: msg.replyTo, sentAt: msg.sentAt || '', supersedes: msg.supersedes ?? [] };
 			// A half-written file reads as a message with no time: answer for now, but do not remember it.
 			if (meta.sentAt) this._replyMeta.set(id, meta);
 		}
 		return meta;
+	}
+
+	/**
+	 * The message `id` replies to: its own `replyTo`, else the first one found by walking back through what it
+	 * supersedes (a replacement carries no `replyTo` of its own, and may replace a replacement). `seen` guards a
+	 * hand-edited loop of replacements. Undefined when the chain holds no parent.
+	 */
+	async _effectiveParent(id) {
+		const seen = new Set();
+		const todo = [id];
+		while (todo.length > 0) {
+			const cur = todo.pop();
+			if (seen.has(cur)) continue;
+			seen.add(cur);
+			const meta = await this._replyMetaOf(cur);
+			if (!meta) continue;
+			if (meta.replyTo) return meta.replyTo;
+			// Reversed, so the first predecessor is looked at first.
+			for (const pid of [...meta.supersedes].reverse()) todo.push(pid);
+		}
+		return undefined;
 	}
 
 	/**
@@ -884,9 +905,12 @@ export class FileMessagingAdapter {
 		const sent = [];
 		for (const id of await this._readMailbox(member, 'sent')) {
 			const meta = await this._replyMetaOf(id);
-			if (meta?.replyTo && meta.sentAt > oldest) sent.push({ id, replyTo: meta.replyTo, sentAt: meta.sentAt });
+			if (!meta || meta.sentAt <= oldest) continue;
+			// A replacement of a reply counts as that reply, with its own (later) time.
+			const replyTo = await this._effectiveParent(id);
+			if (replyTo) sent.push({ id, replyTo, sentAt: meta.sentAt });
 		}
-		const replied = await repliedIds(sent, async (id) => (await this._replyMetaOf(id))?.replyTo);
+		const replied = await repliedIds(sent, (id) => this._effectiveParent(id));
 		// An answer is also handled by a later message of the member's to the same parent ("thanks both" sent to
 		// their own message, which several people replied to), not only by a reply below the answer itself.
 		for (const c of candidates) {
@@ -900,8 +924,9 @@ export class FileMessagingAdapter {
 	 * The `inbox` messages that answer the member, as `Map(id -> id of the member's own message it replies to)`:
 	 * someone else's reply, addressed To the member (a Cc is not asked, as for `reply`; a tag asks), not marked
 	 * `fyi`, sent after `answersSince`, whose direct parent is in the member's sent mailbox. A message that
-	 * supersedes a reply and carries no `replyTo` of its own takes its predecessor's. Reads a message's headers
-	 * only when it is such a reply, and each at most once per process.
+	 * supersedes a reply and carries no `replyTo` of its own takes its predecessor's, however many times it was
+	 * replaced (`_effectiveParent`). Reads a message's headers only when it is such a reply, and each at most
+	 * once per process.
 	 */
 	async _answersTo(member, inbox) {
 		const answers = new Map();
@@ -911,11 +936,7 @@ export class FileMessagingAdapter {
 		if (candidates.length === 0) return answers;
 		const sent = new Set(await this._readMailbox(member, 'sent'));
 		for (const m of candidates) {
-			let parent = (await this._replyMetaOf(m.id))?.replyTo;
-			for (const pid of m.supersedes ?? []) {
-				if (parent) break;
-				parent = (await this._replyMetaOf(pid))?.replyTo;
-			}
+			const parent = await this._effectiveParent(m.id);
 			if (parent && sent.has(parent)) answers.set(m.id, parent);
 		}
 		return answers;
