@@ -111,6 +111,11 @@ function makeTriggersAdapter(name) {
 	}
 }
 
+// stdout carries the protocol and nothing else: a line that is not a JSON-RPC message breaks the client's
+// reader. `loadConfig` prints "[runner] Loaded config ..." with console.log, and a tool module may call
+// console.log too, so log, info and debug go to stderr (the runner shares `config.mjs`, so it is not changed there).
+for (const name of ['log', 'info', 'debug']) console[name] = (...args) => console.error(...args);
+
 // The probe registry is host-owned and lives in teamos.config.json — an agent
 // can subscribe to a probe but can never define one.
 const config = await loadConfig(repoRoot);
@@ -655,6 +660,19 @@ function withMember(tool) {
 
 // Extra tools from the host's `mcp.modules` list (see ./mcp-modules.mjs). A module that fails to load, or a tool
 // that is malformed or named like another tool, is reported on stderr and left out; the rest keep working.
+//
+// Module code can leave a rejected promise or a timer that throws, during the load as well as after a call has
+// returned (a module may start a timer in `registerTools` and keep loading). So when the host lists any module,
+// both guards are installed BEFORE the first import: such a late failure is logged and the server keeps answering.
+// With no module listed nothing is installed and nothing changes.
+if (Array.isArray(config.mcp?.modules) && config.mcp.modules.length > 0) {
+	process.on('unhandledRejection', (reason) => {
+		process.stderr.write(`[mcp-server] unhandled rejection (module code?): ${reason && reason.message ? reason.message : String(reason)}\n`);
+	});
+	process.on('uncaughtException', (err) => {
+		process.stderr.write(`[mcp-server] uncaught exception (module code?): ${err && err.message ? err.message : String(err)}\n`);
+	});
+}
 const moduleContext = { teamDir, repoRoot, config };
 const { tools: MODULE_TOOLS } = await loadToolModules({
 	modulePaths: config.mcp?.modules,
@@ -664,17 +682,6 @@ const { tools: MODULE_TOOLS } = await loadToolModules({
 	timeoutMs: config.mcp?.moduleLoadTimeoutMs,
 });
 const MODULE_TOOLS_BY_NAME = new Map(MODULE_TOOLS.map((tool) => [tool.definition.name, tool]));
-
-// Module code can leave a rejected promise or a timer that throws after its call has returned. With no module tool
-// loaded nothing changes; with one, such a late failure is logged and the server keeps answering.
-if (MODULE_TOOLS.length > 0) {
-	process.on('unhandledRejection', (reason) => {
-		process.stderr.write(`[mcp-server] unhandled rejection (module code?): ${reason && reason.message ? reason.message : String(reason)}\n`);
-	});
-	process.on('uncaughtException', (err) => {
-		process.stderr.write(`[mcp-server] uncaught exception (module code?): ${err && err.message ? err.message : String(err)}\n`);
-	});
-}
 
 // The caller as the built-in tools see it: `args.member`, else the server's default, validated; null when neither is set.
 function callerMember(args) {

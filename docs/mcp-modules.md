@@ -35,7 +35,9 @@ export const tools = [
 - `name`: a letter, then letters, digits, `_` or `-` (64 characters at most).
 - `inputSchema`: an object schema. The server adds the optional `member` field, as for every tool.
 - `handler(args, context)` is called with the tool as `this`. It returns an MCP result (`{ content: [{ type: ... }] }`) as is, a string as text, or any other value as JSON text. `context` is `{ teamDir, repoRoot, config, member }`; `member` is the caller, checked like for the built-in tools (an invalid `member` is refused before the handler runs), or `null` when the call names none and the server has no default. `registerTools` gets the same context without `member`.
-- A class with getters works; the server reads each field once and keeps a plain-JSON copy of `name`, `description` and `inputSchema`, so a later change in the module does not alter the list.
+- A class with getters works; the server reads each field once and keeps a plain-JSON copy of `name`, `description` and `inputSchema`, so a later change in the module does not alter the list. The checks run on that copy (a `toJSON` that makes the schema something else is caught).
+- The result is serialised once, as the reply will be (under the key `result`), and the parsed snapshot is checked and sent, so a `toJSON(key)` cannot answer differently a second time.
+- Standard output is the protocol and nothing else: the server points `console.log`, `console.info` and `console.debug` at standard error, so a module that prints does not corrupt the stream.
 
 ## What happens when something is wrong
 
@@ -44,11 +46,11 @@ One module or one tool never breaks the others. Each problem is one line on stde
 | Problem | Result |
 | --- | --- |
 | module missing, does not import, throws, exports no tools, or is slower than the timeout | that module is skipped |
-| tool without a valid name, a description, an object `inputSchema` (`properties` holding objects, `required` a list of names) or a `handler`, or one that cannot be copied as plain JSON (circular, BigInt, throwing getter) | that tool is skipped, its module's other tools stay |
+| tool without a valid name, a description, an object `inputSchema` (`properties` holding objects, `required` a list of names) or a `handler`, or one that cannot be copied as plain JSON (circular, BigInt, throwing getter), or whose copy fails these checks (a `toJSON` that answers `null`) | that tool is skipped, its module's other tools stay |
 | tool named like a built-in tool or like an earlier module's tool | that tool is skipped (the first one wins) |
 | `mcp.modules` is not a list | no module is loaded |
 | a handler throws, or returns something that cannot be sent as JSON | that call returns an error result; the server keeps running |
-| module code leaves a rejected promise or a timer that throws after its call returned | logged on stderr, the server keeps running (these two guards are installed only when at least one module tool is loaded; without modules nothing changes) |
+| module code leaves a rejected promise or a timer that throws, while it is loading or after a call returned | logged on stderr, the server keeps running (these two guards are installed before the first import when `mcp.modules` lists at least one module; with none listed nothing changes) |
 | module code loops forever without awaiting | not covered: it blocks the whole server, as any code in the same process would |
 
 With no `mcp.modules`, the tool list is exactly the built-in list.

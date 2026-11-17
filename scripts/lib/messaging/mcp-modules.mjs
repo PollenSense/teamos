@@ -32,8 +32,22 @@ const MAX_TIMEOUT_MS = 2 ** 31 - 1;
 
 const TOOL_NAME = /^[A-Za-z][A-Za-z0-9_-]{0,63}$/;
 
+/**
+ * A short text for an error. It runs inside the `catch` blocks that isolate module code, so it must not throw
+ * itself: a thrown `Object.create(null)` has no `toString`, a `message` getter can throw, and either would turn one
+ * module's failure into a failure of the whole load.
+ */
 function describe(err) {
-	return err && err.message ? String(err.message) : String(err);
+	try {
+		if (err && err.message) return String(err.message);
+	} catch {
+		// fall through to the next attempt
+	}
+	try {
+		return String(err);
+	} catch {
+		return 'an error that cannot be described';
+	}
 }
 
 function isPlainObject(value) {
@@ -141,24 +155,31 @@ export async function loadToolModules({ modulePaths, repoRoot, context, reserved
 		for (const tool of offered) {
 			let label = '(unnamed)';
 			try {
-				// Read each field once (a class with getters works, a throwing getter only costs this tool), then
-				// check and copy the plain data, so what is offered cannot change or fail to serialise later.
+				// Read each field once (a class with getters works, a throwing getter only costs this tool), copy the
+				// plain data as JSON, and check THE COPY: it is what is served, and a `toJSON` can make it differ
+				// from the object that was read (an inputSchema whose toJSON returns null passes a check of the
+				// original and then breaks the tool list).
 				const candidate = isPlainObject(tool)
 					? { name: tool.name, description: tool.description, inputSchema: tool.inputSchema, handler: tool.handler }
 					: tool;
 				label = labelFor(candidate && candidate.name);
-				const why = toolProblem(candidate);
+				let definition = null;
+				let checked = candidate;
+				if (isPlainObject(candidate)) {
+					definition = JSON.parse(JSON.stringify({ name: candidate.name, description: candidate.description, inputSchema: candidate.inputSchema }));
+					checked = { ...definition, handler: candidate.handler };
+				}
+				const why = toolProblem(checked);
 				if (why) {
 					problem(`tool ${label} from ${entry} skipped: ${why}`);
 					continue;
 				}
-				if (taken.has(candidate.name)) {
+				if (taken.has(definition.name)) {
 					problem(`tool ${label} from ${entry} skipped: the name is already taken`);
 					continue;
 				}
-				const definition = JSON.parse(JSON.stringify({ name: candidate.name, description: candidate.description, inputSchema: candidate.inputSchema }));
 				const handler = candidate.handler;
-				taken.add(candidate.name);
+				taken.add(definition.name);
 				tools.push({ definition, handler: (args, callContext) => handler.call(tool, args, callContext) });
 			} catch (err) {
 				problem(`tool ${label} from ${entry} skipped: ${describe(err)}`);
@@ -168,19 +189,30 @@ export async function loadToolModules({ modulePaths, repoRoot, context, reserved
 	return { tools, problems };
 }
 
+function isMcpResult(value) {
+	return isPlainObject(value) && Array.isArray(value.content) && value.content.every((item) => isPlainObject(item) && typeof item.type === 'string');
+}
+
 /** What a handler's return value becomes: an MCP result as is, a string as text, anything else as JSON text. */
 export function toToolResult(value) {
-	if (isPlainObject(value) && Array.isArray(value.content) && value.content.every((item) => isPlainObject(item) && typeof item.type === 'string')) return value;
+	if (isMcpResult(value)) return value;
 	const text = typeof value === 'string' ? value : (JSON.stringify(value ?? null, null, 2) ?? 'null');
 	return { content: [{ type: 'text', text }] };
 }
 
-/** Call a module tool; a throw, or a result that cannot be serialised, becomes an error result for this call only. */
+/**
+ * Call a module tool; a throw, a result that cannot be serialised, or one that is no longer an MCP result after
+ * serialising becomes an error result for this call only. The result is serialised once, here, the way the reply
+ * will be (as the `result` member of the response, so a `toJSON(key)` sees the key it will see there), parsed back,
+ * and the snapshot is what is checked and returned: the reply is then written from plain data that cannot answer
+ * differently a second time.
+ */
 export async function callToolModule(tool, args, context) {
 	try {
 		const result = toToolResult(await tool.handler(args, context));
-		JSON.stringify(result); // a circular or BigInt result must fail here, not while the reply is written
-		return result;
+		const snapshot = JSON.parse(JSON.stringify({ result })).result;
+		if (!isMcpResult(snapshot)) throw new Error('the result is not an MCP result once it is serialised');
+		return snapshot;
 	} catch (err) {
 		return { content: [{ type: 'text', text: `Error: ${describe(err)}` }], isError: true };
 	}
