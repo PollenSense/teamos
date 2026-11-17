@@ -1,5 +1,6 @@
 import { mkdir, open, readFile, readdir, rename, stat, unlink, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
+import { BoardError } from './errors.mjs';
 import { parseHead } from './frontmatter.mjs';
 import { isTeamKey, normalizeId, parseId } from './ids.mjs';
 
@@ -8,16 +9,27 @@ const STAT_PARALLEL = 64;
 const READ_PARALLEL = 32;
 const ISSUE_FILE = /^([A-Z][A-Z0-9]{1,9}-[1-9][0-9]{0,8})\.md$/;
 
+/**
+ * Run `fn` over `items`, at most `limit` at a time. When one call throws, no new item is started and the calls
+ * already running finish before the first error is raised, so nothing keeps changing the cache after the caller
+ * has seen the failure.
+ */
 async function mapLimit(items, limit, fn) {
 	const results = new Array(items.length);
 	let next = 0;
+	let failure = null;
 	const worker = async () => {
-		while (next < items.length) {
+		while (!failure && next < items.length) {
 			const i = next++;
-			results[i] = await fn(items[i], i);
+			try {
+				results[i] = await fn(items[i], i);
+			} catch (err) {
+				failure ??= { err };
+			}
 		}
 	};
 	await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+	if (failure) throw failure.err;
 	return results;
 }
 
@@ -58,6 +70,7 @@ export class IssueIndex {
 		this.problems = [];
 		this.misplaced = []; // rel paths found at the last refresh
 		this.dirty = false;
+		this._queue = Promise.resolve(); // see _serial
 	}
 
 	async _loadCacheFile() {
@@ -135,18 +148,46 @@ export class IssueIndex {
 	}
 
 	/**
-	 * Bring the index up to date with the files. Returns `{ count, reread }`: how many issues there are and how
-	 * many files had to be read this time.
+	 * Run `task` after every earlier index change has finished. `refresh`, `noteWritten` and `flush` all go through
+	 * here: a refresh works from a file list it took at its start and ends by rebuilding from that list, so a
+	 * `noteWritten` that landed in between would be pruned and lost. In one queue they cannot overlap (a plain
+	 * `readIssue` refreshes without the write lock, so this is reachable inside one process).
 	 */
-	async refresh() {
+	_serial(task) {
+		const run = this._queue.then(task);
+		this._queue = run.then(() => {}, () => {});
+		return run;
+	}
+
+	/**
+	 * What a failed stat or read of an issue file means when it is not "the file is gone" (ENOENT): the index must
+	 * not drop the issue, so the refresh fails instead. A system error becomes `unreadable`; anything else (a bug)
+	 * is raised as it is.
+	 */
+	_unreadable(err, rel, what) {
+		if (typeof err?.code !== 'string' || !/^E[A-Z0-9]+$/.test(err.code)) return err;
+		return new BoardError('unreadable', `${what} ${rel} (${err.code})`, { rel, code: err.code });
+	}
+
+	/**
+	 * Bring the index up to date with the files. Returns `{ count, reread }`: how many issues there are and how
+	 * many files had to be read this time. A file that is gone (ENOENT) is dropped; any other error (permissions,
+	 * I/O) fails the refresh with an `unreadable` error and leaves the index as it was.
+	 */
+	refresh() {
+		return this._serial(() => this._refresh());
+	}
+
+	async _refresh() {
 		if (!this.loaded) await this._loadCacheFile();
 		const files = await this._listFiles();
 		const stats = await mapLimit(files, STAT_PARALLEL, async (file) => {
 			try {
 				const st = await stat(join(this.dir, file.rel));
 				return { m: st.mtimeMs, s: st.size };
-			} catch {
-				return null; // gone between the listing and the stat
+			} catch (err) {
+				if (err.code === 'ENOENT') return null; // gone between the listing and the stat
+				throw this._unreadable(err, file.rel, 'cannot inspect');
 			}
 		});
 		const live = new Set();
@@ -162,8 +203,9 @@ export class IssueIndex {
 			try {
 				const parsed = await this._readFront(join(this.dir, file.rel));
 				this.cache.set(file.rel, parsed ? { m: st.m, s: st.s, fields: parsed.fields } : { m: st.m, s: st.s, bad: true });
-			} catch {
-				live.delete(file.rel);
+			} catch (err) {
+				if (err.code !== 'ENOENT') throw this._unreadable(err, file.rel, 'cannot read');
+				live.delete(file.rel); // gone between the stat and the read
 				this.cache.delete(file.rel);
 			}
 		});
@@ -209,17 +251,20 @@ export class IssueIndex {
 		}
 	}
 
-	/** After the store wrote `rel` itself: stat it and keep the entry, so the next refresh does not re-read it. */
-	async noteWritten(rel, fields) {
-		try {
-			const st = await stat(join(this.dir, rel));
-			this.cache.set(rel, { m: st.mtimeMs, s: st.size, fields });
-		} catch {
-			this.cache.delete(rel);
-		}
-		const files = [...this.cache.keys()].map((r) => ({ rel: r, team: r.split('/')[0], id: r.split('/')[1].replace(/\.md$/, '') }));
-		this._rebuild(files);
-		this.dirty = true;
+	/**
+	 * After the store wrote `rel` itself: keep the entry, so the next refresh does not re-read it. `written` is the
+	 * `{ m, s }` (mtime, size) the store read from the temp file before the rename, which keeps both: stat-ing the
+	 * final path afterwards could pair the fields we wrote with a file a sync had already replaced, and the next
+	 * refresh would then trust them. Without `written` the entry is dropped and the next refresh re-reads the file.
+	 */
+	noteWritten(rel, fields, written) {
+		return this._serial(() => {
+			if (written && typeof written.m === 'number' && typeof written.s === 'number') this.cache.set(rel, { m: written.m, s: written.s, fields });
+			else this.cache.delete(rel);
+			const files = [...this.cache.keys()].map((r) => ({ rel: r, team: r.split('/')[0], id: r.split('/')[1].replace(/\.md$/, '') }));
+			this._rebuild(files);
+			this.dirty = true;
+		});
 	}
 
 	/** After the store removed `rel` itself (a card retired by a move): forget it without waiting for the next refresh. */
@@ -231,8 +276,10 @@ export class IssueIndex {
 	}
 
 	/** Save the cache file if a write of our own changed it since the last save (a batch calls this once at the end). */
-	async flush() {
-		if (this.dirty) await this._saveCacheFile();
+	flush() {
+		return this._serial(async () => {
+			if (this.dirty) await this._saveCacheFile();
+		});
 	}
 
 	/** The canonical ID a typed ID or an alias stands for, as of the last refresh; null when none. */

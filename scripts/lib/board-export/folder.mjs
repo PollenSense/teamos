@@ -1,10 +1,13 @@
 /**
  * Reading and writing an export folder (format in `format.mjs`).
  *
- * Writing validates every record first, asks the sync-filter guard whether the folder may hold text at
- * all, writes each entity file through a temp file and a rename, and writes the manifest last, so a run
- * that stops half-way leaves either the previous manifest (and files that no longer match its hashes) or
- * none: the reader refuses both instead of importing a mix.
+ * Writing builds every file's text first, reads it back the way a reader will (parsed JSON, not the objects in
+ * memory) and validates that, checks the size against the reader's cap, asks the sync-filter guard whether the
+ * folder may hold text at all, writes each entity file through a temp file and a rename, and writes the
+ * manifest last, so a run that stops half-way leaves either the previous manifest (and files that no longer
+ * match its hashes) or none: the reader refuses both instead of importing a mix. A first write that was killed
+ * after some entity files were renamed in leaves those files and no manifest; the next write removes them
+ * (see `isOwnEntityFile`) and starts again.
  *
  * Reading trusts nothing in the folder: it opens only the fixed file name of each known type, checks the
  * file's hash and record count against the manifest, and validates every record. A manifest with a newer
@@ -12,7 +15,7 @@
  */
 
 import { createHash, randomBytes } from 'node:crypto';
-import { lstat, mkdir, readdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, open, readdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import {
 	ENTITY_TYPES,
@@ -51,24 +54,72 @@ async function writeAtomic(path, text) {
 const TEMP_LEFTOVER = /^[A-Za-z]+\.json\.tmp-\d+-[0-9a-f]{8}$/;
 
 /**
+ * Is `name` an entity file this writer made: the fixed name of a known type, a regular file (not a link), whose
+ * first bytes are the header the writer puts there, `{"type":"<type>","version":<this version>,"records":`? Only
+ * such a file may be removed from a folder that has no manifest; a `issues.json` of somebody else's is not.
+ */
+async function isOwnEntityFile(dir, name) {
+	const type = TYPE_NAMES.find((t) => fileNameFor(t) === name);
+	if (!type) return false;
+	const path = join(dir, name);
+	try {
+		if (!(await lstat(path)).isFile()) return false;
+		const header = `{"type":${JSON.stringify(type)},"version":${FORMAT_VERSION},"records":`;
+		const handle = await open(path, 'r');
+		try {
+			const buffer = Buffer.alloc(header.length);
+			const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
+			return bytesRead === buffer.length && buffer.toString('utf8') === header;
+		} finally {
+			await handle.close();
+		}
+	} catch (err) {
+		if (err.code === 'ENOENT') return false;
+		throw err;
+	}
+}
+
+/**
+ * The text of one entity file, checked the way `readExport` will check it: the text is parsed back and the
+ * parsed records are validated (a sparse list or a Date written as a string passes in memory and fails after the
+ * round trip), and its size must fit the reader's cap.
+ */
+function prepareFile(type, records, maxFileBytes) {
+	let text;
+	try {
+		text = `${JSON.stringify({ type, version: FORMAT_VERSION, records })}\n`;
+	} catch {
+		throw new ExportError('invalid-record', `${type}: the records cannot be written as JSON`);
+	}
+	const bytes = Buffer.byteLength(text);
+	if (bytes > maxFileBytes) throw new ExportError('file-too-large', `the "${type}" file would be ${bytes} bytes, larger than the ${maxFileBytes} a reader accepts`);
+	validateRecords(type, JSON.parse(text).records);
+	return { type, file: fileNameFor(type), text, bytes };
+}
+
+/**
  * Write a complete export.
  *
  * @param {string} dir          the export folder
  * @param {{source: string, fetchedAt?: string, complete?: boolean, entities: Record<string, object[]>}} data
  * @param {{workspaceRoot: string, filterText: string}} guard  who may hold the text: see `assertLocalOnly`
+ * @param {{maxFileBytes?: number}} [options]  the size one file may have (default: what `readExport` accepts)
  * @returns {Promise<{manifest: object}>}
  *
  * Types that are not in `data.entities` are removed from the folder (their fixed file names only: nothing
- * else in the folder is touched). A folder that has files but no manifest is refused, unless every file is a temp
- * file left by a first write that was killed (those are removed).
+ * else in the folder is touched). A folder that has files but no manifest is refused, unless every file is
+ * one this writer left from a first write that was killed (a temp file, or an entity file with the writer's own
+ * header); those are removed.
  */
-export async function writeExport(dir, data, guard) {
+export async function writeExport(dir, data, guard, options = {}) {
 	if (!guard || typeof guard !== 'object') throw new ExportError('export-synced', 'writeExport needs the sync guard (workspaceRoot and filterText)');
 	if (typeof data?.source !== 'string' || data.source === '') throw new ExportError('manifest-damaged', 'the export has no source name');
 	const entities = data.entities ?? {};
-	for (const type of Object.keys(entities)) {
-		fileNameFor(type);
-		validateRecords(type, entities[type]);
+	for (const type of Object.keys(entities)) fileNameFor(type);
+	const maxFileBytes = options.maxFileBytes ?? DEFAULT_MAX_FILE_BYTES;
+	const files = [];
+	for (const type of TYPE_NAMES) {
+		if (Object.prototype.hasOwnProperty.call(entities, type)) files.push(prepareFile(type, entities[type], maxFileBytes));
 	}
 	const fetchedAt = data.fetchedAt ?? new Date().toISOString();
 	if (!ISO_ANY.test(fetchedAt) || !isIsoDate(fetchedAt)) throw new ExportError('manifest-damaged', 'fetchedAt is not an ISO date-time');
@@ -77,21 +128,21 @@ export async function writeExport(dir, data, guard) {
 	await mkdir(dir, { recursive: true, mode: 0o700 });
 	const existing = await readdir(dir);
 	if (existing.length > 0 && !existing.includes(MANIFEST_FILE)) {
-		// A first write that was killed leaves only the temp files `writeAtomic` names; they are removed. Anything
-		// else in a folder with no manifest is somebody's, and the write is refused.
-		if (existing.some((name) => !TEMP_LEFTOVER.test(name))) {
-			throw new ExportError('not-export-folder', 'the folder has files but no export manifest; refusing to write into it');
+		// A first write that was killed leaves temp files, and the entity files it had already renamed in (the
+		// manifest comes last). Those are the writer's own and are removed. Anything else in a folder with no
+		// manifest is somebody's, and the write is refused before anything is removed.
+		for (const name of existing) {
+			if (!TEMP_LEFTOVER.test(name) && !(await isOwnEntityFile(dir, name))) {
+				throw new ExportError('not-export-folder', 'the folder has files but no export manifest; refusing to write into it');
+			}
 		}
 		for (const name of existing) await rm(join(dir, name), { force: true });
 	}
 
 	const manifestEntities = {};
-	for (const type of TYPE_NAMES) {
-		if (!Object.prototype.hasOwnProperty.call(entities, type)) continue;
-		const file = fileNameFor(type);
-		const text = `${JSON.stringify({ type, version: FORMAT_VERSION, records: entities[type] })}\n`;
+	for (const { type, file, text, bytes } of files) {
 		await writeAtomic(join(dir, file), text);
-		manifestEntities[type] = { file, count: entities[type].length, sha256: sha256(Buffer.from(text)), bytes: Buffer.byteLength(text) };
+		manifestEntities[type] = { file, count: entities[type].length, sha256: sha256(Buffer.from(text)), bytes };
 	}
 	const manifest = {
 		format: FORMAT,
