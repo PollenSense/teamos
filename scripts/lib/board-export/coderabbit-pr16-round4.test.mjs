@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { MANIFEST_FILE, writeExport } from './index.mjs';
+import { MANIFEST_FILE, assertLocalOnly, isSynced, parseFilter, writeExport } from './index.mjs';
 import { buildFixture } from './fixture-data.mjs';
 
 // Regression tests for the second CodeRabbit review of PR #16 (2026-11-18, round 4): the cleanup of a folder with no
@@ -108,6 +108,54 @@ test('without a workspace root the guard says so (an ExportError, not a crash)',
 	try {
 		await assert.rejects(write(s, s.out, { filterText: FILTER }), code('bad-path'));
 		await assert.rejects(write(s, s.out, { workspaceRoot: '', filterText: FILTER }), code('bad-path'));
+	} finally {
+		s.cleanup();
+	}
+});
+
+// --- sync-filter.mjs: an include rule ahead of the exclusion (A10) ---
+
+const RAW = 'team/board/raw';
+const EXCLUDE = '- /team/board/raw/**';
+const guardWith = (s, lines) => assertLocalOnly(RAW, { workspaceRoot: s.workspace, filterText: `${lines.join('\n')}\n` });
+
+test('an include rule ahead of the exclusion that names or matches something inside the folder is refused, though no probe path reaches it', () => {
+	const s = sandbox();
+	try {
+		for (const [lines, firstLine] of [
+			[['+ /team/board/raw/issues/PSE-1.json', EXCLUDE], 1],
+			[['# keep the board local', '+ /team/board/raw/issues/PSE-*.json', EXCLUDE], 2],
+			[['+ /team/board/raw/issues/**/*.json', EXCLUDE], 1],
+			[['+ /team/board/raw', EXCLUDE], 1],
+			[['+ PSE-1.json', EXCLUDE], 1],
+			[['+ *.md', EXCLUDE], 1],
+			[['+ /team/board/raw/a\\*b.json', EXCLUDE], 1],
+		]) {
+			// the generic probes all stay local, so only the new check can refuse it
+			assert.ok(parseFilter(`${lines.join('\n')}\n`) && ['team/board/raw/probe.json', 'team/board/raw/a/probe.json', 'team/board/raw/a/b/probe.png', 'team/board/raw/.probe'].every((p) => !isSynced(parseFilter(`${lines.join('\n')}\n`), p)), lines.join(' | '));
+			assert.throws(
+				() => guardWith(s, lines),
+				(e) => e.code === 'export-synced' && e.message.includes(`filter line ${firstLine}`),
+				lines.join(' | '),
+			);
+		}
+	} finally {
+		s.cleanup();
+	}
+});
+
+test('includes that cannot decide anything inside the folder do not stop the guard', () => {
+	const s = sandbox();
+	try {
+		// after the exclusion: the first matching rule wins, so the include never gets a say
+		assert.deepEqual(guardWith(s, [EXCLUDE, '+ /team/board/raw/issues/PSE-1.json', '+ *.md']), { where: 'filtered', rel: RAW });
+		assert.equal(isSynced(parseFilter(`${EXCLUDE}\n+ /team/board/raw/issues/PSE-1.json\n`), 'team/board/raw/issues/PSE-1.json'), false, 'and that path really is local');
+		// anchored somewhere else, ahead of the exclusion
+		assert.deepEqual(guardWith(s, ['+ /team/board/files/**', '+ /team/board/rawer/x.json', EXCLUDE]), { where: 'filtered', rel: RAW });
+		// a directory-only include does not let files below an excluded directory through
+		assert.deepEqual(guardWith(s, ['+ /team/board/raw/issues/', EXCLUDE]), { where: 'filtered', rel: RAW });
+		// the plain filter of the workspace
+		assert.deepEqual(guardWith(s, ['- .git/**', '- /team/.logs/**', EXCLUDE]), { where: 'filtered', rel: RAW });
 	} finally {
 		s.cleanup();
 	}
