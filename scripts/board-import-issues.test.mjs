@@ -127,6 +127,24 @@ test('--apply is refused when the board lacks a project or label file the cards 
 	}
 });
 
+test('a damaged reference file does not stop --apply for good: it is noted, the reference import leaves it alone, the run goes on', async () => {
+	const s = sandbox();
+	try {
+		await exported(s);
+		assert.equal(reference(s, '--apply').code, 0);
+		writeFileSync(join(s.board, 'projects', 'test-project.md'), 'hand broken\n');
+		assert.equal(reference(s, '--apply').code, 1, 'the reference import counts the damaged file as failed and does not overwrite it');
+		assert.equal(readFileSync(join(s.board, 'projects', 'test-project.md'), 'utf8'), 'hand broken\n');
+		const r = issues(s, '--apply');
+		assert.equal(r.code, 0, r.out + r.err);
+		assert.match(r.out, /note: 1 reference file\(s\) on the board are damaged and could not be compared/);
+		assert.doesNotMatch(r.out, /does not match what these cards use/);
+		assert.ok(existsSync(join(s.board, 'issues', 'PSE', 'PSE-1.md')));
+	} finally {
+		s.cleanup();
+	}
+});
+
 test('--apply stops before any write when the sync filter would let raw/ reach Drive', async () => {
 	const s = sandbox();
 	try {

@@ -345,7 +345,7 @@ function formatLinksLines(l, { applied, checks, dryRun }) {
 	const s = l.prs.byState;
 	lines.push(`pull requests: read ${l.prs.read}, kept ${l.prs.written} (merged ${s.merged}, closed ${s.closed}, open ${s.open})${l.prs.repeated ? `; ${l.prs.repeated} repeated on one issue` : ''}${l.prs.flagged ? `; ${l.prs.flagged} left out (the address held an e-mail or phone-shaped text)` : ''}`);
 	const sources = Object.entries(l.links.bySource).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)).map(([k, n]) => `${k} ${n}`).join(', ');
-	lines.push(`links: read ${l.links.read}, kept ${l.links.written}${sources ? ` (${sources})` : ''}${l.links.refused ? `; ${l.links.refused} refused (not an http or https address, or one with a password)` : ''}${l.links.repeated ? `; ${l.links.repeated} repeated on one issue` : ''}; ${l.links.flagged} had a title or address redacted`);
+	lines.push(`links: read ${l.links.read}, kept ${l.links.written}${sources ? ` (${sources})` : ''}${l.links.refused ? `; ${l.links.refused} refused (not an http or https address, or one with a password)` : ''}${l.links.repeated ? `; ${l.links.repeated} repeated on one issue` : ''}; ${l.links.flagged} of those read had a title or address redacted (repeats included)`);
 	const c = l.comments;
 	const a = c.byAuthor;
 	lines.push(`comments: read ${c.read}; ${c.onIssues} on issues, ${c.written} written to threads (by people ${a.person}, bots ${a.bot}, outside users ${a.external}, unknown ${a.unknown}); ${c.replies} replies name the comment they answer; ${c.flagged} had text redacted (originals only in the local raw folder)${c.refused ? `; ${c.refused} left out (an id that is not a plain name)` : ''}`);
@@ -362,32 +362,41 @@ function formatLinksLines(l, { applied, checks, dryRun }) {
  * names and cycles from the reference plan made from the same export; cards written before those files exist (or after
  * the export or the people map changed) would name people and projects the board does not have. Compares the plan with
  * what is on disk: people and labels by Linear id and name, projects and cycles by their file and Linear id.
- * Returns counts only (`{ people, projects, labels, cycles, total }`: how many differ or are missing), never a name.
- * A file that cannot be read as what it should be counts as missing.
+ * Returns counts only (`{ people, projects, labels, cycles, total, damaged }`: how many differ or are missing, and how many
+ * files could not be read at all), never a name. A damaged file is counted in `damaged`, not in `total`.
  */
 export async function referenceGaps(reference, store) {
-	const gaps = { people: 0, projects: 0, labels: 0, cycles: 0 };
+	const gaps = { people: 0, projects: 0, labels: 0, cycles: 0, damaged: 0 };
+	// A file the store refuses to read (damaged, unreadable) cannot be compared. It is counted apart and is not a gap: the
+	// reference import never overwrites such a file, so "run it again" would send the person in a circle.
 	const read = async (fn) => {
 		try {
-			return await fn();
+			return { file: await fn() };
 		} catch (err) {
 			if (!(err instanceof BoardError) || err.code === 'locked') throw err;
+			gaps.damaged++;
 			return null;
 		}
 	};
-	const people = (await read(() => store.readSingle('people')))?.data?.people;
-	for (const [id, entry] of Object.entries(reference.people.people)) {
-		if (!people || !Object.hasOwn(people, id) || people[id]?.name !== entry.name) gaps.people++;
+	const people = await read(() => store.readSingle('people'));
+	if (people) {
+		const stored = people.file?.data?.people;
+		for (const [id, entry] of Object.entries(reference.people.people)) {
+			if (!stored || !Object.hasOwn(stored, id) || stored[id]?.name !== entry.name) gaps.people++;
+		}
 	}
-	const labels = new Map(((await read(() => store.readSingle('labels')))?.data?.labels ?? []).map((l) => [l?.id, l?.name]));
-	for (const l of reference.labels.labels) if (!labels.has(l.id) || labels.get(l.id) !== l.name) gaps.labels++;
+	const labelFile = await read(() => store.readSingle('labels'));
+	if (labelFile) {
+		const labels = new Map((labelFile.file?.data?.labels ?? []).map((l) => [l?.id, l?.name]));
+		for (const l of reference.labels.labels) if (!labels.has(l.id) || labels.get(l.id) !== l.name) gaps.labels++;
+	}
 	for (const p of reference.projects) {
-		const file = await read(() => store.readProject(p.fields.code));
-		if (!file || file.fields?.linearId !== p.fields.linearId) gaps.projects++;
+		const result = await read(() => store.readProject(p.fields.code));
+		if (result && (!result.file || result.file.fields?.linearId !== p.fields.linearId)) gaps.projects++;
 	}
 	for (const c of reference.cycles) {
-		const file = await read(() => store.readCycle(c.team, c.number));
-		if (!file || file.data?.linearId !== c.linearId) gaps.cycles++;
+		const result = await read(() => store.readCycle(c.team, c.number));
+		if (result && (!result.file || result.file.data?.linearId !== c.linearId)) gaps.cycles++;
 	}
 	return { ...gaps, total: gaps.people + gaps.projects + gaps.labels + gaps.cycles };
 }

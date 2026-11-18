@@ -148,6 +148,27 @@ test('rule A: a branch name that holds an address as typed (a hyphen in its doma
 	assert.equal(p.raw.find((r) => r.id === 'PSE-1').record.branch, typed);
 });
 
+test('rule A: an address typed into a branch name and followed by more words is left out too', () => {
+	const e = buildExport();
+	const typed = ['me/pse-1-reply-to-pat@acme-corp.com-asap', 'pse-2/pat@outside-example.invalid-fix', 'me/ins-9-pat@outside-example.com_later'];
+	e.issues[0].branchName = typed[0];
+	e.issues[1].branchName = typed[1];
+	e.issues[2].branchName = typed[2];
+	const p = plan(e);
+	for (const id of ['PSE-1', 'PSE-2', 'INS-9']) assert.equal(byId(p, id).fields.branch, undefined, id);
+	assert.equal(p.counts.branchesLeftOut, 3);
+	assert.equal(JSON.stringify(p.issues).includes('pat@'), false);
+	assert.deepEqual(['PSE-1', 'PSE-2', 'INS-9'].map((id) => p.raw.find((r) => r.id === id).record.branch), typed, 'the originals are in raw');
+	// ordinary branch names, with a version tag or an at-sign that is no address, stay
+	const f = buildExport();
+	f.issues[0].branchName = 'me/pse-1-release-notes@2x-draft';
+	f.issues[1].branchName = 'me/pse-2-fix-the-login-bug';
+	const q = plan(f);
+	assert.equal(byId(q, 'PSE-1').fields.branch, 'me/pse-1-release-notes@2x-draft');
+	assert.equal(byId(q, 'PSE-2').fields.branch, 'me/pse-2-fix-the-login-bug');
+	assert.equal(q.counts.branchesLeftOut, 0);
+});
+
 test('the order is by instant, not by text: an offset does not reorder issues; ties go to team, number, key; started and canceled dates are kept', () => {
 	const e = buildExport();
 	e.issues[0].createdAt = '2025-01-20T10:00:00.000Z';
