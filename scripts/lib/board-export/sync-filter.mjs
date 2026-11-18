@@ -267,7 +267,8 @@ export function exportFilePaths(folderRel) {
  * filter line for one card, `- /team/board/files/PSE-2/**`, hides that card's uploads and no other probe).
  * A card whose folder does not exist yet cannot be probed; the check runs again at the next import.
  */
-export const UPLOAD_EXTENSIONS = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'heic', 'svg', 'mp4', 'mov', 'webm', 'pdf', 'txt', 'zip', 'PNG', 'JPG', 'MOV', ''];
+const LOWER_UPLOAD_EXTENSIONS = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'heic', 'svg', 'mp4', 'mov', 'webm', 'pdf', 'txt', 'zip'];
+export const UPLOAD_EXTENSIONS = [...new Set([...LOWER_UPLOAD_EXTENSIONS, ...LOWER_UPLOAD_EXTENSIONS.map((ext) => ext.toUpperCase()), ''])];
 
 export function uploadProbePaths(folderRel, issueFolders = []) {
 	const base = folderRel === '' ? '' : normalisePath(folderRel).join('/');
@@ -404,11 +405,15 @@ export function assertLocalOnly(folder, { workspaceRoot, filterText }) {
 }
 
 /**
- * The guard for uploads, the opposite question: does EVERY path an upload can take reach Drive? Throws
+ * The guard for uploads, the opposite question: does every probe path an upload can take reach Drive? Throws
  * ExportError('export-hidden') when the folder is outside the synced workspace (nothing there syncs) or the
  * filter hides any probe path: a filter that names one extension or one depth hides some uploads and not
  * others, and one visible probe path must not make the folder look fine. The probes cover `PSE-1` and every
  * issue folder that exists now (see `uploadProbePaths`), not a card that has no folder yet.
+ *
+ * This is a check on a finite probe set (`PSE-1`, the issue folders that exist now, and the extensions in
+ * `UPLOAD_EXTENSIONS` in lower and upper case), not a proof for every possible path: a rule that hides one
+ * other file name or one other extension can pass it, and no guard here can see such a rule.
  * Returns `{ where: 'synced', rel }`.
  */
 export function assertSynced(folder, { workspaceRoot, filterText }) {

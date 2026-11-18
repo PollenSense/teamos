@@ -276,6 +276,33 @@ test('assertSynced: passes only when EVERY upload-shaped path reaches Drive', ()
 	}
 });
 
+test('UPLOAD_EXTENSIONS: every lower-case extension also in upper case, no duplicates, and the extensionless probe (CodeRabbit on #20, round 5)', () => {
+	const lower = UPLOAD_EXTENSIONS.filter((ext) => ext !== '' && ext === ext.toLowerCase());
+	assert.ok(lower.length >= 13);
+	for (const ext of lower) assert.ok(UPLOAD_EXTENSIONS.includes(ext.toUpperCase()), `${ext} has an upper-case probe`);
+	assert.equal(new Set(UPLOAD_EXTENSIONS).size, UPLOAD_EXTENSIONS.length, 'no duplicate probe');
+	assert.ok(UPLOAD_EXTENSIONS.includes(''));
+	assert.equal(UPLOAD_EXTENSIONS.length, 2 * lower.length + 1);
+});
+
+test('assertSynced: a rule for an upper-case extension (`- *.PDF`, `- *.MP4`, `- *.HEIC`) hides uploads and is refused (CodeRabbit on #20, round 5)', () => {
+	const ws = workspace();
+	try {
+		mkdirSync(join(ws, 'team', 'board', 'files', 'PSE-2'), { recursive: true });
+		for (const rule of ['- *.PDF', '- *.MP4', '- *.HEIC', '- /team/board/files/PSE-2/*.PDF']) {
+			assert.throws(
+				() => assertSynced('team/board/files', { workspaceRoot: ws, filterText: `${AFTER}\n${rule}\n` }),
+				(e) => e.code === 'export-hidden' && /filter line/.test(e.message),
+				rule,
+			);
+		}
+		assert.equal(synced(`${AFTER}\n- *.PDF\n`, 'team/board/files/PSE-2/shot.PDF'), false, 'the rule really does hide PSE-2/shot.PDF');
+		assert.equal(assertSynced('team/board/files', { workspaceRoot: ws, filterText: AFTER }).where, 'synced', 'no such rule: passes');
+	} finally {
+		rmSync(ws, { recursive: true, force: true });
+	}
+});
+
 test('assertSynced: a folder outside the synced workspace never reaches Drive; a bad root is an error', () => {
 	const ws = workspace();
 	const out = mkdtempSync(join(tmpdir(), 'board-export-out-'));
