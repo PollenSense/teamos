@@ -148,7 +148,7 @@ function maskNonPhones(text) {
 
 /** True when a masked candidate run looks like a telephone number and not an ID or a counter. */
 function isPhone(raw) {
-	const text = raw.trim().replace(/^\((?=\d+$)/, '');
+	const text = raw.trim().replace(/^\(+(?=[\d+])/, ''); // an opening bracket in front of the number (or in front of its plus) is not part of it
 	const digits = text.replace(/\D/g, '');
 	if (digits.length < 7 || digits.length > 15) return false;
 	const plus = text.startsWith('+');
@@ -172,7 +172,7 @@ function isPhone(raw) {
 
 /** `isPhone` for a piece cut out of a longer run: dots mixed with spaces or hyphens (33.448376 -112.074036) are decimals, not a number. */
 function isPhoneInRun(piece) {
-	if (piece.includes('.') && !/^[\d.]+$/.test(piece)) return false;
+	if (piece.includes('.') && !/^[+(]*[\d.]+$/.test(piece)) return false; // a leading plus or bracket does not make the dots decimals
 	return isPhone(piece);
 }
 
