@@ -14,6 +14,8 @@ import { BoardError } from './errors.mjs';
  *
  * Phase (a) has one writer, so this guards the rare second one (an importer run started by hand while the poll
  * runs). A lock file with no readable content (empty, half-written) is judged by the file's own age instead.
+ * The age rule also applies to a LIVE holder: a callback that runs longer than `staleMs` loses the lock to the
+ * next waiter, and both then write. Keep `fn` short, or raise `staleMs` above the longest write.
  * Known small window, accepted: two waiters that judge the same lock stale can both take over (one removes the
  * stale file and creates its own, the other then removes that new one). The store's content-hash compare narrows
  * this but does not close it: `_put` reads the file's hash and renames the new text in two separate steps, so
