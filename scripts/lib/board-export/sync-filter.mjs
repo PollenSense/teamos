@@ -397,7 +397,7 @@ export function assertLocalOnly(folder, { workspaceRoot, filterText }) {
 		const shown = rel.split(sep).join('/');
 		throw new ExportError(
 			'export-synced',
-			`the folder "${shown}" is inside the synced workspace and no filter line excludes the whole folder: file rules that cover some depths or names leave other files in it synced (for example "${shown}/issues/PSE-1.md"); add "- /${shown}/**" to the filter and run the next bisync with --resync before writing here`,
+			`the folder "${shown}" is inside the synced workspace and no exclude rule decides for the whole folder: file rules that cover some depths or names leave other files in it synced (for example "${shown}/issues/PSE-1.md"), and a directory include ahead of the exclusion decides first; put "- /${shown}/**" above any directory include and run the next bisync with --resync before writing here`,
 		);
 	}
 	return { where: 'filtered', rel: rel.split(sep).join('/') };
