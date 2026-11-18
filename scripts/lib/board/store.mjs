@@ -366,7 +366,7 @@ export class BoardStore {
 	/** The importer's last step: `nextNumber` becomes at least `number` (the highest imported plus one). Never lowers it. */
 	async raiseNextNumber(key, number) {
 		assertTeamKey(key);
-		if (!Number.isInteger(number) || number < 1) throw new BoardError('bad-id', `nextNumber ${JSON.stringify(number)} is not a positive whole number`);
+		if (!Number.isInteger(number) || number < 1) throw new BoardError('bad-value', `nextNumber ${JSON.stringify(number)} is not a positive whole number`);
 		return withLock(this.lockDir, `team-${key}`, async () => {
 			const team = await this._readJson(this.teamPath(key), `team ${key}`);
 			if (!team) throw new BoardError('missing', `team ${key} has no file`);

@@ -1,10 +1,11 @@
 import { mkdir, open, readFile, readdir, rename, stat, unlink, writeFile } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { BoardError } from './errors.mjs';
 import { parseHead } from './frontmatter.mjs';
 import { isTeamKey, normalizeId, parseId } from './ids.mjs';
 
 const HEAD_BYTES = 32 * 1024;
+const CACHE_VERSION = 2;
 const STAT_PARALLEL = 64;
 const READ_PARALLEL = 32;
 const ISSUE_FILE = /^([A-Z][A-Z0-9]{1,9}-[1-9][0-9]{0,8})\.md$/;
@@ -77,7 +78,9 @@ export class IssueIndex {
 		this.loaded = true;
 		try {
 			const data = JSON.parse(await readFile(this.cachePath, 'utf-8'));
-			if (data?.version !== 1 || typeof data.files !== 'object' || data.files === null) return;
+			// Version 2 names the issues folder it was made for: the same relative names and the same mtime and size in
+			// another folder (a copied cache file, a changed `board:` setting) would otherwise be believed.
+			if (data?.version !== CACHE_VERSION || data.dir !== resolve(this.dir) || typeof data.files !== 'object' || data.files === null) return;
 			for (const [rel, hit] of Object.entries(data.files)) {
 				if (hit && typeof hit.m === 'number' && typeof hit.s === 'number' && (hit.bad === true || (hit.f && typeof hit.f === 'object'))) {
 					this.cache.set(rel, hit.bad ? { m: hit.m, s: hit.s, bad: true } : { m: hit.m, s: hit.s, fields: hit.f });
@@ -96,7 +99,7 @@ export class IssueIndex {
 		const tmp = `${this.cachePath}.${process.pid}.tmp`;
 		try {
 			await mkdir(dirname(this.cachePath), { recursive: true });
-			await writeFile(tmp, JSON.stringify({ version: 1, files }), 'utf-8');
+			await writeFile(tmp, JSON.stringify({ version: CACHE_VERSION, dir: resolve(this.dir), files }), 'utf-8');
 			await rename(tmp, this.cachePath);
 		} catch {
 			// The cache is an optimisation: failing to save it must not fail a read.
@@ -111,7 +114,12 @@ export class IssueIndex {
 			const { bytesRead } = await handle.read(buffer, 0, HEAD_BYTES, 0);
 			const head = buffer.toString('utf-8', 0, bytesRead);
 			const parsed = parseHead(head);
-			if (parsed || bytesRead < HEAD_BYTES) return parsed;
+			if (bytesRead < HEAD_BYTES) return parsed;
+			// A full head can stop in the middle of a line. When the block "closes" on that cut line (`---`, which may
+			// be the start of `----------`), the close is not trustworthy: read the whole file. A close followed by a
+			// newline is a whole line, and a cut anywhere else leaves the block open (null), which also reads on.
+			const lastLine = head.slice(head.lastIndexOf('\n') + 1);
+			if (parsed && !(lastLine.trimEnd() === '---' && !head.endsWith('\n'))) return parsed;
 		} finally {
 			await handle.close();
 		}
