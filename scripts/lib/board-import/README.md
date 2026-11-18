@@ -82,8 +82,9 @@ plan, so people, project codes, label names and cycles in an issue always equal 
 until `board-import-reference.mjs --apply` has written the reference files these cards name: people and labels (by Linear id
 and name), project files and cycle files (by Linear id). A file that is missing, older, or made from another export or people
 map counts as a gap; the message gives the counts (people, projects, labels, cycles) and never a name. A dry run only prints
-the same note. A reference file that is damaged cannot be compared and is no gap (the reference import never overwrites it):
-it is noted, and the run goes on.
+the same note. A reference file that is damaged cannot be compared, so `--apply` refuses (exit 2) while one exists: the
+reference import never overwrites a damaged file, so the message asks for a repair or removal by hand first, and then a
+rerun of `board-import-reference.mjs --apply`. A dry run only notes it.
 
 One file per issue, `issues/<TEAM>/<KEY>.md`, in the layout of design 2.2: status and type from the workflow state, priority
 (0 to 4; any other value kept as text), assignee and creator as board names, project code, milestone name, cycle `PSE-37`,
