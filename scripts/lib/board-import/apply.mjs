@@ -342,7 +342,7 @@ function formatLinksLines(l, { applied, checks, dryRun }) {
 	const s = l.prs.byState;
 	lines.push(`pull requests: read ${l.prs.read}, kept ${l.prs.written} (merged ${s.merged}, closed ${s.closed}, open ${s.open})${l.prs.repeated ? `; ${l.prs.repeated} repeated on one issue` : ''}${l.prs.flagged ? `; ${l.prs.flagged} left out (the address held an e-mail or phone-shaped text)` : ''}`);
 	const sources = Object.entries(l.links.bySource).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)).map(([k, n]) => `${k} ${n}`).join(', ');
-	lines.push(`links: read ${l.links.read}, kept ${l.links.written}${sources ? ` (${sources})` : ''}${l.links.refused ? `; ${l.links.refused} refused (not an http or https address, or one with a password)` : ''}${l.links.repeated ? `; ${l.links.repeated} repeated on one issue` : ''}; ${l.links.flagged} had a title or address redacted`);
+	lines.push(`links: read ${l.links.read}, kept ${l.links.written}${sources ? ` (${sources})` : ''}${l.links.refused ? `; ${l.links.refused} refused (not an http or https address, or one with a password)` : ''}${l.links.repeated ? `; ${l.links.repeated} repeated on one issue` : ''}; ${l.links.flagged} of those read had a title or address redacted (repeats included)`);
 	const c = l.comments;
 	const a = c.byAuthor;
 	lines.push(`comments: read ${c.read}; ${c.onIssues} on issues, ${c.written} written to threads (by people ${a.person}, bots ${a.bot}, outside users ${a.external}, unknown ${a.unknown}); ${c.replies} replies name the comment they answer; ${c.flagged} had text redacted (originals only in the local raw folder)${c.refused ? `; ${c.refused} left out (an id that is not a plain name)` : ''}`);
