@@ -59,7 +59,9 @@ async function assertPlainFolder(path) {
  * file is copied with COPYFILE_EXCL instead: an exclusive create that also fails with EEXIST when the name is taken, so a
  * file that appears at any moment is never replaced, and the same next free name is tried. A copy that fails for any other
  * reason throws and publishes nothing under this call (a partly written copy would not be adopted later: its SHA-256
- * differs, so a later run numbers around it). The temporary name stays and is removed as stale later. `ops` is for tests.
+ * differs, so a later run numbers around it and the partial file stays for a hand removal; the copy, unlike a link, is not
+ * atomic, so a sync that starts during it can see the partial file). The temporary name stays and is removed as stale later.
+ * `ops` is for tests.
  */
 export async function publishFile(tmp, dir, name, taken, ops = { link, copyFile, unlink }) {
 	let candidate = name;
