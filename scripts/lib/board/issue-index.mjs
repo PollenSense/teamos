@@ -207,16 +207,24 @@ export class IssueIndex {
 			const hit = this.cache.get(file.rel);
 			if (!hit || hit.m !== st.m || hit.s !== st.s) toRead.push({ file, st });
 		});
+		// Changes to the cache are staged and applied only when every read has succeeded: a refresh that fails part
+		// way leaves the cache as it was, so a later `noteWritten` (which rebuilds from the cache) cannot pick up a
+		// half-finished refresh.
+		const staged = new Map(); // rel -> the new cache entry, or null for "gone"
 		await mapLimit(toRead, READ_PARALLEL, async ({ file, st }) => {
 			try {
 				const parsed = await this._readFront(join(this.dir, file.rel));
-				this.cache.set(file.rel, parsed ? { m: st.m, s: st.s, fields: parsed.fields } : { m: st.m, s: st.s, bad: true });
+				staged.set(file.rel, parsed ? { m: st.m, s: st.s, fields: parsed.fields } : { m: st.m, s: st.s, bad: true });
 			} catch (err) {
 				if (err.code !== 'ENOENT') throw this._unreadable(err, file.rel, 'cannot read');
 				live.delete(file.rel); // gone between the stat and the read
-				this.cache.delete(file.rel);
+				staged.set(file.rel, null);
 			}
 		});
+		for (const [rel, entry] of staged) {
+			if (entry) this.cache.set(rel, entry);
+			else this.cache.delete(rel);
+		}
 		let removed = 0;
 		for (const rel of [...this.cache.keys()]) {
 			if (!live.has(rel)) {
