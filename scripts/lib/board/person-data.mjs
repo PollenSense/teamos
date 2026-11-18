@@ -218,10 +218,12 @@ function findAll(text, internalDomains) {
 	let emails = 0;
 	let internalEmails = 0;
 	for (const m of norm.matchAll(EMAIL)) {
-		// Marks that trail the last label belong to the address's text, not to the name that is compared.
+		// A mark that trails the last label makes it a different name (`com` + U+0301 is not `com`), so for the file
+		// extension test it is stripped (the text is then still a file name) but the internal-domain comparison below
+		// uses the whole domain: an address that only looks like one of ours is an outside address and is redacted.
 		const bare = (label) => label.replace(/\p{M}+$/u, '').toLowerCase();
 		if (FILE_EXTENSIONS.has(bare(m[2]))) continue;
-		const domain = bare(m[1]);
+		const domain = m[1].toLowerCase();
 		const span = { start: m.index, end: m.index + m[0].length, label: '[email]' };
 		const internal = internalDomains.some((d) => domain === d || domain.endsWith(`.${d}`));
 		// A quoted local part can hold free text (`"call 555-010-0199 now"@...`): for one of our own addresses it does not hide a number.
