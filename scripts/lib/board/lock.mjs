@@ -14,8 +14,12 @@ import { BoardError } from './errors.mjs';
  *
  * Phase (a) has one writer, so this guards the rare second one (an importer run started by hand while the poll
  * runs). A lock file with no readable content (empty, half-written) is judged by the file's own age instead.
- * Known small window: two waiters that judge the same lock stale can both take over; the content-hash
- * compare in the store is what catches a lost update in that case.
+ * Known small window, accepted: two waiters that judge the same lock stale can both take over (one removes the
+ * stale file and creates its own, the other then removes that new one). The store's content-hash compare narrows
+ * this but does not close it: `_put` reads the file's hash and renames the new text in two separate steps, so
+ * two writers inside that gap can both pass the check. It takes a crashed holder and two new writers in the
+ * same few milliseconds, and phase (a) has one writer. If a second writer ever runs regularly, the fix is a
+ * lease the holder refreshes, not a longer wait.
  */
 
 function alive(pid) {
