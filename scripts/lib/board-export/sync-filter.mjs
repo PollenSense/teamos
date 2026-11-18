@@ -311,6 +311,20 @@ function literalPrefix(glob) {
 }
 
 /**
+ * The exclude rule that keeps rclone out of the folder (or out of a folder above it), or null. rclone does not
+ * enter an excluded directory, so one such rule keeps every file below it local, whatever the file's name or depth.
+ * File rules cannot do that: each covers some depths or names, and a file the finite probe set does not reach
+ * (`raw/issues/PSE-1.md`, `raw/files/PSE-1/signups.csv`) would still sync.
+ */
+function wholeFolderRule(rules, parts) {
+	for (let i = 1; i <= parts.length; i++) {
+		const rule = firstMatch(rules.dirRules, `${parts.slice(0, i).join('/')}/`);
+		if (rule && !rule.include) return rule;
+	}
+	return null;
+}
+
+/**
  * The first include rule that could match a file inside `folderRel` and is not shut out by the rule that keeps the
  * folder local, or null. The probe paths are a finite set: `+ /team/board/raw/issues/PSE-1.json`, `+ /team/*` followed
  * by `/raw/issues/PSE-1.json` or `+ *.md` ahead of `- /team/board/raw/**` match none of them, and they still decide
@@ -325,14 +339,7 @@ function literalPrefix(glob) {
 function includeInsideFolder(rules, folderRel) {
 	const parts = normalisePath(folderRel);
 	const base = parts.join('/');
-	let shutAt = Infinity;
-	for (let i = 1; i <= parts.length; i++) {
-		const rule = firstMatch(rules.dirRules, `${parts.slice(0, i).join('/')}/`);
-		if (rule && !rule.include) {
-			shutAt = rule.line;
-			break;
-		}
-	}
+	const shutAt = wholeFolderRule(rules, parts)?.line ?? Infinity;
 	for (const rule of rules.fileRules) {
 		if (!rule.include || rule.line >= shutAt) continue;
 		if (!rule.glob.startsWith('/')) return rule;
@@ -356,7 +363,8 @@ function locate(folder, workspaceRoot) {
 /**
  * The importer's guard for text. `folder` is a folder the importer is about to write issue text or comments
  * into (absolute, or relative to `workspaceRoot`). Throws ExportError('export-synced') unless the folder is
- * outside the synced workspace or the filter keeps everything inside it local.
+ * outside the synced workspace or the filter keeps everything inside it local: every probe path is kept local, no
+ * include rule can reach into the folder, and one rule excludes the whole folder (a directory rule or `**`).
  *
  * Returns `{ where: 'outside' | 'filtered', rel }` so a caller can log which case held.
  */
@@ -380,6 +388,16 @@ export function assertLocalOnly(folder, { workspaceRoot, filterText }) {
 		throw new ExportError(
 			'export-synced',
 			`filter line ${early.line} is an include rule that can match a path inside the folder "${rel.split(sep).join('/')}", and it is not shut out by the rule that keeps the folder local, so what it matches would sync; remove it, or move it below a line that excludes the whole folder`,
+		);
+	}
+	// No probe syncs and no include gets in. The probes are a finite set, and file rules (`- /rel/*.json`, `- /rel/*/*.json`,
+	// `- /rel/*` with `- /rel/a/**` ...) can pass all of them and still leave other names and depths synced. Only a
+	// rule that excludes the whole folder (a directory rule, or `**`) proves coverage, so without one the folder is refused.
+	if (!wholeFolderRule(rules, normalisePath(rel))) {
+		const shown = rel.split(sep).join('/');
+		throw new ExportError(
+			'export-synced',
+			`the folder "${shown}" is inside the synced workspace and no filter line excludes the whole folder: file rules that cover some depths or names leave other files in it synced (for example "${shown}/issues/PSE-1.md"); add "- /${shown}/**" to the filter and run the next bisync with --resync before writing here`,
 		);
 	}
 	return { where: 'filtered', rel: rel.split(sep).join('/') };
