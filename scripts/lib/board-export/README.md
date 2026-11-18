@@ -40,13 +40,13 @@ Linear user to a TeamOS member). It is **never synced to Drive**. Every writer c
 filterText })` first: a folder outside the synced workspace is fine; a folder inside it needs `scripts/rclone-filter.txt`
 to keep it local. The guard checks four probe paths in the folder (top, one level, two levels, a dot name) and the
 fixed file names a writer creates there (`export.json` and one `<type>.json` per entity type), so a filter that names
-one depth or one extension is not enough, and `+ /team/board/raw/users.json` ahead of the exclude is caught. The probes are a finite set, so any include rule ahead of the exclusion that is anchored inside the folder (`+ /team/board/raw/issues/PSE-1.json`, `+ /team/board/raw/issues/PSE-*.json`) or not anchored at all (`+ *.md`: it matches below any folder) is refused too, and so is one whose wildcard starts above or at the folder (`+ /team/*/raw/issues/PSE-1.json`, `+ /**/*.md`); a folder kept local only by per-depth file rules (`- /team/board/raw/*.json`, `- /team/board/raw/*/*.json`, ...) has every include rule counted, wherever it stands. An include that stands after a line which excludes the whole folder (`- /team/board/raw/**`) never decides anything there (rclone does not enter an excluded directory) and is fine. It follows rclone's own model (file rules and directory rules, first
+one depth or one extension is not enough, and `+ /team/board/raw/users.json` ahead of the exclude is caught. The probes are a finite set, so any include rule ahead of the exclusion that is anchored inside the folder (`+ /team/board/raw/issues/PSE-1.json`, `+ /team/board/raw/issues/PSE-*.json`) or not anchored at all (`+ *.md`: it matches below any folder) is refused too, and so is one whose wildcard starts above or at the folder (`+ /team/*/raw/issues/PSE-1.json`, `+ /**/*.md`); a folder kept local only by file rules (`- /team/board/raw/*.json`, `- /team/board/raw/*/*.json`, `- /team/board/raw/*` with `- /team/board/raw/a/**`, ...) is refused: it can pass every probe and still leave `raw/issues/PSE-1.md` synced, and the guard cannot prove coverage of unlisted files from file rules. It wants one rule that excludes the whole folder (a directory rule, `- /team/board/raw/**` or `- /team/board/raw/`; one that excludes a folder above it counts too). An include that stands after a line which excludes the whole folder (`- /team/board/raw/**`) never decides anything there (rclone does not enter an excluded directory) and is fine. It follows rclone's own model (file rules and directory rules, first
 match, directories walked first); see the header of `sync-filter.mjs`.
 
 The board has two kinds of folder and a guard for each. The raw texts (`team/board/raw/`) use `assertLocalOnly` (the
 importer calls it before writing). The uploads (`team/board/files/<issue key>/`) are the opposite: Van wants every
 uploaded screenshot kept in Drive on its issue (2026-11-13), so that folder must stay unfiltered, and
-`assertSynced(folder, { workspaceRoot, filterText })` fails (`export-hidden`) when the filter hides ANY upload-shaped path
+`assertSynced(folder, { workspaceRoot, filterText })` fails (`export-hidden`) when the filter hides ANY path of its finite probe set
 (`uploadProbePaths`: `<folder>/<issue folder>/shot.<ext>` for the usual extensions in lower and upper case, no
 extension, two levels deeper (`<issue folder>/a/b/shot.png`), the top, a dot name; the issue folders are `PSE-1` and every issue-key folder that exists
 under the upload folder now, so a line for one card, `- /team/board/files/PSE-2/**`, is caught once that card has a
@@ -60,7 +60,7 @@ reach Drive (`team/board/files` by default; `--synced` names others; `--filter` 
 any line is wrong. Run it after the filter edit and the bisync `--resync`, before the first import.
 
 The live check in the tests, `BOARD_RCLONE_FILTER=<path of scripts/rclone-filter.txt> node --test 'scripts/lib/board-export/*.test.mjs'`,
-fails until the one step-0 line (`- /team/board/raw/**`) is in that file, and fails if a line hides any upload path of `team/board/files`.
+fails until the one step-0 line (`- /team/board/raw/**`) is in that file, and fails if a line hides any probe path of `team/board/files`. Both guards check a finite probe set, not every possible path: a rule that hides one specific file name (`- files/INS-9/screenshot.png`) is outside what they can see, because file names do not exist when the filter is checked.
 
 ## Tests
 
