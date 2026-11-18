@@ -1,6 +1,7 @@
 import { lstat, mkdir, open, readFile, rename, unlink } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
-import { BoardError } from '../board/index.mjs';
+import { isDeepStrictEqual } from 'node:util';
+import { BoardError, parseThread, serializeThread } from '../board/index.mjs';
 import { ImportError } from './reference.mjs';
 
 /**
@@ -318,8 +319,10 @@ export async function applyIssues(plan, store, { rawDir, guard } = {}) {
 			let ok = false;
 			try {
 				const file = await store.readThread(t.id);
-				const ours = (file?.entries ?? []).filter((e) => e.source === 'linear').map((e) => e.id);
-				ok = ours.length === t.entries.length && ours.every((id, i) => id === t.entries[i].id);
+				const ours = (file?.entries ?? []).filter((e) => e.source === 'linear');
+				// The whole entries, not their ids: the planned ones as the file stores them (line ends, escapes), against what was read.
+				const want = parseThread(serializeThread(t.entries)).entries;
+				ok = ours.length === want.length && ours.every((entry, i) => isDeepStrictEqual(entry, want[i]));
 			} catch (err) {
 				if (!(err instanceof BoardError) || err.code === 'locked') throw err;
 			}
