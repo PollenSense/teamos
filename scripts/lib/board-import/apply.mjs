@@ -209,7 +209,9 @@ export async function applyIssues(plan, store, { rawDir, guard } = {}) {
 			// `readIssue` also answers for an alias; a card that is somebody else's alias is not this issue's file (the store
 			// refuses that write as `alias-conflict` either way; this keeps the other card's hash out of the write).
 			const current = await store.readIssue(id);
-			const own = current && current.id === id ? current : null;
+			// ... and only the file of THIS Linear issue is ours to replace. A card with another linearId, or none (a native
+			// card), is expected to be new: the store then refuses the write as `duplicate-id` and the file is not touched.
+			const own = current && current.id === id && typeof issue.fields.linearId === 'string' && current.fields.linearId === issue.fields.linearId ? current : null;
 			carried = {};
 			for (const source of [...old, ...(own ? [own] : [])]) for (const k of LATER_FIELDS) if (source.fields[k] !== undefined) carried[k] = source.fields[k];
 			return own;
@@ -247,6 +249,41 @@ export async function applyIssues(plan, store, { rawDir, guard } = {}) {
 		}
 	}
 	return { applied, failures, checks, moved };
+}
+
+/**
+ * Does the board hold the reference files the cards of this run name? The issue plan takes people, project codes, label
+ * names and cycles from the reference plan made from the same export; cards written before those files exist (or after
+ * the export or the people map changed) would name people and projects the board does not have. Compares the plan with
+ * what is on disk: people and labels by Linear id and name, projects and cycles by their file and Linear id.
+ * Returns counts only (`{ people, projects, labels, cycles, total }`: how many differ or are missing), never a name.
+ * A file that cannot be read as what it should be counts as missing.
+ */
+export async function referenceGaps(reference, store) {
+	const gaps = { people: 0, projects: 0, labels: 0, cycles: 0 };
+	const read = async (fn) => {
+		try {
+			return await fn();
+		} catch (err) {
+			if (!(err instanceof BoardError) || err.code === 'locked') throw err;
+			return null;
+		}
+	};
+	const people = (await read(() => store.readSingle('people')))?.data?.people;
+	for (const [id, entry] of Object.entries(reference.people.people)) {
+		if (!people || !Object.hasOwn(people, id) || people[id]?.name !== entry.name) gaps.people++;
+	}
+	const labels = new Map(((await read(() => store.readSingle('labels')))?.data?.labels ?? []).map((l) => [l?.id, l?.name]));
+	for (const l of reference.labels.labels) if (!labels.has(l.id) || labels.get(l.id) !== l.name) gaps.labels++;
+	for (const p of reference.projects) {
+		const file = await read(() => store.readProject(p.fields.code));
+		if (!file || file.fields?.linearId !== p.fields.linearId) gaps.projects++;
+	}
+	for (const c of reference.cycles) {
+		const file = await read(() => store.readCycle(c.team, c.number));
+		if (!file || file.data?.linearId !== c.linearId) gaps.cycles++;
+	}
+	return { ...gaps, total: gaps.people + gaps.projects + gaps.labels + gaps.cycles };
 }
 
 /** The counts-only report of an issue run: per team read and what each file did, aliases, parents, dangling, flagged. Never a title, text or name. */

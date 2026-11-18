@@ -78,8 +78,11 @@ node scripts/board-import-issues.mjs --workspace <repo root> --export <export fo
 ```
 
 The options are the reference importer's that matter for issues (`--members`, `--people-map`, `--filter`): they feed the same
-plan, so people, project codes, label names and cycles in an issue always equal the reference files. `--apply` refuses until
-`board-import-reference.mjs --apply` has written `people.json`.
+plan, so people, project codes, label names and cycles in an issue always equal the reference files. `--apply` refuses (exit 2)
+until `board-import-reference.mjs --apply` has written the reference files these cards name: people and labels (by Linear id
+and name), project files and cycle files (by Linear id). A file that is missing, older, or made from another export or people
+map counts as a gap; the message gives the counts (people, projects, labels, cycles) and never a name. A dry run only prints
+the same note.
 
 One file per issue, `issues/<TEAM>/<KEY>.md`, in the layout of design 2.2: status and type from the workflow state, priority
 (0 to 4; any other value kept as text), assignee and creator as board names, project code, milestone name, cycle `PSE-37`,
@@ -103,6 +106,10 @@ comments are A6; the next-number counters are set at cutover.
 - **A card that moved teams since an earlier run** is the same Linear issue under an older key: the new file is written and
   the old one retired in the same step (`moved: N`), with its thread file, and with what a later ticket put in it
   (`relations`, `prs`, `links`, `deleted` are never cleared by a rerun of the text). A file of any other card is never touched.
+  If two of the old cards have a thread file, or one does and the new card already has one, nothing is changed and the
+  write is refused as `thread-conflict` (a dry run says so too): a person merges the threads first. An existing card at the
+  new key is replaced only when its `linearId` is this issue's; another issue's card, or a native card with no `linearId`,
+  is refused as `duplicate-id` and left as it is.
 - **A held lock stops the run** at the first write (each later write would wait ten seconds for it).
 - **Checked after a real run, against the files**: every card is there, every alias opens the card that claims it, every child's
   file names its parent and the parent is a card (`checked on the files: ...`); a broken one makes the run exit 1.

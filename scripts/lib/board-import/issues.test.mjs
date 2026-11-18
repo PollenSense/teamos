@@ -137,6 +137,17 @@ test('rule A: a branch name made from a redacted title is left out; so is one th
 	assert.equal(q.raw[0].record.branch, undefined);
 });
 
+test('rule A: a branch name that holds an address as typed (a hyphen in its domain) is left out too, and kept in raw', () => {
+	const e = buildExport();
+	const typed = 'me/pse-1-mail-pat@outside-example.invalid'; // the title is clean; read with its hyphens spaced this is no address
+	e.issues[0].branchName = typed;
+	const p = plan(e);
+	assert.equal(byId(p, 'PSE-1').fields.branch, undefined);
+	assert.equal(JSON.stringify(p.issues).includes('pat@'), false);
+	assert.equal(p.counts.branchesLeftOut, 1);
+	assert.equal(p.raw.find((r) => r.id === 'PSE-1').record.branch, typed);
+});
+
 test('the order is by instant, not by text: an offset does not reorder issues; ties go to team, number, key; started and canceled dates are kept', () => {
 	const e = buildExport();
 	e.issues[0].createdAt = '2025-01-20T10:00:00.000Z';

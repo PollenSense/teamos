@@ -502,6 +502,31 @@ test('issues: a damaged file, or an alias that is the file of a card this export
 	}
 });
 
+test('issues: a card of another Linear issue, or a native card with no linearId, at the same key is refused (duplicate-id) and never overwritten', async () => {
+	const s = sandbox();
+	try {
+		const e = buildExport();
+		const a = e.issues[0].key;
+		const b = e.issues[1].key;
+		assert.notEqual(e.issues[0].id, 'lin-OTHER');
+		await s.store().writeIssue({ fields: { id: a, linearId: 'lin-OTHER', title: 'Another Linear issue' }, body: 'text A' }, { expect: 'new' });
+		await s.store().writeIssue({ fields: { id: b, title: 'A native card' }, body: 'text B' }, { expect: 'new' });
+		const textOf = (key) => readFileSync(join(s.dir, 'issues', key.split('-')[0], `${key}.md`), 'utf8');
+		const before = { a: textOf(a), b: textOf(b) };
+		const r = await runIssues(s, e);
+		assert.equal(r.failures['duplicate-id'], 2);
+		assert.equal(textOf(a), before.a, 'the card of another issue is untouched');
+		assert.equal(textOf(b), before.b, 'the native card is untouched');
+		// the other issue of the export is written as usual, and a rerun of the same Linear issue still updates its own card
+		assert.equal(r.applied['issues INS'].created, 1);
+		const again = await runIssues(s, e);
+		assert.equal(again.failures['duplicate-id'], 2);
+		assert.equal(again.applied['issues INS'].failed, 0);
+	} finally {
+		s.cleanup();
+	}
+});
+
 test('issues: a key that is an alias of another card on disk is refused, and the check does not take the other card for it', async () => {
 	const s = sandbox();
 	try {

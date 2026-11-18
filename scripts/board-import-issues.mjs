@@ -8,7 +8,8 @@
  *
  * Without `--apply` this is the dry run: it reads the export and the board, and prints per team what each file would do
  * (new, changed, same). Nothing is written. `--apply` writes, only when `board.importer` is `true` in the config, only
- * after the reference data was imported (`board-import-reference.mjs --apply`: people and projects), and only after the
+ * after the reference data was imported and still matches this export (`board-import-reference.mjs --apply`: people,
+ * projects, labels and cycles the cards name), and only after the
  * sync filter was asked whether `<board>/raw` stays off Drive. The options are those of the reference importer that matter for
  * issues (`--members`, `--people-map`, `--filter`): they feed the same plan, so issues and reference files always agree.
  *
@@ -19,7 +20,7 @@ import { readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { BoardError, BoardStore, boardConfig } from './lib/board/index.mjs';
 import { ExportError, assertLocalOnly, readExport } from './lib/board-export/index.mjs';
-import { ImportError, applyIssues, formatIssuesSummary, loadExisting, planIssues, planReference } from './lib/board-import/index.mjs';
+import { ImportError, applyIssues, formatIssuesSummary, loadExisting, planIssues, planReference, referenceGaps } from './lib/board-import/index.mjs';
 import { loadConfig } from './lib/config.mjs';
 
 const TYPES = ['users', 'teams', 'states', 'labels', 'cycles', 'projects', 'milestones', 'projectUpdates', 'documents', 'issues'];
@@ -76,6 +77,14 @@ try {
 	}
 	const existing = await loadExisting(store);
 	const reference = planReference(entities, { members, overrides, existing });
+	// The cards name people, projects, labels and cycles of this plan: the board must already hold exactly those (a file
+	// that is there but older, or made from another export or people map, counts as a gap).
+	const gaps = await referenceGaps(reference, store);
+	if (gaps.total > 0) {
+		const text = `the reference data on the board does not match what these cards use (people ${gaps.people}, projects ${gaps.projects}, labels ${gaps.labels}, cycles ${gaps.cycles}): run board-import-reference.mjs --apply first`;
+		if (apply) usage(text);
+		process.stdout.write(`note: ${text}\n`);
+	}
 	const plan = planIssues(entities, reference);
 	const rawDir = join(board.dir, 'raw');
 	let filterText = '';
