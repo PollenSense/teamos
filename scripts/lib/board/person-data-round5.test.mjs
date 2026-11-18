@@ -57,3 +57,34 @@ test('a number with an address on each side is found once, and a second pass fin
 	const again = scanText(r.text);
 	assert.deepEqual([again.emails, again.phones, again.flagged], [0, 0, false]);
 });
+
+// Independent review of the R5-9 change (11/18): with the address cut out of the scan copy, a `(` or `+` right after the address
+// starts a run (the address's last letter used to stop it), and three shapes of such a run were not read as a number. Each of
+// them is also a number standing alone, so the same inputs without an address are checked too.
+test('a bracket or a plus right after an address, in the shapes the number reader used to refuse: still a phone number', () => {
+	for (const prefix of ['jo@example.org', 'jo@pollensense.com', 'a.b@mail.example.org']) {
+		const a = redactText(`${prefix}(0171/1234567)`);
+		assert.equal(a.phones, 1, `${prefix}: national number with a slash in brackets`);
+		assert.ok(!a.text.includes('1234567'), a.text);
+		const b = redactText(`${prefix}(555.010.0199 555-010-0198`);
+		assert.equal(b.phones, 2, `${prefix}: a dotted number after an open bracket, then a second number`);
+		assert.ok(!b.text.includes('555.010.0199') && !b.text.includes('555-010-0198'), b.text);
+		const c = redactText(`${prefix}+1.555.010.0199 555-010-0198`);
+		assert.equal(c.phones, 2, `${prefix}: a dotted number led by a plus, then a second number`);
+		assert.ok(!c.text.includes('555.010.0199') && !c.text.includes('555-010-0198'), c.text);
+		assert.equal(redactText(`${prefix}+1.555.010.0199/12`).phones, 1, `${prefix}: a dotted plus number followed by a slash`);
+		assert.equal(redactText(`${prefix}+555-010-0199`).phones, 1, `${prefix}: a number with a plus directly after the address`);
+	}
+});
+
+test('the same shapes written alone (a bracket or a plus in front of a dotted or slashed number) are phone numbers too', () => {
+	assert.equal(redactText('x (0171/1234567) y').phones, 1);
+	assert.equal(redactText('call (555.010.0199 555-010-0198 now').phones, 2);
+	assert.equal(redactText('call +1.555.010.0199 555-010-0198 now').phones, 2);
+	assert.equal(redactText('(0171/1234567)').phones, 1);
+	// still not numbers: a version, a fraction, and a decimal in brackets (the old reader took the bracket for a reason to skip
+	// the dotted-number rule and redacted `(3.14159265)`; without the bracket it never did)
+	for (const text of ['(3.14159265)', 'pi = (3.14159265)', 'version (1.2.3.4)', 'ratio (22/7)', '3.14159265']) assert.equal(redactText(text).phones, 0, text);
+	// a plus makes a run international whatever its pieces (existing rule): this one is read as a number, as before
+	assert.equal(redactText('x +3.14159265 y').phones, 1);
+});
