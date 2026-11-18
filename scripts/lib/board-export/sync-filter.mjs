@@ -92,6 +92,9 @@ export function globToRegexSource(pattern) {
 			out += `${cls}]`;
 			i = j;
 		} else if (ch === '{') {
+			// rclone reads `{{regexp}}` as a regular expression, which this module does not model: a rule it would read as
+			// literal alternatives could keep a file local here while rclone syncs it (or the other way round). Fail closed.
+			if (pattern[i + 1] === '{') throw new ExportError('filter-unreadable', 'a filter pattern has {{ (an rclone regular expression), which is not supported');
 			braceDepth++;
 			out += '(?:';
 		} else if (ch === '}') {

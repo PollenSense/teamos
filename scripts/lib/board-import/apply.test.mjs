@@ -44,6 +44,56 @@ async function run(s, entities, { dry = false, guard = async () => ({ where: 'te
 	return { plan, ...result };
 }
 
+test('the project map is written against the file the plan was made from: a hand edit in between is refused, not replaced', async () => {
+	const s = sandbox();
+	try {
+		await run(s, buildExport());
+		const store = s.store();
+		const existing = await loadExisting(store);
+		assert.equal(typeof existing.projectMapHash, 'string');
+		const plan = planReference(buildExport(), { members: MEMBERS, existing });
+		assert.equal(plan.projectMapExpect, existing.projectMapHash);
+		// A person edits the map after the snapshot, before the apply.
+		const current = await store.readSingle('project-map');
+		const edited = { ...current.data, tags: { ...current.data.tags, handmade: 'hand-entry' } };
+		await store.writeSingle('project-map', edited, { expect: current.hash });
+		const before = readFileSync(join(s.dir, 'project-map.json'), 'utf8');
+		const r = await applyReference(plan, store, { rawDir: s.rawDir, guard: async () => ({ where: 'test' }) });
+		assert.deepEqual(r.applied['project-map'], { created: 0, changed: 0, unchanged: 0, failed: 1 });
+		assert.equal(r.failures.changed, 1);
+		assert.equal(readFileSync(join(s.dir, 'project-map.json'), 'utf8'), before, 'the hand edit is still there');
+		assert.equal(JSON.parse(before).tags.handmade, 'hand-entry');
+		// A first run (no file yet) expects 'new': a file that appears in between is refused as well.
+		const s2 = sandbox();
+		try {
+			const store2 = s2.store();
+			const plan2 = planReference(buildExport(), { members: MEMBERS, existing: await loadExisting(store2) });
+			assert.equal(plan2.projectMapExpect, 'new');
+			await store2.writeSingle('project-map', { version: 1, tags: { early: 'x' } }, { expect: 'new' });
+			const r2 = await applyReference(plan2, store2, { rawDir: s2.rawDir, guard: async () => ({ where: 'test' }) });
+			assert.equal(r2.failures['duplicate-id'], 1);
+			assert.equal(JSON.parse(readFileSync(join(s2.dir, 'project-map.json'), 'utf8')).tags.early, 'x');
+		} finally {
+			s2.cleanup();
+		}
+	} finally {
+		s.cleanup();
+	}
+});
+
+test('a plan made without a snapshot (no loadExisting) still writes against the file as it is now', async () => {
+	const s = sandbox();
+	try {
+		const store = s.store();
+		const plan = planReference(buildExport(), { members: MEMBERS });
+		assert.equal(plan.projectMapExpect, undefined);
+		const r = await applyReference(plan, store, { rawDir: s.rawDir, guard: async () => ({ where: 'test' }) });
+		assert.equal(r.applied['project-map'].created, 1);
+	} finally {
+		s.cleanup();
+	}
+});
+
 test('a real run writes every kind of file where the layout says', async () => {
 	const s = sandbox();
 	try {

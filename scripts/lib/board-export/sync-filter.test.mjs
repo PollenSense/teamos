@@ -130,6 +130,24 @@ test('a line that cannot be read is an error, not a skipped rule', () => {
 	assert.throws(() => parseFilter(42), (e) => e.code === 'filter-unreadable');
 });
 
+test('{{regexp}} patterns are refused (rclone reads them as regular expressions, this module does not); escaped or class braces are plain', () => {
+	for (const bad of ['+ /team/board/raw/{{users|issues}}.json', '- /team/board/{{raw}}/**', '- /x/{{a,b}}', '- {{.*}}']) {
+		assert.throws(() => parseFilter(bad), (e) => e.code === 'filter-unreadable', bad);
+	}
+	// The same text, with the braces escaped or inside a class, is an ordinary glob and still parses.
+	for (const fine of ['- /x/\\{\\{a\\}\\}', '- /x/[{{]a', '- /x/{a,{b,c}}', '- /x/a{b}']) assert.doesNotThrow(() => parseFilter(fine), fine);
+});
+
+test('assertLocalOnly: an include written as {{regexp}} before the raw exclude fails closed, it does not pass', () => {
+	const ws = workspace();
+	try {
+		const filterText = '+ /team/board/raw/{{users|issues}}.json\n- /team/board/raw/**\n';
+		assert.throws(() => assertLocalOnly('team/board/raw', { workspaceRoot: ws, filterText }), (e) => e.code === 'filter-unreadable');
+	} finally {
+		rmSync(ws, { recursive: true, force: true });
+	}
+});
+
 test('paths that leave the folder or are empty are refused', () => {
 	const rules = parseFilter(AFTER);
 	for (const bad of ['', '../x', 'a/../../x', '/', './']) {

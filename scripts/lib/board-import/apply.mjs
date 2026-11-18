@@ -83,10 +83,12 @@ export function recorder() {
 		applied[kind] ??= { created: 0, changed: 0, unchanged: 0, failed: 0 };
 		applied[kind][state]++;
 	};
-	const attempt = async (kind, read, write) => {
+	// `snapshotExpect`: the hash the plan was made from (a file whose plan merges what was there). It wins over the hash
+	// read now, so a change made in between is refused as `changed` and never replaced from a stale plan.
+	const attempt = async (kind, read, write, snapshotExpect) => {
 		try {
 			const current = await read();
-			const result = await write(current ? current.hash : 'new');
+			const result = await write(snapshotExpect ?? (current ? current.hash : 'new'));
 			tally(kind, !current ? 'created' : result.changed ? 'changed' : 'unchanged');
 		} catch (err) {
 			// A held lock is not a refusal of one write: every later write would wait for it too (10 s each). Stop.
@@ -120,7 +122,7 @@ export async function applyReference(plan, store, { rawDir, guard } = {}) {
 	await attempt('labels', () => store.readSingle('labels'), (expect) => store.writeSingle('labels', plan.labels, { expect }));
 	for (const p of plan.projects) await attempt('projects', () => store.readProject(p.fields.code), (expect) => store.writeProject(p, { expect }));
 	for (const d of plan.documents) await attempt('documents', () => store.readDocument(d.fields.id), (expect) => store.writeDocument(d, { expect }));
-	await attempt('project-map', () => store.readSingle('project-map'), (expect) => store.writeSingle('project-map', plan.projectMap, { expect }));
+	await attempt('project-map', () => store.readSingle('project-map'), (expect) => store.writeSingle('project-map', plan.projectMap, { expect }), plan.projectMapExpect);
 	return { applied, failures };
 }
 

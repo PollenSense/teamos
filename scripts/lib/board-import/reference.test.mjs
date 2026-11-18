@@ -252,6 +252,16 @@ test('tag map: a project code equal to the tag, or a hint naming the project; th
 	assert.deepEqual(p.counts.tags, { total: 7, mapped: 2, unmapped: 5, missingProject: 0 });
 });
 
+test('tag map: a hint names the project as it is in Linear, even when the stored name was redacted', () => {
+	const e = buildExport();
+	e.projects.push({ id: 'p-6', name: 'Renewals for desk@outside.example.invalid', teamKeys: ['PSE'] });
+	const p = plan(e, { tagHints: { renewals: 'RENEWALS for desk@outside.example.invalid' } });
+	const mapped = p.projects.find((x) => x.fields.linearId === 'p-6').fields;
+	assert.equal(mapped.name.includes('outside.example'), false, 'the stored name is redacted');
+	assert.equal(p.projectMap.tags.renewals, mapped.code, 'the hint still finds it by the original name');
+	assert.equal(JSON.stringify(p.projectMap).includes('outside.example'), false, 'the map holds the code, not the name');
+});
+
 test('tag map: a value already in the file is never changed; a null one can fill in later', () => {
 	const e = buildExport();
 	e.projects.push({ id: 'p-4', name: 'Ops', teamKeys: ['PSE'] });
