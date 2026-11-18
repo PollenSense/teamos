@@ -1,4 +1,4 @@
-import { mkdir, open, readFile, rename, unlink } from 'node:fs/promises';
+import { lstat, mkdir, open, readFile, rename, unlink } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { BoardError } from '../board/index.mjs';
 import { ImportError } from './reference.mjs';
@@ -21,9 +21,29 @@ function rawPath(rawDir, type, id) {
 	return join(rawDir, type, `${id}.json`);
 }
 
+/**
+ * The folder for one raw type must be a real folder of ours. A link there (say `raw/projects` pointing into the synced
+ * workspace) would carry the original texts, which are meant to stay local, to wherever it points: mkdir and open both
+ * follow it. Missing is fine (it is created next); a link, a file or anything else that is not a folder is refused
+ * before anything is read or written, in a dry run too.
+ */
+async function assertPlainRawFolder(rawDir, type) {
+	let st;
+	try {
+		st = await lstat(join(rawDir, type));
+	} catch (err) {
+		if (err.code === 'ENOENT') return;
+		throw err;
+	}
+	if (st.isSymbolicLink() || !st.isDirectory()) {
+		throw new ImportError('bad-raw', `the raw folder for "${type}" is a link or is not a folder; refusing to write raw texts through it`);
+	}
+}
+
 /** One local-only file with the original texts of a record whose synced copy was redacted. `{ changed }`; nothing is written in a dry run. */
 export async function writeRaw(rawDir, type, id, record, { dryRun = false } = {}) {
 	const path = rawPath(rawDir, type, id);
+	await assertPlainRawFolder(rawDir, type);
 	const text = `${JSON.stringify({ type, id, record }, null, '\t')}\n`;
 	let current = null;
 	try {

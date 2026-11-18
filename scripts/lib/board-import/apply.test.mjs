@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { BoardStore } from '../board/index.mjs';
@@ -175,6 +175,42 @@ test('writeRaw refuses a type or name that could leave its folder', async () => 
 		await assert.rejects(writeRaw(s.rawDir, 'secrets', 'x', {}), (e) => e.code === 'bad-raw');
 		await assert.rejects(writeRaw(s.rawDir, 'projects', '', {}), (e) => e.code === 'bad-raw');
 		assert.equal(existsSync(s.rawDir), false);
+	} finally {
+		s.cleanup();
+	}
+});
+
+test('writeRaw refuses a type folder that is a link or not a folder: nothing reaches the target, in a real run or a dry one (round 2)', async () => {
+	const s = sandbox();
+	try {
+		const synced = join(s.root, 'synced');
+		mkdirSync(synced, { recursive: true });
+		mkdirSync(s.rawDir, { recursive: true });
+		symlinkSync(synced, join(s.rawDir, 'projects')); // raw/projects -> a folder that syncs
+		symlinkSync(join(s.root, 'nowhere'), join(s.rawDir, 'documents')); // a link that points at nothing
+		writeFileSync(join(s.rawDir, 'names'), 'a file where the folder should be');
+		for (const type of ['projects', 'documents', 'names']) {
+			for (const dryRun of [false, true]) {
+				await assert.rejects(writeRaw(s.rawDir, type, 'P1', { text: 'original' }, { dryRun }), (e) => e instanceof ImportError && e.code === 'bad-raw' && !/original|synced/.test(e.message), `${type} dryRun=${dryRun}`);
+			}
+		}
+		assert.deepEqual(readdirSync(synced), [], 'nothing was written through the link');
+		assert.equal(existsSync(join(s.root, 'nowhere')), false, 'the dangling link was not created');
+		assert.equal(readFileSync(join(s.rawDir, 'names'), 'utf8'), 'a file where the folder should be');
+	} finally {
+		s.cleanup();
+	}
+});
+
+test('writeRaw still creates a missing type folder and writes into an existing real one (round 2)', async () => {
+	const s = sandbox();
+	try {
+		assert.deepEqual(await writeRaw(s.rawDir, 'projects', 'P1', { a: 1 }, { dryRun: true }), { changed: true });
+		assert.equal(existsSync(s.rawDir), false, 'a dry run creates nothing');
+		assert.deepEqual(await writeRaw(s.rawDir, 'projects', 'P1', { a: 1 }), { changed: true });
+		assert.deepEqual(await writeRaw(s.rawDir, 'projects', 'P1', { a: 1 }), { changed: false });
+		assert.deepEqual(await writeRaw(s.rawDir, 'projects', 'P2', { a: 2 }), { changed: true });
+		assert.deepEqual(readdirSync(join(s.rawDir, 'projects')).sort(), ['P1.json', 'P2.json']);
 	} finally {
 		s.cleanup();
 	}
