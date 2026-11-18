@@ -229,7 +229,7 @@ test('the ID allocator: increments under the lock, skips numbers that exist, nev
 	assert.equal(await store.raiseNextNumber('OPS', 1062), 1062);
 	assert.equal((await store.nextNumber('OPS')).id, 'OPS-1062');
 	await rejects(store.nextNumber('PSE'), 'missing');
-	await rejects(store.raiseNextNumber('OPS', 0), 'bad-id');
+	await rejects(store.raiseNextNumber('OPS', 0), 'bad-value');
 	writeFileSync(store.teamPath('OPS'), '{"key":"OPS","nextNumber":"x"}');
 	await rejects(store.nextNumber('OPS'), 'damaged');
 });

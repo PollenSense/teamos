@@ -39,7 +39,7 @@ labels and cycles) goes through `redactValue` first. Outside addresses
 and phone-shaped numbers become `[email]` and `[phone]` in the synced file; when anything was redacted the original goes to
 `team/board/raw/<type>/<id>.json` (folder mode 0700, file 0600), written **before** the synced file; the flagged team,
 state, label and cycle names share one record, `raw/names/reference.json`. A real run calls the
-caller's guard (`assertLocalOnly` on the raw folder) before its first write and stops if the filter would sync it. A project
+caller's guard (`assertLocalOnly` on the raw folder) before its first write and stops if the filter would sync it. A raw type folder (`raw/projects`, ...) that is a link or not a folder is refused with `bad-raw` before anything is read or written, dry run included: a link into the synced workspace would carry the original texts out. A project
 code is made from the redacted name, so an address in a name does not become a file name. Ids, dates and codes are not
 scanned (they are not typed text).
 
