@@ -87,6 +87,7 @@ try {
 		if (apply) usage(text);
 		process.stdout.write(`note: ${text}\n`);
 	}
+	if (gaps.damaged > 0) process.stdout.write(`note: ${gaps.damaged} reference file(s) on the board are damaged and could not be compared; the reference import leaves a damaged file alone, so repair or remove it by hand\n`);
 	const issuesPlan = planIssues(entities, reference);
 	const plan = withLinks(issuesPlan, planLinks(entities, issuesPlan, reference, { report: issuesPlan.report }));
 	const rawDir = join(board.dir, 'raw');

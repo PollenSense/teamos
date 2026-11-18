@@ -43,6 +43,14 @@ export function boardEstimate(value) {
 	return typeof value === 'number' && Number.isFinite(value) ? value : String(value);
 }
 
+/** Does a branch name hold an outside address or phone number, read as written, with its separators spaced, or cut at any hyphen? */
+function branchReadsAsFlagged(branch) {
+	if (redactValue(branch).flagged || redactValue(branch.replace(/[-_/]+/g, ' ')).flagged) return true;
+	// Only a hyphen can carry on a domain (`acme-corp.com-asap`); any other separator already ends an address in the first reading.
+	for (const cut of branch.matchAll(/-/g)) if (redactValue(branch.slice(0, cut.index)).flagged) return true;
+	return false;
+}
+
 const own = (map, key) => (typeof key === 'string' && map.has(key) ? map.get(key) : undefined);
 
 /**
@@ -156,9 +164,10 @@ export function planIssues(entities, reference) {
 		}
 		let branch = issue.branchName ?? undefined;
 		let branchOriginal;
-		// Both readings: with its separators spaced (a title typed into a branch) and as written (an address typed into it:
-		// `pat@outside-example.invalid` is no address once its hyphens are spaces, but it is one as it stands).
-		if (typeof branch === 'string' && (titleRedacted.flagged || redactValue(branch).flagged || redactValue(branch.replace(/[-_/]+/g, ' ')).flagged)) {
+		// Three readings: with its separators spaced (a title typed into a branch), as written (an address typed into it:
+		// `pat@outside-example.invalid` is no address once its hyphens are spaced), and each part up to a hyphen (an address
+		// followed by more words: `pat@acme-corp.com-asap` reads as one long domain as written).
+		if (typeof branch === 'string' && (titleRedacted.flagged || branchReadsAsFlagged(branch))) {
 			branchOriginal = branch;
 			branch = undefined;
 			flagged = true;
