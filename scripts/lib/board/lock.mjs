@@ -101,12 +101,19 @@ export async function withLock(dir, name, fn, { staleMs = 60_000, waitMs = 10_00
 		if (stale) {
 			const again = await readHolder(path, name);
 			if (again?.text === holder.text) {
+				let gone = false;
 				try {
 					await unlink(path);
-					continue;
+					gone = true;
 				} catch (err) {
-					if (err.code === 'ENOENT') continue;
-					// We cannot remove it (read-only folder): fall through to the deadline, never spin.
+					// Already removed by someone else counts as gone. Any other error (a read-only folder) means we
+					// cannot remove it: fall through to the deadline, never spin.
+					gone = err.code === 'ENOENT';
+				}
+				if (gone) {
+					// Try again at once, but never past the deadline (another waiter may keep making stale locks).
+					if (Date.now() >= deadline) throw lockedError(name, null);
+					continue;
 				}
 			}
 		}
@@ -117,8 +124,9 @@ export async function withLock(dir, name, fn, { staleMs = 60_000, waitMs = 10_00
 		return await fn();
 	} finally {
 		// Release only a lock we can read and recognise as ours. One we cannot read is left alone (it goes stale on
-		// its own) and the error is not raised: it must not replace what `fn` returned or threw.
+		// its own) and the error is not raised: it must not replace what `fn` returned or threw. A lock that is
+		// already gone is left alone too: another writer may create its own between our look and an unlink.
 		const now = await readHolder(path, name).catch(() => undefined);
-		if (now === null || now?.text === mine) await unlink(path).catch(() => {});
+		if (now?.text === mine) await unlink(path).catch(() => {});
 	}
 }

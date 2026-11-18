@@ -72,13 +72,16 @@ test('a mark right after the address does not stop it being found, whatever foll
 	}
 });
 
-test('a mark after the last label does not change which domain it is (our own address stays ours, a file name stays a file name)', () => {
+test('a mark after the last label is part of the name: a domain that only looks like ours is an outside address; a file name stays a file name', () => {
+	// Round 3 kept such an address as ours; round 4 (CodeRabbit on #19) compares the whole domain, so a look-alike is redacted.
 	const VS16 = ch(0xfe0f);
-	const ours = redactText(`jo@pollensense.com${VS16}`);
-	assert.deepEqual([ours.emails, ours.internalEmails, ours.text], [0, 1, `jo@pollensense.com${VS16}`]);
+	const lookalike = redactText(`jo@pollensense.com${VS16}`);
+	assert.deepEqual([lookalike.emails, lookalike.internalEmails, lookalike.text], [1, 0, '[email]']);
 	const file = redactText(`icon@2x.png${ACUTE}`);
 	assert.deepEqual([file.emails, file.phones], [0, 0]);
-	assert.equal(redactText(`jo@sub.pollensense.com${ACUTE}`).internalEmails, 1);
+	assert.equal(redactText(`jo@sub.pollensense.com${ACUTE}`).internalEmails, 0);
+	assert.equal(redactText(`jo@sub.pollensense.com${ACUTE}`).emails, 1);
+	assert.equal(redactText('jo@sub.pollensense.com').internalEmails, 1);
 });
 
 test('composed accented letters and plain ascii addresses still behave as before', () => {
