@@ -160,3 +160,44 @@ test('includes that cannot decide anything inside the folder do not stop the gua
 		s.cleanup();
 	}
 });
+
+test('an include whose wildcard starts above or at the folder, or a folder kept local only by per-depth file rules, is refused too (independent review of round 4)', () => {
+	const s = sandbox();
+	try {
+		const kept = (text) => ['team/board/raw/probe.json', 'team/board/raw/a/probe.json', 'team/board/raw/a/b/probe.png', 'team/board/raw/.probe'].every((p) => !isSynced(parseFilter(text), p));
+		for (const [include, file] of [
+			['+ /**/*.md', 'team/board/raw/issues/x.md'],
+			['+ /**/PSE-1.json', 'team/board/raw/issues/PSE-1.json'],
+			['+ /team/**/PSE-1.json', 'team/board/raw/issues/PSE-1.json'],
+			['+ /team/board/**/PSE-1.json', 'team/board/raw/issues/PSE-1.json'],
+			['+ /team/board/*/issues/*.json', 'team/board/raw/issues/PSE-1.json'],
+			['+ /team/*/raw/issues/PSE-1.json', 'team/board/raw/issues/PSE-1.json'],
+			['+ /*/board/raw/issues/x.md', 'team/board/raw/issues/x.md'],
+			['+ /team/board/ra[w]/issues/x.md', 'team/board/raw/issues/x.md'],
+			['+ /team/{board,x}/raw/issues/x.md', 'team/board/raw/issues/x.md'],
+		]) {
+			const text = `${include}\n${EXCLUDE}\n`;
+			assert.ok(kept(text), `every probe stays local: ${include}`);
+			assert.equal(isSynced(parseFilter(text), file), true, `${file} really syncs with ${include}`);
+			assert.throws(() => guardWith(s, [include, EXCLUDE]), (e) => e.code === 'export-synced' && e.message.includes('filter line 1'), include);
+		}
+		// a deeper folder under a wildcard that starts above it
+		assert.throws(
+			() => assertLocalOnly('team/board/raw/export', { workspaceRoot: s.workspace, filterText: '+ /team/board/raw/**/*.md\n- /team/board/raw/export/**\n' }),
+			(e) => e.code === 'export-synced' && e.message.includes('filter line 1'),
+		);
+		// kept local only by per-depth file rules: an include AFTER them still decides what they do not cover
+		const perDepth = ['- /team/board/raw/*.json', '- /team/board/raw/*/*.json', '- /team/board/raw/*/*/*.png', '- /team/board/raw/.*', '+ /team/board/raw/**'];
+		assert.ok(kept(`${perDepth.join('\n')}\n`));
+		assert.equal(isSynced(parseFilter(`${perDepth.join('\n')}\n`), 'team/board/raw/issues/x.txt'), true);
+		assert.throws(() => guardWith(s, perDepth), (e) => e.code === 'export-synced' && e.message.includes('filter line 5'));
+		// the same include after a line that excludes the whole folder never gets to decide
+		assert.deepEqual(guardWith(s, [EXCLUDE, '+ /team/board/raw/**', '+ /**/*.md']), { where: 'filtered', rel: RAW });
+		// an include aimed at a sibling folder by a plain path passes; a wildcard above the folder is refused even when
+		// its later segments could not match here (fail closed: move it below the exclusion)
+		assert.deepEqual(guardWith(s, ['+ /team/board/files/**', EXCLUDE]), { where: 'filtered', rel: RAW });
+		assert.throws(() => guardWith(s, ['+ /team/*/files/x.md', EXCLUDE]), (e) => e.code === 'export-synced');
+	} finally {
+		s.cleanup();
+	}
+});

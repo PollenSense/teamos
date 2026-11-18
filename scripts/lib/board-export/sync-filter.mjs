@@ -292,7 +292,10 @@ function existingIssueFolders(abs) {
 	return entries.filter((e) => e.isDirectory() && ISSUE_FOLDER.test(e.name)).map((e) => e.name).sort();
 }
 
-/** The text of an rclone glob up to its first wildcard (`*`, `?`, `[`, `{`), with backslash escapes resolved. */
+/**
+ * The text of an rclone glob up to its first wildcard (`*`, `?`, `[`, `{`), with backslash escapes resolved;
+ * `whole` is true when there was no wildcard at all.
+ */
 function literalPrefix(glob) {
 	let text = '';
 	for (let i = 0; i < glob.length; i++) {
@@ -301,28 +304,41 @@ function literalPrefix(glob) {
 			if (i + 1 < glob.length) text += glob[++i];
 			continue;
 		}
-		if ('*?[{'.includes(c)) break;
+		if ('*?[{'.includes(c)) return { text, whole: false };
 		text += c;
 	}
-	return text;
+	return { text, whole: true };
 }
 
 /**
- * The first include rule that sits ahead of the rule(s) keeping `folderRel` local and could match a file inside the
- * folder, or null. The probe paths are a finite set: `+ /team/board/raw/issues/PSE-1.json` or `+ *.md` ahead of
- * `- /team/board/raw/**` matches none of them and still lets such a file reach Drive. So an include rule ahead of the
- * exclusion fails the guard when it is anchored and its path (the part before any wildcard) lies inside the folder,
- * or when it is not anchored (an unanchored rule matches below any folder, this one too). `keptBy` is the line of the
- * last rule that decided a probe: an include after it never gets to decide anything inside the folder, because the
- * first matching rule wins.
+ * The first include rule that could match a file inside `folderRel` and is not shut out by the rule that keeps the
+ * folder local, or null. The probe paths are a finite set: `+ /team/board/raw/issues/PSE-1.json`, `+ /team/*` followed
+ * by `/raw/issues/PSE-1.json` or `+ *.md` ahead of `- /team/board/raw/**` match none of them, and they still decide
+ * for the files they match (first match wins). An include rule is refused when
+ *   - it is not anchored (an unanchored rule matches below any folder, this one too), or
+ *   - it is anchored and its text before the first wildcard lies inside the folder, or is a leading part of the
+ *     folder's path (a wildcard that starts above or at the folder, as in `/team/board/ra[w]/x.md`).
+ * Rules after the rule that excludes the folder's directory never matter (rclone does not enter an excluded
+ * directory), so only rules ahead of it are looked at. When no directory rule excludes the folder (it is kept local
+ * by file rules, which each cover some depths or extensions only) every include rule counts, wherever it stands.
  */
-function includeInsideFolder(rules, folderRel, keptBy) {
-	const base = normalisePath(folderRel).join('/');
+function includeInsideFolder(rules, folderRel) {
+	const parts = normalisePath(folderRel);
+	const base = parts.join('/');
+	let shutAt = Infinity;
+	for (let i = 1; i <= parts.length; i++) {
+		const rule = firstMatch(rules.dirRules, `${parts.slice(0, i).join('/')}/`);
+		if (rule && !rule.include) {
+			shutAt = rule.line;
+			break;
+		}
+	}
 	for (const rule of rules.fileRules) {
-		if (!rule.include || rule.line >= keptBy) continue;
+		if (!rule.include || rule.line >= shutAt) continue;
 		if (!rule.glob.startsWith('/')) return rule;
-		const text = literalPrefix(rule.glob.slice(1));
+		const { text, whole } = literalPrefix(rule.glob.slice(1));
 		if (text === base || text.startsWith(`${base}/`)) return rule;
+		if (!whole && `${base}/`.startsWith(text)) return rule;
 	}
 	return null;
 }
@@ -357,14 +373,13 @@ export function assertLocalOnly(folder, { workspaceRoot, filterText }) {
 			`the folder "${rel.split(sep).join('/')}" is inside the synced workspace and the sync filter does not keep it local (${unmatched.length} of ${probes.length} probe paths would sync); add "- /${rel.split(sep).join('/')}/**" to the filter and run the next bisync with --resync before writing here`,
 		);
 	}
-	// Every probe is kept local. An include rule ahead of the exclusion that names something inside the folder
-	// would still let that file sync, though no probe path reaches it: refuse that too (fail closed).
-	const keptBy = Math.max(...probes.map((p) => matchingRule(rules, p)?.line ?? 0));
-	const early = includeInsideFolder(rules, rel, keptBy);
+	// Every probe is kept local. An include rule that could still decide a file inside the folder would let it
+	// sync, though no probe path reaches it: refuse that too (fail closed).
+	const early = includeInsideFolder(rules, rel);
 	if (early) {
 		throw new ExportError(
 			'export-synced',
-			`filter line ${early.line} is an include rule that can match a path inside the folder "${rel.split(sep).join('/')}", ahead of the rule that keeps the folder local, so what it names would sync; remove it or move it below the exclusion`,
+			`filter line ${early.line} is an include rule that can match a path inside the folder "${rel.split(sep).join('/')}", and it is not shut out by the rule that keeps the folder local, so what it matches would sync; remove it, or move it below a line that excludes the whole folder`,
 		);
 	}
 	return { where: 'filtered', rel: rel.split(sep).join('/') };
