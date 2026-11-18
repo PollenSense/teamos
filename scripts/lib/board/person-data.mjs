@@ -236,16 +236,24 @@ function findAll(text, internalDomains) {
 		emailSpans.push(span);
 	}
 	const phoneSpans = [];
-	let k = 0; // runs come in order, so one pointer over the address spans is enough
-	for (const m of maskNonPhones(norm).matchAll(PHONE_RUN)) {
-		const base = m.index;
-		for (const s of phoneSpansIn(m[1])) {
-			const start = base + s.start;
-			const end = base + s.end;
-			while (k < addressSpans.length && addressSpans[k].end <= start) k++;
-			if (k < addressSpans.length && addressSpans[k].start < end) continue; // digits inside an address
-			phoneSpans.push({ start, end, label: '[phone]' });
+	// Digits inside an address are part of the address, not a number; and digits beside one must not join a number into a run that
+	// reaches into the address (`555-010-0199 12.x@example.org`: the run `555-010-0199 12` was dropped whole and the number stayed in
+	// the synced text). So every address span is cut out of the scan copy first, with `#` of the same length (a character no run
+	// holds), and the phone scan sees the number up to the address and nothing of the address.
+	let phoneText = norm;
+	if (addressSpans.length > 0) {
+		const parts = [];
+		let at = 0;
+		for (const s of addressSpans) {
+			parts.push(norm.slice(at, s.start), '#'.repeat(s.end - s.start));
+			at = s.end;
 		}
+		parts.push(norm.slice(at));
+		phoneText = parts.join('');
+	}
+	for (const m of maskNonPhones(phoneText).matchAll(PHONE_RUN)) {
+		const base = m.index;
+		for (const s of phoneSpansIn(m[1])) phoneSpans.push({ start: base + s.start, end: base + s.end, label: '[phone]' });
 	}
 	const spans = [...emailSpans, ...phoneSpans].sort((a, b) => a.start - b.start);
 	if (startOf) for (const s of spans) [s.start, s.end] = [startOf[s.start], endOf[s.end - 1]];
