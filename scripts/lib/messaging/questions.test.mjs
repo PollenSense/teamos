@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
+	MAX_OTHER,
 	MAX_QUESTIONS,
 	askedBy,
 	checkEntry,
@@ -116,6 +117,16 @@ test('parseAnswers accepts the four kinds and rejects mixtures and bad shapes', 
 	fails([{ ask: 'A', q: 'q1', option: 1, by: 'x' }], /by and via go together/);
 	fails([{ q: 'q1', option: 1 }], /ask is required/);
 	assert.equal(parseAnswers(undefined), undefined);
+});
+
+test('an Other answer may be up to 1000 characters; one more is refused with the count', () => {
+	assert.equal(MAX_OTHER, 1000);
+	const edge = 'x'.repeat(1000);
+	assert.deepEqual(parseAnswers([{ ask: 'A', q: 'q1', other: edge }]), [{ ask: 'A', q: 'q1', other: edge }]);
+	assert.throws(
+		() => parseAnswers([{ ask: 'A', q: 'q1', other: `${edge}x` }]),
+		(e) => e.status === 400 && /other is 1001 characters; the limit is 1000/.test(e.message),
+	);
 });
 
 // ─── foldAsk and checkEntry ──────────────────────────────────────────────────
