@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, 
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { BoardError, BoardStore } from '../board/index.mjs';
-import { ImportError, applyIssues, applyReference, formatIssuesSummary, formatSummary, loadExisting, planIssues, planReference, writeRaw } from './index.mjs';
+import { ImportError, applyIssues, applyReference, formatIssuesSummary, formatSummary, loadExisting, planIssues, planReference, referenceGaps, writeRaw } from './index.mjs';
 import { MEMBERS, buildExport, buildInventorySizedExport, buildInventorySizedIssues } from './fixture.mjs';
 
 function sandbox() {
@@ -522,6 +522,36 @@ test('issues: a card of another Linear issue, or a native card with no linearId,
 		const again = await runIssues(s, e);
 		assert.equal(again.failures['duplicate-id'], 2);
 		assert.equal(again.applied['issues INS'].failed, 0);
+	} finally {
+		s.cleanup();
+	}
+});
+
+test('referenceGaps: every kind of difference is counted on its own, a damaged file is counted apart, and a matching board has none', async () => {
+	const s = sandbox();
+	try {
+		await run(s, buildExport());
+		const store = s.store();
+		const reference = planReference(buildExport(), { members: MEMBERS, existing: await loadExisting(store) });
+		const gaps = async (plan) => referenceGaps(plan, store);
+		assert.deepEqual(await gaps(reference), { people: 0, projects: 0, labels: 0, cycles: 0, damaged: 0, total: 0 });
+		// a label renamed, a project or a cycle that is another Linear object, a person with another name
+		assert.equal((await gaps({ ...reference, labels: { ...reference.labels, labels: reference.labels.labels.map((l, i) => (i === 0 ? { ...l, name: 'another-name' } : l)) } })).labels, 1);
+		assert.equal((await gaps({ ...reference, projects: reference.projects.map((p, i) => (i === 0 ? { ...p, fields: { ...p.fields, linearId: 'p-other' } } : p)) })).projects, 1);
+		assert.equal((await gaps({ ...reference, cycles: reference.cycles.map((c, i) => (i === 0 ? { ...c, linearId: 'c-other' } : c)) })).cycles, 1);
+		const [firstId] = Object.keys(reference.people.people);
+		assert.equal((await gaps({ ...reference, people: { ...reference.people, people: { ...reference.people.people, [firstId]: { ...reference.people.people[firstId], name: 'someone-else' } } } })).people, 1);
+		// a project, a cycle and a person the board does not have
+		assert.equal((await gaps({ ...reference, projects: [...reference.projects, { fields: { code: 'not-there', linearId: 'p-new' } }] })).projects, 1);
+		assert.equal((await gaps({ ...reference, cycles: [...reference.cycles, { team: 'PSE', number: 99, linearId: 'c-new' }] })).cycles, 1);
+		assert.equal((await gaps({ ...reference, people: { ...reference.people, people: { ...reference.people.people, 'u-new': { name: 'newcomer' } } } })).people, 1);
+		// damaged files: counted apart, not as gaps
+		writeFileSync(join(s.dir, 'projects', 'test-project.md'), 'hand broken\n');
+		writeFileSync(join(s.dir, 'cycles', 'PSE', '1.json'), '{ not json');
+		const damaged = await gaps(reference);
+		assert.equal(damaged.damaged, 2);
+		assert.equal(damaged.total, 0);
+		assert.equal(damaged.projects + damaged.cycles, 0);
 	} finally {
 		s.cleanup();
 	}
