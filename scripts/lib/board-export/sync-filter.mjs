@@ -292,6 +292,41 @@ function existingIssueFolders(abs) {
 	return entries.filter((e) => e.isDirectory() && ISSUE_FOLDER.test(e.name)).map((e) => e.name).sort();
 }
 
+/** The text of an rclone glob up to its first wildcard (`*`, `?`, `[`, `{`), with backslash escapes resolved. */
+function literalPrefix(glob) {
+	let text = '';
+	for (let i = 0; i < glob.length; i++) {
+		const c = glob[i];
+		if (c === '\\') {
+			if (i + 1 < glob.length) text += glob[++i];
+			continue;
+		}
+		if ('*?[{'.includes(c)) break;
+		text += c;
+	}
+	return text;
+}
+
+/**
+ * The first include rule that sits ahead of the rule(s) keeping `folderRel` local and could match a file inside the
+ * folder, or null. The probe paths are a finite set: `+ /team/board/raw/issues/PSE-1.json` or `+ *.md` ahead of
+ * `- /team/board/raw/**` matches none of them and still lets such a file reach Drive. So an include rule ahead of the
+ * exclusion fails the guard when it is anchored and its path (the part before any wildcard) lies inside the folder,
+ * or when it is not anchored (an unanchored rule matches below any folder, this one too). `keptBy` is the line of the
+ * last rule that decided a probe: an include after it never gets to decide anything inside the folder, because the
+ * first matching rule wins.
+ */
+function includeInsideFolder(rules, folderRel, keptBy) {
+	const base = normalisePath(folderRel).join('/');
+	for (const rule of rules.fileRules) {
+		if (!rule.include || rule.line >= keptBy) continue;
+		if (!rule.glob.startsWith('/')) return rule;
+		const text = literalPrefix(rule.glob.slice(1));
+		if (text === base || text.startsWith(`${base}/`)) return rule;
+	}
+	return null;
+}
+
 /** Where a folder is, relative to the synced workspace: `{ rel, outside, abs }` (`rel` is '' for the workspace itself; `abs` the real path). */
 function locate(folder, workspaceRoot) {
 	if (typeof workspaceRoot !== 'string' || workspaceRoot === '') throw new ExportError('bad-path', 'the workspace root is not given');
@@ -320,6 +355,16 @@ export function assertLocalOnly(folder, { workspaceRoot, filterText }) {
 		throw new ExportError(
 			'export-synced',
 			`the folder "${rel.split(sep).join('/')}" is inside the synced workspace and the sync filter does not keep it local (${unmatched.length} of ${probes.length} probe paths would sync); add "- /${rel.split(sep).join('/')}/**" to the filter and run the next bisync with --resync before writing here`,
+		);
+	}
+	// Every probe is kept local. An include rule ahead of the exclusion that names something inside the folder
+	// would still let that file sync, though no probe path reaches it: refuse that too (fail closed).
+	const keptBy = Math.max(...probes.map((p) => matchingRule(rules, p)?.line ?? 0));
+	const early = includeInsideFolder(rules, rel, keptBy);
+	if (early) {
+		throw new ExportError(
+			'export-synced',
+			`filter line ${early.line} is an include rule that can match a path inside the folder "${rel.split(sep).join('/')}", ahead of the rule that keeps the folder local, so what it names would sync; remove it or move it below the exclusion`,
 		);
 	}
 	return { where: 'filtered', rel: rel.split(sep).join('/') };
