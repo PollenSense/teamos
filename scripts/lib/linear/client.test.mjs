@@ -266,9 +266,14 @@ test('malformed JSON is not a network failure (no retry); 401 and 403 still stop
 		assert.deepEqual(sleeps, []);
 	}
 
-	// a client error whose body cannot be read keeps its status in the message
-	const gone = createClient({ env, paceMs: 0, maxRetries: 1, sleep: async () => {}, fetchImpl: async () => brokenBody(404) });
-	await assert.rejects(gone.run('teams'), (e) => e.code === 'network' && /HTTP 404/.test(e.message));
+	// a client error whose body cannot be read ends at once as an `http` error with its status (no retry: the
+	// connection is not the problem), like a 404 whose body reads fine
+	let g = 0;
+	const goneSleeps = [];
+	const gone = createClient({ env, paceMs: 0, maxRetries: 3, sleep: async (ms) => goneSleeps.push(ms), fetchImpl: async () => { g++; return brokenBody(404); } });
+	await assert.rejects(gone.run('teams'), (e) => e.code === 'http' && /HTTP 404/.test(e.message));
+	assert.equal(g, 1, 'a 404 is not retried');
+	assert.deepEqual(goneSleeps, []);
 	// a server error whose body cannot be read is still judged by its status
 	const down = createClient({ env, paceMs: 0, maxRetries: 2, sleep: async () => {}, fetchImpl: async () => brokenBody(503) });
 	await assert.rejects(down.run('teams'), (e) => e.code === 'http' && /503/.test(e.message));

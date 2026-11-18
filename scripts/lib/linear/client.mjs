@@ -163,10 +163,11 @@ export function createClient(options = {}) {
 			} catch (err) {
 				unreadable = err;
 			}
-			// A body that cannot be read (the connection dropped part-way, the timeout fired) is a network failure and
-			// gets the same bounded retry. Rate-limit and server-error answers are judged by their status and headers,
-			// which do not need the body, so they keep their own handling below.
-			if (unreadable && res.status !== 429 && res.status < 500) {
+			// A 200 whose body cannot be read (the connection dropped part-way, the timeout fired) is a network failure
+			// and gets the same bounded retry. Any other status is judged by the status and headers, which do not need
+			// the body: a rate limit and a server error keep their own handling below, and a client error (404) ends
+			// at once as an `http` error instead of being retried as if the connection were the problem.
+			if (unreadable && res.status === 200) {
 				if (++attempts > maxRetries) throw new FetchError('network', `${name}: the answer (HTTP ${res.status}) could not be read after ${attempts} tries (${scrub(unreadable?.name ?? 'error')})`);
 				const wait = Math.min(maxWaitMs, 1000 * 2 ** attempts);
 				onEvent({ name, status: 0, waitedMs: wait, requestsRemaining: state.requestsRemaining, complexityRemaining: state.complexityRemaining });
