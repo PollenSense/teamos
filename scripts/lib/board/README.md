@@ -58,9 +58,9 @@ with a `code` (`errors.mjs`). Phase (a) has one writer, the importer; field-leve
 
 `store.index.refresh()` stats every issue file (parallel) and re-reads those whose **mtime or size** differ from the
 cache (Drive can restore an older mtime on a changed file, so "newer than" is not the test). The cache lives in
-memory and in `team/.logs/board/index.json`. `byId`, `resolve(idOrAlias)`, `entries()`, `problems` (damaged,
+memory and in `team/.logs/board/index.json` (version 2: it names the issues folder it was made for, and a cache file from another folder or an older version is ignored). `byId`, `resolve(idOrAlias)`, `entries()`, `problems` (damaged,
 misplaced, id-mismatch, alias-shadowed, alias-taken; a shared alias goes to the lower issue number). A folder the index cannot read makes
-`refresh()` throw: an unreadable folder is never taken for an empty one; the same holds for an issue file that cannot be inspected or read (`unreadable`, the index stays as it was): only a missing file (ENOENT) is dropped. `refresh`, `noteWritten` and `flush` run one after the other inside the process, so a note of our own write is never pruned by a refresh that began earlier. The store gives `noteWritten` the mtime and size of the temp file taken before the rename, so a file a sync replaces right after is re-read. 1,500 issues: about 125 ms cold, 30 ms warm. Each write
+`refresh()` throw: an unreadable folder is never taken for an empty one; the same holds for an issue file that cannot be inspected or read (`unreadable`, the index stays as it was): only a missing file (ENOENT) is dropped. The first 32 KiB of a file are read for its front matter; when that head stops right after a `---` that may be the start of a longer line, the whole file is read. `refresh`, `noteWritten` and `flush` run one after the other inside the process, so a note of our own write is never pruned by a refresh that began earlier. The store gives `noteWritten` the mtime and size of the temp file taken before the rename, so a file a sync replaces right after is re-read. 1,500 issues: about 125 ms cold, 30 ms warm. Each write
 refreshes first (to check aliases), so a write costs a stat per issue: about 4 ms at 600 issues, linear.
 
 ## Config (`config.mjs`)
