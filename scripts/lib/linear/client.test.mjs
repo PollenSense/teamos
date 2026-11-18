@@ -274,6 +274,20 @@ test('malformed JSON is not a network failure (no retry); 401 and 403 still stop
 	await assert.rejects(gone.run('teams'), (e) => e.code === 'http' && /HTTP 404/.test(e.message));
 	assert.equal(g, 1, 'a 404 is not retried');
 	assert.deepEqual(goneSleeps, []);
+	// a 3xx whose body cannot be read is not retried either
+	let movedCalls = 0;
+	const moved = createClient({ env, paceMs: 0, maxRetries: 3, sleep: async () => {}, fetchImpl: async () => { movedCalls++; return brokenBody(302); } });
+	await assert.rejects(moved.run('teams'), code('http'));
+	assert.equal(movedCalls, 1);
+	// a 400 (where Linear puts RATELIMITED, readable only in the body) and a 408 whose body cannot be read ARE retried, and recover
+	for (const status of [400, 408]) {
+		let k = 0;
+		const sleepsK = [];
+		const recovers = createClient({ env, paceMs: 0, sleep: async (ms) => sleepsK.push(ms), fetchImpl: async () => (++k < 3 ? brokenBody(status) : okAnswer()) });
+		await recovers.run('teams');
+		assert.equal(k, 3, String(status));
+		assert.deepEqual(sleepsK, [2000, 4000], String(status));
+	}
 	// a server error whose body cannot be read is still judged by its status
 	const down = createClient({ env, paceMs: 0, maxRetries: 2, sleep: async () => {}, fetchImpl: async () => brokenBody(503) });
 	await assert.rejects(down.run('teams'), (e) => e.code === 'http' && /503/.test(e.message));

@@ -163,11 +163,13 @@ export function createClient(options = {}) {
 			} catch (err) {
 				unreadable = err;
 			}
-			// A 200 whose body cannot be read (the connection dropped part-way, the timeout fired) is a network failure
-			// and gets the same bounded retry. Any other status is judged by the status and headers, which do not need
-			// the body: a rate limit and a server error keep their own handling below, and a client error (404) ends
-			// at once as an `http` error instead of being retried as if the connection were the problem.
-			if (unreadable && res.status === 200) {
+			// An answer whose body cannot be read (the connection dropped part-way, the timeout fired) is a network
+			// failure and gets the same bounded retry when the body would have mattered: a 200 (the data), a 400
+			// (Linear sends RATELIMITED as a 400 and only the body says so) and a 408 (the server timed out). Any other
+			// status is judged by the status and headers, which do not need the body: a rate limit (429) and a server
+			// error keep their own handling below, and a client error such as a 404 ends at once as an `http` error
+			// instead of being retried as if the connection were the problem.
+			if (unreadable && (res.status === 200 || res.status === 400 || res.status === 408)) {
 				if (++attempts > maxRetries) throw new FetchError('network', `${name}: the answer (HTTP ${res.status}) could not be read after ${attempts} tries (${scrub(unreadable?.name ?? 'error')})`);
 				const wait = Math.min(maxWaitMs, 1000 * 2 ** attempts);
 				onEvent({ name, status: 0, waitedMs: wait, requestsRemaining: state.requestsRemaining, complexityRemaining: state.complexityRemaining });
