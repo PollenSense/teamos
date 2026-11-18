@@ -164,6 +164,23 @@ test('redactFileName scans the whole name and the stem: an address that ends the
 	assert.deepEqual(redactFileName('555-010-0199 jane@outside.example.invalid.png'), { value: '[phone] [email].png', flagged: true });
 	assert.deepEqual(redactFileName('jane@outside.example.invalid 555-010-0199.png'), { value: '[email] [phone].png', flagged: true });
 	assert.deepEqual(redactFileName('555-010-0199 jane@outside.example.org'), { value: '[phone] [email]', flagged: true });
+	// an address before an inner extension, wherever it sits in the name
+	assert.deepEqual(redactFileName('jane@outside.example.invalid.png 555-010-0199.png'), { value: '[email].png [phone].png', flagged: true });
+	assert.deepEqual(redactFileName('jane@outside.example.invalid.png (1).png'), { value: '[email].png (1).png', flagged: true });
+	assert.deepEqual(redactFileName('export jane@outside.example.invalid.csv.gz'), { value: 'export [email].csv.gz', flagged: true });
+	assert.deepEqual(redactFileName('a jane@outside.example.invalid.png b joe@outside.example.invalid.png.png'), { value: 'a [email].png b [email].png.png', flagged: true });
+	// a token with an at-sign before it can swallow the address after it; addresses glued with hyphens or underscores
+	assert.deepEqual(redactFileName('photo@2x.png_jane@outside.example.invalid.txt'), { value: 'photo@2x.png_[email].txt', flagged: true });
+	assert.equal(redactFileName('v2_photo@2x.txt_jane@outside.example.invalid.pdf').value, 'v2_photo@2x.txt_[email].pdf');
+	const glued = redactFileName('jane@outside.example.invalid.csv-jane@outside.example.invalid-joe.q@outside-example.org-report.v2');
+	assert.equal(glued.flagged, true);
+	for (const original of ['jane@outside.example.invalid', 'joe.q@outside-example.org']) assert.equal(glued.value.includes(original), false, 'no address is left');
+	// timestamps are not phone numbers once a closer look cuts their digits
+	for (const fine of ['2026-05-01-14-30-22-export.csv', '2026-05-01-14-30-22.csv', 'export 2026-05-01 14-30-22.csv', 'a.b.2026.05.01.14.30.22.png', '2026-05-01-14-30-22_0501143022.png', '20260501-143022_20260501-143022.csv', 'build 1234567 2026.05.01.csv']) assert.equal(redactFileName(fine).flagged, false, fine);
+	// the name without its last extension is scanned for anything, as before (a number the whole name hides behind `.123`)
+	assert.deepEqual(redactFileName('5550100199.123'), { value: '[phone].123', flagged: true });
+	assert.deepEqual(redactFileName('555.010.0199.123'), { value: '[phone].123', flagged: true });
+	for (const fine of ['report.final.v2.pdf', 'scan 2026.05.01 10.12.45.png', 'notes.tar.gz', 'IMG_0001 (2).jpeg', 'user@2x.v2.png', '.hidden', 'a.b.c.d.e.f.g.h.i.j.png']) assert.equal(redactFileName(fine).flagged, false, fine);
 	for (const fine of ['Screenshot 2026-05-01 at 10.12.45.png', 'image', 'a@b.png', 'photo@2x.png', '', undefined]) assert.equal(redactFileName(fine).flagged, false, String(fine));
 	assert.equal(redactFileName('plain name.png').value, 'plain name.png');
 });

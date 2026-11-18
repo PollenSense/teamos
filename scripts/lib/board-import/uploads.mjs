@@ -126,6 +126,7 @@ const SUPERSCRIPTS = String.fromCharCode(0xb9, 0xb2, 0xb3);
 const RESERVED = new RegExp(`^(con|prn|aux|nul|conin\\$|conout\\$|com[1-9${SUPERSCRIPTS}]|lpt[1-9${SUPERSCRIPTS}])$`, 'i');
 const EXTENSION = /^[A-Za-z0-9]{1,8}$/;
 const MAX_NAME_BYTES = 200;
+const MAX_NAME_PASSES = 64;
 const BREAKS = new Set([0x85, 0x2028, 0x2029, 0xfeff, 0x200b, 0x202e]);
 
 const TYPE_EXTENSIONS = {
@@ -153,19 +154,43 @@ export function splitExtension(name) {
 }
 
 /**
- * Rule A for a file name: `{ value, flagged }`. The whole name is scanned (an address that ends the name, `jane@example.org`, is
- * taken for an extension below) and so is the stem without its extension (the person-data scan takes `a@b.example.png` for a
- * file name and skips it). A flagged name is redacted by whichever scan found something.
+ * Rule A for a file name: `{ value, flagged }`. The person-data scan takes an address that ends in something like an
+ * extension for a file name and skips it (`a@b.example.png`), wherever in the name such an address sits
+ * (`jane@outside.example.invalid.png (1).png`), and a token before it can swallow an address after it
+ * (`photo@2x.png_jane@outside.example.invalid`). So the name is scanned whole, then every part of it that starts at the
+ * name or after a separator and ends at the name or before a dot or hyphen (shortest start first, longest part first): the first
+ * part that reads as flagged is redacted in place and the name is scanned again, until none does. One finding (a phone
+ * number) never hides another (an address before an inner extension). A part other than the whole name and the name without
+ * its last extension is scanned only if it holds an `@` (it is there to find a hidden address; cutting a run of digits
+ * could make a phone number out of a timestamp).
  */
 export function redactFileName(name) {
-	const text = typeof name === 'string' ? name : '';
-	// Both scans, one after the other: what the whole-name scan leaves (a phone number was found, an address that ends in an
-	// extension was skipped) is scanned again as a stem, so one finding never hides another.
-	const whole = redactValue(text);
-	const { stem, ext } = splitExtension(whole.value);
-	const part = redactValue(stem);
-	if (part.flagged) return { value: ext === '' ? part.value : `${part.value}.${ext}`, flagged: true };
-	return { value: whole.value, flagged: whole.flagged };
+	let value = typeof name === 'string' ? name : '';
+	let flagged = false;
+	for (let pass = 0; pass <= MAX_NAME_PASSES; pass++) {
+		const starts = [0, ...[...value.matchAll(/[\s_()[\],;]/g)].map((m) => m.index + 1)];
+		const ends = [value.length, ...[...value.matchAll(/[.-]/g)].map((m) => m.index).reverse()];
+		const stemEnd = [...value.matchAll(/\./g)].map((m) => m.index).pop();
+		let found = null;
+		search: for (const from of starts) {
+			for (const to of ends) {
+				if (to <= from) continue;
+				const text = value.slice(from, to);
+				// Only the whole name and the name without its last extension are scanned for anything. A closer part is looked at
+				// for an address only: cutting a run of digits (`2026-05-01-14-30-22`) can make a phone number out of a timestamp.
+				if (!(from === 0 && (to === value.length || to === stemEnd)) && !text.includes('@')) continue;
+				const part = redactValue(text);
+				if (part.flagged) {
+					found = { from, to, text: part.value };
+					break search;
+				}
+			}
+		}
+		if (found === null) return { value, flagged };
+		value = value.slice(0, found.from) + found.text + value.slice(found.to);
+		flagged = true;
+	}
+	return { value: '[name]', flagged: true }; // never reached by a real name: a name that needs this many rounds is refused whole
 }
 
 /**

@@ -50,15 +50,14 @@ async function assertPlainFolder(path) {
 	if (st !== null && (st.isSymbolicLink() || !st.isDirectory())) throw new BoardError('bad-folder', 'a folder the uploads go into is a link or not a folder');
 }
 
-/** Errors that mean this file system makes no hard links (a share, a mount): `publishFile` then looks for the name once more and renames. */
-const NO_HARD_LINKS = new Set(['EPERM', 'ENOTSUP', 'EOPNOTSUPP', 'ENOSYS', 'EXDEV', 'EMLINK']);
-
 /**
  * Puts a finished download at `dir/<name>` WITHOUT replacing anything and returns the name used. `taken` (lower-case names)
  * is only what the folder held when it was listed; a file that appeared since (a hand edit, a sync from another machine)
  * must not be overwritten, and a rename would replace it. So the file is hard-linked into place (the link fails with EEXIST
- * when the name is taken: the next free name is tried) and the temporary name removed. Without hard links a fresh look for
- * the name stands in; that leaves a window of a few microseconds. `ops` is for tests.
+ * when the name is taken: the next free name is tried) and the temporary name removed. When the link fails for any other
+ * reason (no hard links on a share, a Windows volume that reports it as EISDIR, a mount that answers EINVAL or EACCES)
+ * a fresh look for the name stands in and the file is renamed; that leaves a window of a few microseconds, and a rename that
+ * fails too throws its own error. `ops` is for tests.
  */
 export async function publishFile(tmp, dir, name, taken, ops = { link, lstat, rename, unlink }) {
 	let candidate = name;
@@ -71,7 +70,6 @@ export async function publishFile(tmp, dir, name, taken, ops = { link, lstat, re
 			return candidate;
 		} catch (err) {
 			if (err?.code === 'EEXIST') exists = true;
-			else if (!NO_HARD_LINKS.has(err?.code)) throw err;
 		}
 		if (!exists) {
 			exists = await ops.lstat(dest).then(() => true, (err) => {

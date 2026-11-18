@@ -788,6 +788,16 @@ test('publishFile: links into place, numbers a name that is taken, and without h
 		assert.equal(await publishFile(make('t5', 'five'), dir, 'c.png', new Set(), ops), 'c.png');
 		assert.equal(readFileSync(join(dir, 'a.png'), 'utf8'), 'one');
 		assert.equal(readFileSync(join(dir, 'c.png'), 'utf8'), 'five');
+		// whatever a mount answers instead of a link (Windows volumes say EISDIR, some mounts EINVAL or EACCES), the same fallback
+		for (const [i, code] of ['EISDIR', 'EINVAL', 'EACCES', 'ENOSYS', 'EXDEV'].entries()) {
+			const failing = { ...ops, link: async () => { throw Object.assign(new Error('refused'), { code }); } };
+			assert.equal(await publishFile(make(`u${i}`, `bytes ${code}`), dir, `d${i}.png`, new Set(), failing), `d${i}.png`, code);
+			assert.equal(readFileSync(join(dir, `d${i}.png`), 'utf8'), `bytes ${code}`);
+		}
+		// and a look that fails for a reason other than "not there" is an error, not a free name
+		const blind = { ...ops, lstat: async () => { throw Object.assign(new Error('no'), { code: 'EACCES' }); } };
+		await assert.rejects(publishFile(make('t6', 'six'), dir, 'e.png', new Set(), blind), (e) => e.code === 'EACCES');
+		assert.equal(existsSync(join(dir, 'e.png')), false);
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}
