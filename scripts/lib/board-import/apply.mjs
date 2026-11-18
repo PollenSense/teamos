@@ -363,12 +363,15 @@ function formatLinksLines(l, { applied, checks, dryRun }) {
  * the export or the people map changed) would name people and projects the board does not have. Compares the plan with
  * what is on disk: people and labels by Linear id and name, projects and cycles by their file and Linear id.
  * Returns counts only (`{ people, projects, labels, cycles, total, damaged }`: how many differ or are missing, and how many
- * files could not be read at all), never a name. A damaged file is counted in `damaged`, not in `total`.
+ * files could not be read at all), never a name. A damaged file is counted in `damaged`, not in `total`: it is not a gap
+ * that running the reference import fixes (that import never overwrites it). The caller still refuses `--apply` while
+ * `damaged > 0`, because the cards cannot be checked against a file nobody can read.
  */
 export async function referenceGaps(reference, store) {
 	const gaps = { people: 0, projects: 0, labels: 0, cycles: 0, damaged: 0 };
 	// A file the store refuses to read (damaged, unreadable) cannot be compared. It is counted apart and is not a gap: the
-	// reference import never overwrites such a file, so "run it again" would send the person in a circle.
+	// reference import never overwrites such a file, so "run it again" would send the person in a circle (the message
+	// asks for a repair or a removal instead).
 	const read = async (fn) => {
 		try {
 			return { file: await fn() };
