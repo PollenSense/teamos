@@ -761,7 +761,7 @@ test('a file that appears in the card folder while a download runs is never repl
 	}
 });
 
-test('publishFile: links into place, numbers a name that is taken, and without hard links looks again before it renames', async () => {
+test('publishFile: links into place, numbers a name that is taken, and without hard links copies exclusively, never replacing (CodeRabbit on #23, round 5)', async () => {
 	const root = mkdtempSync(join(tmpdir(), 'board-publish-'));
 	try {
 		const dir = join(root, 'dir');
@@ -781,11 +781,16 @@ test('publishFile: links into place, numbers a name that is taken, and without h
 		assert.equal(existsSync(join(root, 't2')), false, 'the temp name is gone');
 		// a different error is not swallowed
 		await assert.rejects(publishFile(make('t3', 'x'), join(root, 'no-such-dir'), 'b.png', new Set()), (e) => e.code === 'ENOENT');
-		// no hard links: a name that is there is still not replaced, a free one is renamed into place
+		// no hard links: a name that is there is still not replaced, a free one is copied into place and the temp name removed
 		const fsp = await import('node:fs/promises');
-		const ops = { link: async () => { throw Object.assign(new Error('no links here'), { code: 'EPERM' }); }, lstat: fsp.lstat, rename: fsp.rename, unlink: fsp.unlink };
+		const noLink = async () => {
+			throw Object.assign(new Error('no links here'), { code: 'EPERM' });
+		};
+		const ops = { link: noLink, copyFile: fsp.copyFile, unlink: fsp.unlink };
 		assert.equal(await publishFile(make('t4', 'four'), dir, 'a.png', new Set(), ops), 'a-3.png');
-		assert.equal(await publishFile(make('t5', 'five'), dir, 'c.png', new Set(), ops), 'c.png');
+		const t5 = make('t5', 'five');
+		assert.equal(await publishFile(t5, dir, 'c.png', new Set(), ops), 'c.png');
+		assert.equal(existsSync(t5), false, 'the temp name is gone after a copy too');
 		assert.equal(readFileSync(join(dir, 'a.png'), 'utf8'), 'one');
 		assert.equal(readFileSync(join(dir, 'c.png'), 'utf8'), 'five');
 		// whatever a mount answers instead of a link (Windows volumes say EISDIR, some mounts EINVAL or EACCES), the same fallback
@@ -794,10 +799,31 @@ test('publishFile: links into place, numbers a name that is taken, and without h
 			assert.equal(await publishFile(make(`u${i}`, `bytes ${code}`), dir, `d${i}.png`, new Set(), failing), `d${i}.png`, code);
 			assert.equal(readFileSync(join(dir, `d${i}.png`), 'utf8'), `bytes ${code}`);
 		}
-		// and a look that fails for a reason other than "not there" is an error, not a free name
-		const blind = { ...ops, lstat: async () => { throw Object.assign(new Error('no'), { code: 'EACCES' }); } };
-		await assert.rejects(publishFile(make('t6', 'six'), dir, 'e.png', new Set(), blind), (e) => e.code === 'EACCES');
+		// the window the old fallback had (look, then rename): a file created by somebody else at the very moment of the copy.
+		// The exclusive copy fails with EEXIST, the name counts as taken, and the other file is untouched.
+		let raced = false;
+		const racing = {
+			...ops,
+			copyFile: async (from, to, mode) => {
+				if (!raced) {
+					raced = true; // once: the next name is free
+					writeFileSync(to, 'made by someone else, just now');
+				}
+				return fsp.copyFile(from, to, mode);
+			},
+		};
+		const t7 = make('t7', 'seven');
+		const racedTaken = new Set();
+		assert.equal(await publishFile(t7, dir, 'race.png', racedTaken, racing), 'race-2.png');
+		assert.equal(readFileSync(join(dir, 'race.png'), 'utf8'), 'made by someone else, just now', 'the file that appeared meanwhile is intact');
+		assert.equal(readFileSync(join(dir, 'race-2.png'), 'utf8'), 'seven');
+		assert.deepEqual([...racedTaken], ['race.png']);
+		// a copy that fails for another reason publishes nothing and keeps the temp file (it is not a free name)
+		const broken = { ...ops, copyFile: async () => { throw Object.assign(new Error('disk full'), { code: 'ENOSPC' }); } };
+		const t6 = make('t6', 'six');
+		await assert.rejects(publishFile(t6, dir, 'e.png', new Set(), broken), (e) => e.code === 'ENOSPC');
 		assert.equal(existsSync(join(dir, 'e.png')), false);
+		assert.equal(readFileSync(t6, 'utf8'), 'six', 'the temp file is still there for the stale sweep');
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}

@@ -193,8 +193,9 @@ itself; never in a URL, an argument, a log or an error. Without a key the dry ru
   `LINEAR_API_KEY` (the order of `scripts/linear-api.sh`); only HEAD and GET are ever sent, so a read-write key could not write.
 - **Where files go.** `team/board/files/<card id>/<name>` (the card that holds the issue key, or the earlier key the text used).
   A file used in a description and in a comment of one card is saved once. A link used on two cards is saved once per card (and
-  counts twice against the total cap). A download lands first in `raw/files/.tmp/` (never synced) and is renamed into its folder when
-  whole, so Drive never sees a half file; a temp file older than 10 minutes (a killed run) is removed at the next run. A card
+  counts twice against the total cap). A download lands first in `raw/files/.tmp/` (never synced) and is hard-linked into its folder when
+  whole, so Drive never sees a half file; where a volume has no hard links it is copied with an exclusive create instead (either way a
+  name that is taken, even one that appears at that moment, is never replaced: the next free name is used); a temp file older than 10 minutes (a killed run) is removed at the next run. A card
   folder (or `files/`, or `raw/files/`) that is a link or not a folder is refused, so nothing is written where a link points.
 - **Names.** The host's `Content-Disposition` name (every real upload had one, with an extension), else the link text, else
   `upload`; the extension comes from the content type when the name has none. Rule A first: the whole name is scanned, and the

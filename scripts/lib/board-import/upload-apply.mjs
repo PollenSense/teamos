@@ -1,6 +1,6 @@
 import { createHash, randomBytes } from 'node:crypto';
-import { createReadStream } from 'node:fs';
-import { link, lstat, mkdir, readFile, readdir, rename, stat, unlink } from 'node:fs/promises';
+import { constants, createReadStream } from 'node:fs';
+import { copyFile, link, lstat, mkdir, readFile, readdir, stat, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import { BoardError, scanText } from '../board/index.mjs';
 import { writeRaw } from './apply.mjs';
@@ -15,7 +15,7 @@ import { dispositionFileName, extensionForType, isFileEntry, isSafeRelativePath,
  * board's own (a key is opened through the store, so an earlier key finds the card that moved).
  *
  * Order of writes, so nothing is ever listed before it exists: the local-only raw record of a flagged name, then the
- * file (a temp file in the folder, renamed), then the card's entry, and after a card's files the thread entries.
+ * file (a temp file, hard-linked into its folder; an exclusive copy where links fail), then the card's entry, and after a card's files the thread entries.
  * A second run asks for nothing that is already there: an entry whose file exists with the same size is left alone.
  * A file a killed run left before its entry was written is adopted when the name and the SHA-256 agree.
  *
@@ -55,31 +55,34 @@ async function assertPlainFolder(path) {
  * is only what the folder held when it was listed; a file that appeared since (a hand edit, a sync from another machine)
  * must not be overwritten, and a rename would replace it. So the file is hard-linked into place (the link fails with EEXIST
  * when the name is taken: the next free name is tried) and the temporary name removed. When the link fails for any other
- * reason (no hard links on a share, a Windows volume that reports it as EISDIR, a mount that answers EINVAL or EACCES)
- * a fresh look for the name stands in and the file is renamed; that leaves a window of a few microseconds, and a rename that
- * fails too throws its own error. `ops` is for tests.
+ * reason (no hard links on a share, a Windows volume that reports it as EISDIR, a mount that answers EINVAL or EACCES) the
+ * file is copied with COPYFILE_EXCL instead: an exclusive create that also fails with EEXIST when the name is taken, so a
+ * file that appears at any moment is never replaced, and the same next free name is tried. A copy that fails for any other
+ * reason throws and publishes nothing under this call (a partly written copy would not be adopted later: its SHA-256
+ * differs, so a later run numbers around it). The temporary name stays and is removed as stale later. `ops` is for tests.
  */
-export async function publishFile(tmp, dir, name, taken, ops = { link, lstat, rename, unlink }) {
+export async function publishFile(tmp, dir, name, taken, ops = { link, copyFile, unlink }) {
 	let candidate = name;
 	for (;;) {
 		const dest = join(dir, candidate);
 		let exists = false;
 		try {
 			await ops.link(tmp, dest);
-			await ops.unlink(tmp).catch(() => {}); // a leftover temp name is in the local-only folder and is removed as stale later
-			return candidate;
 		} catch (err) {
 			if (err?.code === 'EEXIST') exists = true;
+			else {
+				// No hard link here: an exclusive copy never replaces a file that is there now or appears meanwhile.
+				try {
+					await ops.copyFile(tmp, dest, constants.COPYFILE_EXCL);
+				} catch (copyErr) {
+					if (copyErr?.code !== 'EEXIST') throw copyErr;
+					exists = true;
+				}
+			}
 		}
 		if (!exists) {
-			exists = await ops.lstat(dest).then(() => true, (err) => {
-				if (err?.code === 'ENOENT') return false;
-				throw err;
-			});
-			if (!exists) {
-				await ops.rename(tmp, dest);
-				return candidate;
-			}
+			await ops.unlink(tmp).catch(() => {}); // a leftover temp name is in the local-only folder and is removed as stale later
+			return candidate;
 		}
 		taken.add(candidate.toLowerCase());
 		candidate = uniqueName(name, taken);
@@ -232,7 +235,7 @@ export async function applyUploads(found, store, { client, boardDir, rawDir, gua
 	await guard();
 	if (join(boardDir, 'raw') !== rawDir) throw new BoardError('bad-raw', 'the raw folder is not <board>/raw: a held-back file could not be listed by its path');
 	// A download lands in a local-only folder first (nothing under raw/ is synced), so a half-written file, or one that
-	// must stay local, is never visible in Drive; it is renamed into its folder once it is whole and has been looked at.
+	// must stay local, is never visible in Drive; it is linked (or, without hard links, copied exclusively) into its folder once it is whole and has been looked at.
 	const tempDir = join(rawDir, 'files', '.tmp');
 	let tempReady = false;
 	const prepareTemp = async () => {
