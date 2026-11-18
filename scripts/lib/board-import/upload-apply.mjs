@@ -1,6 +1,6 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { createReadStream } from 'node:fs';
-import { lstat, mkdir, readFile, readdir, rename, stat, unlink } from 'node:fs/promises';
+import { link, lstat, mkdir, readFile, readdir, rename, stat, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import { BoardError, scanText } from '../board/index.mjs';
 import { writeRaw } from './apply.mjs';
@@ -48,6 +48,44 @@ async function assertPlainFolder(path) {
 		throw err;
 	});
 	if (st !== null && (st.isSymbolicLink() || !st.isDirectory())) throw new BoardError('bad-folder', 'a folder the uploads go into is a link or not a folder');
+}
+
+/** Errors that mean this file system makes no hard links (a share, a mount): `publishFile` then looks for the name once more and renames. */
+const NO_HARD_LINKS = new Set(['EPERM', 'ENOTSUP', 'EOPNOTSUPP', 'ENOSYS', 'EXDEV', 'EMLINK']);
+
+/**
+ * Puts a finished download at `dir/<name>` WITHOUT replacing anything and returns the name used. `taken` (lower-case names)
+ * is only what the folder held when it was listed; a file that appeared since (a hand edit, a sync from another machine)
+ * must not be overwritten, and a rename would replace it. So the file is hard-linked into place (the link fails with EEXIST
+ * when the name is taken: the next free name is tried) and the temporary name removed. Without hard links a fresh look for
+ * the name stands in; that leaves a window of a few microseconds. `ops` is for tests.
+ */
+export async function publishFile(tmp, dir, name, taken, ops = { link, lstat, rename, unlink }) {
+	let candidate = name;
+	for (;;) {
+		const dest = join(dir, candidate);
+		let exists = false;
+		try {
+			await ops.link(tmp, dest);
+			await ops.unlink(tmp).catch(() => {}); // a leftover temp name is in the local-only folder and is removed as stale later
+			return candidate;
+		} catch (err) {
+			if (err?.code === 'EEXIST') exists = true;
+			else if (!NO_HARD_LINKS.has(err?.code)) throw err;
+		}
+		if (!exists) {
+			exists = await ops.lstat(dest).then(() => true, (err) => {
+				if (err?.code === 'ENOENT') return false;
+				throw err;
+			});
+			if (!exists) {
+				await ops.rename(tmp, dest);
+				return candidate;
+			}
+		}
+		taken.add(candidate.toLowerCase());
+		candidate = uniqueName(name, taken);
+	}
 }
 
 async function sha256Of(path) {
@@ -201,6 +239,7 @@ export async function applyUploads(found, store, { client, boardDir, rawDir, gua
 	let tempReady = false;
 	const prepareTemp = async () => {
 		if (tempReady) return;
+		await assertPlainFolder(tempDir); // a link here would carry every download (text that must stay local too) to wherever it points
 		tempReady = true;
 		await mkdir(tempDir, { recursive: true, mode: 0o700 });
 		for (const name of await readdir(tempDir)) {
@@ -294,7 +333,7 @@ export async function applyUploads(found, store, { client, boardDir, rawDir, gua
 			}
 			if (adopted) await unlink(tmp).catch(() => {});
 			else {
-				await rename(tmp, join(where.dir, finalName));
+				finalName = await publishFile(tmp, where.dir, finalName, where.taken); // never replaces a file that is there now
 				where.taken.add(finalName.toLowerCase());
 			}
 			counts.got[adopted ? 'adopted' : 'downloaded']++;

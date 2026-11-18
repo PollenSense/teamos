@@ -9,6 +9,7 @@ import { applyIssues, applyUploads, createUploadClient, findUploads, formatUploa
 import { fakeUploadHost } from './fake-uploads.mjs';
 import { MEMBERS, buildExport } from './fixture.mjs';
 import { UPLOAD_HOST, uploadId } from './uploads.mjs';
+import { publishFile } from './upload-apply.mjs';
 
 /** Invented data only: names, bytes and addresses are made up (the `.invalid` domain never resolves). */
 
@@ -722,6 +723,87 @@ test('a very long name with many-byte characters is cut to a size the file syste
 		assert.equal(r.counts.got.downloaded, 4);
 		for (const name of filesOf(w.s, 'PSE-1')) assert.ok(Buffer.byteLength(name) <= 200, `${Buffer.byteLength(name)} bytes`);
 		assert.equal(r.counts.checks.filesBroken, 0);
+	} finally {
+		w.s.cleanup();
+	}
+});
+
+test('a file that appears in the card folder while a download runs is never replaced: the new file takes the next free name', async () => {
+	const routes = ROUTES();
+	const w = world(routes);
+	try {
+		await importCards(w.s, w.entities);
+		// Each download, when it is asked for, also puts a file of the name it will be saved under into the card folder (a hand
+		// edit, or a sync from another machine); the folder was listed once at the first download, so the later ones are a race.
+		const names = { '/ws/pse1/one': 'shot-one.png', '/ws/pse1/two': 'report.pdf', '/ws/pse1/three': 'photo.jpg' };
+		for (const [path, name] of Object.entries(names)) {
+			const route = routes[path];
+			routes[path] = (call) => {
+				if (call.method === 'GET') {
+					mkdirSync(join(w.s.filesDir, 'PSE-1'), { recursive: true });
+					writeFileSync(join(w.s.filesDir, 'PSE-1', name), `HAND-${name}`);
+				}
+				return route;
+			};
+		}
+		const r = await w.run();
+		assert.equal(r.counts.got.downloaded, 4);
+		for (const name of Object.values(names)) assert.equal(readFileSync(join(w.s.filesDir, 'PSE-1', name), 'utf8'), `HAND-${name}`, `${name} is still the hand-made file`);
+		const downloaded = filesOf(w.s, 'PSE-1').filter((n) => !readFileSync(join(w.s.filesDir, 'PSE-1', n), 'utf8').startsWith('HAND-'));
+		assert.equal(downloaded.length, 3, 'all three downloads are in the folder under other names');
+		const contents = downloaded.map((n) => readFileSync(join(w.s.filesDir, 'PSE-1', n), 'utf8')).sort();
+		assert.deepEqual(contents, ['ONE-BYTES', 'THREE-BYTES', 'TWO']);
+		const listed = card(w.s, 'PSE-1').fields.files.map((e) => e.path.split('/').pop()).sort();
+		assert.deepEqual(listed, downloaded, 'the card lists the names the files really have');
+		assert.deepEqual(readdirSync(join(w.s.rawDir, 'files', '.tmp')), [], 'no temp name is left');
+	} finally {
+		w.s.cleanup();
+	}
+});
+
+test('publishFile: links into place, numbers a name that is taken, and without hard links looks again before it renames', async () => {
+	const root = mkdtempSync(join(tmpdir(), 'board-publish-'));
+	try {
+		const dir = join(root, 'dir');
+		mkdirSync(dir);
+		const make = (name, text) => {
+			const p = join(root, name);
+			writeFileSync(p, text);
+			return p;
+		};
+		// a free name, then a name taken by a file the cache does not know about
+		assert.equal(await publishFile(make('t1', 'one'), dir, 'a.png', new Set()), 'a.png');
+		const taken = new Set();
+		assert.equal(await publishFile(make('t2', 'two'), dir, 'a.png', taken), 'a-2.png');
+		assert.deepEqual([...taken].sort(), ['a.png']);
+		assert.equal(readFileSync(join(dir, 'a.png'), 'utf8'), 'one');
+		assert.equal(readFileSync(join(dir, 'a-2.png'), 'utf8'), 'two');
+		assert.equal(existsSync(join(root, 't2')), false, 'the temp name is gone');
+		// a different error is not swallowed
+		await assert.rejects(publishFile(make('t3', 'x'), join(root, 'no-such-dir'), 'b.png', new Set()), (e) => e.code === 'ENOENT');
+		// no hard links: a name that is there is still not replaced, a free one is renamed into place
+		const fsp = await import('node:fs/promises');
+		const ops = { link: async () => { throw Object.assign(new Error('no links here'), { code: 'EPERM' }); }, lstat: fsp.lstat, rename: fsp.rename, unlink: fsp.unlink };
+		assert.equal(await publishFile(make('t4', 'four'), dir, 'a.png', new Set(), ops), 'a-3.png');
+		assert.equal(await publishFile(make('t5', 'five'), dir, 'c.png', new Set(), ops), 'c.png');
+		assert.equal(readFileSync(join(dir, 'a.png'), 'utf8'), 'one');
+		assert.equal(readFileSync(join(dir, 'c.png'), 'utf8'), 'five');
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test('the temp folder inside raw/files that is a link is refused: no download is written where it points', async () => {
+	const w = world();
+	try {
+		await importCards(w.s, w.entities);
+		const outside = join(w.s.root, 'outside');
+		mkdirSync(outside);
+		mkdirSync(join(w.s.rawDir, 'files'), { recursive: true });
+		symlinkSync(outside, join(w.s.rawDir, 'files', '.tmp'));
+		await assert.rejects(() => w.run(), (err) => err instanceof BoardError && err.code === 'bad-folder');
+		assert.deepEqual(readdirSync(outside), []);
+		assert.equal(existsSync(w.s.filesDir) ? readdirSync(w.s.filesDir).length : 0, 0, 'nothing was saved');
 	} finally {
 		w.s.cleanup();
 	}

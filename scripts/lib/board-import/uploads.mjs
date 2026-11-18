@@ -159,12 +159,13 @@ export function splitExtension(name) {
  */
 export function redactFileName(name) {
 	const text = typeof name === 'string' ? name : '';
+	// Both scans, one after the other: what the whole-name scan leaves (a phone number was found, an address that ends in an
+	// extension was skipped) is scanned again as a stem, so one finding never hides another.
 	const whole = redactValue(text);
-	if (whole.flagged) return { value: whole.value, flagged: true };
-	const { stem, ext } = splitExtension(text);
+	const { stem, ext } = splitExtension(whole.value);
 	const part = redactValue(stem);
 	if (part.flagged) return { value: ext === '' ? part.value : `${part.value}.${ext}`, flagged: true };
-	return { value: text, flagged: false };
+	return { value: whole.value, flagged: whole.flagged };
 }
 
 /**

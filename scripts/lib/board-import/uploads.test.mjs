@@ -160,6 +160,10 @@ test('redactFileName scans the whole name and the stem: an address that ends the
 	assert.deepEqual(redactFileName('jane.roe@outside.example.org'), { value: '[email]', flagged: true }, 'the whole name: org looks like an extension to the stem scan');
 	assert.deepEqual(redactFileName('from jane@outside.example.invalid.png'), { value: 'from [email].png', flagged: true }, 'the stem without the extension');
 	assert.deepEqual(redactFileName('call 555-010-0199 notes.txt'), { value: 'call [phone] notes.txt', flagged: true });
+	// a finding of one scan never hides the other: a phone number in front of an address that ends in an extension
+	assert.deepEqual(redactFileName('555-010-0199 jane@outside.example.invalid.png'), { value: '[phone] [email].png', flagged: true });
+	assert.deepEqual(redactFileName('jane@outside.example.invalid 555-010-0199.png'), { value: '[email] [phone].png', flagged: true });
+	assert.deepEqual(redactFileName('555-010-0199 jane@outside.example.org'), { value: '[phone] [email]', flagged: true });
 	for (const fine of ['Screenshot 2026-05-01 at 10.12.45.png', 'image', 'a@b.png', 'photo@2x.png', '', undefined]) assert.equal(redactFileName(fine).flagged, false, String(fine));
 	assert.equal(redactFileName('plain name.png').value, 'plain name.png');
 });
