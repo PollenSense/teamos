@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { BoardStore } from './index.mjs';
@@ -41,6 +41,51 @@ test('retire: a card that moved teams is written under its new ID and the old fi
 		const again = await s.store.writeIssue(moved(), { expect: (await s.store.readIssue('REV-7')).hash, retire: ['PSE-2'] });
 		assert.equal(again.changed, false);
 		assert.deepEqual(again.retired, []);
+	} finally {
+		s.cleanup();
+	}
+});
+
+test('retire: two old cards that both have a thread, or an old thread and one already at the new ID, is a conflict and changes nothing', async () => {
+	const s = sandbox();
+	try {
+		// the same Linear issue under two earlier keys, each with its own thread
+		await s.store.writeIssue(card('PSE-2'), { expect: 'new' });
+		await s.store.writeIssue(card('INS-5'), { expect: 'new' });
+		writeFileSync(s.store.threadPath('PSE-2'), 'thread of PSE-2\n');
+		writeFileSync(s.store.threadPath('INS-5'), 'thread of INS-5\n');
+		const before = (id) => readFileSync(s.store.issuePath(id), 'utf8');
+		const state = { a: before('PSE-2'), b: before('INS-5') };
+		await assert.rejects(s.store.writeIssue(moved(), { expect: 'new', retire: ['PSE-2', 'INS-5'] }), code('thread-conflict'));
+		assert.equal(existsSync(s.store.issuePath('REV-7')), false, 'the new card is not written');
+		assert.equal(before('PSE-2'), state.a);
+		assert.equal(before('INS-5'), state.b);
+		assert.equal(readFileSync(s.store.threadPath('PSE-2'), 'utf8'), 'thread of PSE-2\n');
+		assert.equal(readFileSync(s.store.threadPath('INS-5'), 'utf8'), 'thread of INS-5\n');
+		assert.equal(existsSync(s.store.threadPath('REV-7')), false);
+		// a dry run refuses the same way
+		const dry = new (s.store.constructor)({ dir: s.dir, lockDir: join(s.root, 'locks'), dryRun: true });
+		await assert.rejects(dry.writeIssue(moved(), { expect: 'new', retire: ['PSE-2', 'INS-5'] }), code('thread-conflict'));
+		// one old thread and the new card already has one: the rename would replace it
+		rmSync(s.store.threadPath('INS-5'));
+		mkdirSync(join(s.dir, 'issues', 'REV'), { recursive: true });
+		writeFileSync(s.store.threadPath('REV-7'), 'thread already at REV-7\n');
+		await assert.rejects(s.store.writeIssue(moved(), { expect: 'new', retire: ['PSE-2', 'INS-5'] }), code('thread-conflict'));
+		assert.equal(readFileSync(s.store.threadPath('REV-7'), 'utf8'), 'thread already at REV-7\n');
+		assert.equal(readFileSync(s.store.threadPath('PSE-2'), 'utf8'), 'thread of PSE-2\n');
+		assert.equal(existsSync(s.store.issuePath('REV-7')), false);
+		// a thread file that cannot be inspected (here a link that loops) is no "absent thread": refused as unreadable, nothing changed
+		rmSync(s.store.threadPath('REV-7'));
+		rmSync(s.store.threadPath('INS-5'), { force: true });
+		symlinkSync('INS-5.thread.md', s.store.threadPath('INS-5'));
+		await assert.rejects(s.store.writeIssue(moved(), { expect: 'new', retire: ['PSE-2', 'INS-5'] }), code('unreadable'));
+		assert.equal(existsSync(s.store.issuePath('REV-7')), false);
+		rmSync(s.store.threadPath('INS-5'));
+		// with no thread at the new ID, exactly one old thread moves, whichever old card holds it
+		const r = await s.store.writeIssue(moved(), { expect: 'new', retire: ['PSE-2', 'INS-5'] });
+		assert.deepEqual(r.retired.sort(), ['INS-5', 'PSE-2']);
+		assert.equal(readFileSync(s.store.threadPath('REV-7'), 'utf8'), 'thread of PSE-2\n');
+		assert.equal(existsSync(s.store.threadPath('PSE-2')), false);
 	} finally {
 		s.cleanup();
 	}

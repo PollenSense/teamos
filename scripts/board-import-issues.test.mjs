@@ -92,12 +92,48 @@ test('--apply writes after the reference import; a second --apply changes nothin
 	}
 });
 
-test('--apply stops before any write when the sync filter would let raw/ reach Drive', async () => {
-	const s = sandbox({ filter: '- /team/.logs/**\n' });
+test('--apply is refused when the board lacks a project or label file the cards name; a dry run only notes it', async () => {
+	const s = sandbox();
 	try {
 		await exported(s);
-		mkdirSync(s.board, { recursive: true });
-		writeFileSync(join(s.board, 'people.json'), JSON.stringify({ version: 1, people: {} }));
+		assert.equal(reference(s, '--apply').code, 0);
+		rmSync(join(s.board, 'projects', 'test-project.md'));
+		const dry = issues(s);
+		assert.equal(dry.code, 0, dry.err);
+		assert.match(dry.out, /note: the reference data on the board does not match what these cards use \(people 0, projects 1, labels 0, cycles 0\)/);
+		const a = issues(s, '--apply');
+		assert.equal(a.code, 2);
+		assert.match(a.err, /projects 1.*run board-import-reference\.mjs --apply first/);
+		assert.equal(existsSync(join(s.board, 'issues')), false, 'nothing was written');
+		// a label file that is gone counts too
+		assert.equal(reference(s, '--apply').code, 0);
+		rmSync(join(s.board, 'labels.json'));
+		const b = issues(s, '--apply');
+		assert.equal(b.code, 2);
+		assert.match(b.err, /labels [1-9]/);
+		assert.equal(existsSync(join(s.board, 'issues')), false);
+		// and a cycle file
+		assert.equal(reference(s, '--apply').code, 0);
+		rmSync(join(s.board, 'cycles', 'PSE', '1.json'));
+		const c = issues(s, '--apply');
+		assert.equal(c.code, 2);
+		assert.match(c.err, /cycles 1/);
+		assert.equal(existsSync(join(s.board, 'issues')), false);
+		// once the reference import has been redone the same run goes through
+		assert.equal(reference(s, '--apply').code, 0);
+		assert.equal(issues(s, '--apply').code, 0);
+	} finally {
+		s.cleanup();
+	}
+});
+
+test('--apply stops before any write when the sync filter would let raw/ reach Drive', async () => {
+	const s = sandbox();
+	try {
+		await exported(s);
+		assert.equal(reference(s, '--apply').code, 0);
+		// the filter that was good for the reference import is replaced by one that lacks the raw line
+		writeFileSync(join(s.workspace, 'scripts', 'rclone-filter.txt'), '- /team/.logs/**\n');
 		const r = issues(s, '--apply');
 		assert.equal(r.code, 1);
 		assert.match(r.err, /stopped \(export-synced\)/);
@@ -180,12 +216,18 @@ test('--people-map, --members and --filter are honoured; a board that is switche
 		assert.match(readFileSync(join(s.board, 'issues', 'PSE', 'PSE-1.md'), 'utf8'), /\ncreator: "carol"\n/);
 		// --people-map: u-2 is bob instead
 		writeFileSync(join(s.root, 'map.json'), JSON.stringify({ 'u-2': 'bob' }));
+		// the cards would name bob, but the board's people.json still says carol: refused until the reference import is redone with the same options
+		const stale = issues(s, '--apply', '--members', join(s.root, 'members2.json'), '--people-map', join(s.root, 'map.json'));
+		assert.equal(stale.code, 2);
+		assert.match(stale.err, /does not match what these cards use \(people 1, projects 0, labels 0, cycles 0\).*run board-import-reference\.mjs --apply first/);
+		assert.match(readFileSync(join(s.board, 'issues', 'PSE', 'PSE-1.md'), 'utf8'), /\ncreator: "carol"\n/, 'nothing was written');
+		assert.equal(reference(s, '--apply', '--members', join(s.root, 'members2.json'), '--people-map', join(s.root, 'map.json')).code, 0);
 		const mapped = issues(s, '--apply', '--members', join(s.root, 'members2.json'), '--people-map', join(s.root, 'map.json'));
 		assert.equal(mapped.code, 0, mapped.out + mapped.err);
 		assert.match(readFileSync(join(s.board, 'issues', 'PSE', 'PSE-1.md'), 'utf8'), /\ncreator: "bob"\n/);
 		// --filter: a filter file that lacks the raw line stops the run before any write
 		writeFileSync(join(s.root, 'filter2.txt'), '- /team/.logs/**\n');
-		const refused = issues(s, '--apply', '--filter', join(s.root, 'filter2.txt'));
+		const refused = issues(s, '--apply', '--members', join(s.root, 'members2.json'), '--people-map', join(s.root, 'map.json'), '--filter', join(s.root, 'filter2.txt'));
 		assert.equal(refused.code, 1);
 		assert.match(refused.err, /stopped \(export-synced\)/);
 		// a workspace with no board section

@@ -301,6 +301,56 @@ test('a dry run says the same about a moved card\'s thread as the real run does'
 	}
 });
 
+test('the check after a real run reads a comment with CRLF or U+2028 line ends as the file stores it, not as broken', async () => {
+	const s = sandbox();
+	try {
+		const e = exportWith();
+		e.comments.push(com('c9', 'PSE-1', `first line\r\nsecond${String.fromCodePoint(0x2028)}third\rfourth`, { createdAt: '2025-02-05T09:00:00.000Z' }));
+		const r = await runLinks(s, e);
+		assert.deepEqual(r.failures, {});
+		assert.equal(r.checks.threadsBroken, 0);
+		assert.match(threadText(s, 'PSE-1'), /> first line\n> second\n> third\n> fourth/);
+	} finally {
+		s.cleanup();
+	}
+});
+
+test('the check after a real run compares whole thread entries: the same comment ids with another text or author is broken', async () => {
+	const s = sandbox();
+	try {
+		const real = s.store();
+		let tamper = null;
+		const store = new Proxy(real, {
+			get(target, key) {
+				if (key === 'readThread') return async (id) => {
+					const file = await target.readThread(id);
+					if (!tamper || !file || id !== 'PSE-1') return file;
+					return { ...file, entries: file.entries.map((entry, i) => (i === 0 ? { ...entry, ...tamper } : entry)) };
+				};
+				const value = target[key];
+				return typeof value === 'function' ? value.bind(target) : value;
+			},
+		});
+		const e = exportWith();
+		const reference = planReference(e, { members: MEMBERS });
+		const issues = planIssues(e, reference);
+		const plan = withLinks(issues, planLinks(e, issues, reference, { report: issues.report }));
+		// the run itself is clean ...
+		const clean = await applyIssues(plan, store, { rawDir: s.rawDir, guard: async () => ({}) });
+		assert.equal(clean.checks.threadsBroken, 0);
+		// ... and the same files read back with one comment's text, then its author, then its time changed are each broken, ids unchanged
+		for (const change of [{ body: 'Another text.' }, { author: 'someone-else' }, { time: '2025-03-01T09:00:00.000Z' }, { replyTo: 'c9' }, { extra: { added: 1 } }]) {
+			tamper = change;
+			const r = await applyIssues(plan, store, { rawDir: s.rawDir, guard: async () => ({}) });
+			assert.equal(r.checks.threadsBroken, 1, JSON.stringify(change));
+		}
+		tamper = null;
+		assert.equal((await applyIssues(plan, store, { rawDir: s.rawDir, guard: async () => ({}) })).checks.threadsBroken, 0);
+	} finally {
+		s.cleanup();
+	}
+});
+
 test('the check after a real run notices an issue file that does not say what the plan said about relations', async () => {
 	const s = sandbox();
 	try {

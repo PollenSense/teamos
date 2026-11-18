@@ -1,6 +1,7 @@
 import { lstat, mkdir, open, readFile, rename, unlink } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
-import { BoardError } from '../board/index.mjs';
+import { isDeepStrictEqual } from 'node:util';
+import { BoardError, parseThread, serializeThread } from '../board/index.mjs';
 import { ImportError } from './reference.mjs';
 
 /**
@@ -85,12 +86,16 @@ export function recorder() {
 		applied[kind] ??= { created: 0, changed: 0, unchanged: 0, failed: 0 };
 		applied[kind][state]++;
 	};
-	/** Returns what the file did (`created`, `changed`, `unchanged`, `failed`), or `undefined` when `read` answered `SKIP` (nothing to write, nothing counted). */
-	const attempt = async (kind, read, write) => {
+	/**
+	 * Returns what the file did (`created`, `changed`, `unchanged`, `failed`), or `undefined` when `read` answered `SKIP` (nothing to write, nothing counted).
+	 * `snapshotExpect`: the hash the plan was made from (a file whose plan merges what was there). It wins over the hash
+	 * read now, so a change made in between is refused as `changed` and never replaced from a stale plan.
+	 */
+	const attempt = async (kind, read, write, snapshotExpect) => {
 		try {
 			const current = await read();
 			if (current === SKIP) return undefined;
-			const result = await write(current ? current.hash : 'new');
+			const result = await write(snapshotExpect ?? (current ? current.hash : 'new'));
 			const state = !current ? 'created' : result.changed ? 'changed' : 'unchanged';
 			tally(kind, state);
 			return state;
@@ -127,7 +132,7 @@ export async function applyReference(plan, store, { rawDir, guard } = {}) {
 	await attempt('labels', () => store.readSingle('labels'), (expect) => store.writeSingle('labels', plan.labels, { expect }));
 	for (const p of plan.projects) await attempt('projects', () => store.readProject(p.fields.code), (expect) => store.writeProject(p, { expect }));
 	for (const d of plan.documents) await attempt('documents', () => store.readDocument(d.fields.id), (expect) => store.writeDocument(d, { expect }));
-	await attempt('project-map', () => store.readSingle('project-map'), (expect) => store.writeSingle('project-map', plan.projectMap, { expect }));
+	await attempt('project-map', () => store.readSingle('project-map'), (expect) => store.writeSingle('project-map', plan.projectMap, { expect }), plan.projectMapExpect);
 	return { applied, failures };
 }
 
@@ -225,7 +230,9 @@ export async function applyIssues(plan, store, { rawDir, guard } = {}) {
 			// `readIssue` also answers for an alias; a card that is somebody else's alias is not this issue's file (the store
 			// refuses that write as `alias-conflict` either way; this keeps the other card's hash out of the write).
 			const current = await store.readIssue(id);
-			const own = current && current.id === id ? current : null;
+			// ... and only the file of THIS Linear issue is ours to replace. A card with another linearId, or none (a native
+			// card), is expected to be new: the store then refuses the write as `duplicate-id` and the file is not touched.
+			const own = current && current.id === id && typeof issue.fields.linearId === 'string' && current.fields.linearId === issue.fields.linearId ? current : null;
 			carried = {};
 			for (const source of [...old, ...(own ? [own] : [])]) for (const k of carry) if (source.fields[k] !== undefined) carried[k] = source.fields[k];
 			return own;
@@ -315,8 +322,10 @@ export async function applyIssues(plan, store, { rawDir, guard } = {}) {
 			let ok = false;
 			try {
 				const file = await store.readThread(t.id);
-				const ours = (file?.entries ?? []).filter((e) => e.source === 'linear').map((e) => e.id);
-				ok = ours.length === t.entries.length && ours.every((id, i) => id === t.entries[i].id);
+				const ours = (file?.entries ?? []).filter((e) => e.source === 'linear');
+				// The whole entries, not their ids: the planned ones as the file stores them (line ends, escapes), against what was read.
+				const want = parseThread(serializeThread(t.entries)).entries;
+				ok = ours.length === want.length && ours.every((entry, i) => isDeepStrictEqual(entry, want[i]));
 			} catch (err) {
 				if (!(err instanceof BoardError) || err.code === 'locked') throw err;
 			}
@@ -344,6 +353,41 @@ function formatLinksLines(l, { applied, checks, dryRun }) {
 	if (t) lines.push(`thread files: ${t.created} ${dryRun ? 'new' : 'created'}, ${t.changed} changed, ${t.unchanged} same, ${t.failed} failed`);
 	if (checks && checks.threadsChecked > 0) lines.push(`checked on the files: ${checks.relationsChecked - checks.relationsBroken} of ${checks.relationsChecked} relation targets are cards, ${checks.threadsChecked - checks.threadsBroken} of ${checks.threadsChecked} threads hold the planned comments`);
 	return lines;
+}
+
+/**
+ * Does the board hold the reference files the cards of this run name? The issue plan takes people, project codes, label
+ * names and cycles from the reference plan made from the same export; cards written before those files exist (or after
+ * the export or the people map changed) would name people and projects the board does not have. Compares the plan with
+ * what is on disk: people and labels by Linear id and name, projects and cycles by their file and Linear id.
+ * Returns counts only (`{ people, projects, labels, cycles, total }`: how many differ or are missing), never a name.
+ * A file that cannot be read as what it should be counts as missing.
+ */
+export async function referenceGaps(reference, store) {
+	const gaps = { people: 0, projects: 0, labels: 0, cycles: 0 };
+	const read = async (fn) => {
+		try {
+			return await fn();
+		} catch (err) {
+			if (!(err instanceof BoardError) || err.code === 'locked') throw err;
+			return null;
+		}
+	};
+	const people = (await read(() => store.readSingle('people')))?.data?.people;
+	for (const [id, entry] of Object.entries(reference.people.people)) {
+		if (!people || !Object.hasOwn(people, id) || people[id]?.name !== entry.name) gaps.people++;
+	}
+	const labels = new Map(((await read(() => store.readSingle('labels')))?.data?.labels ?? []).map((l) => [l?.id, l?.name]));
+	for (const l of reference.labels.labels) if (!labels.has(l.id) || labels.get(l.id) !== l.name) gaps.labels++;
+	for (const p of reference.projects) {
+		const file = await read(() => store.readProject(p.fields.code));
+		if (!file || file.fields?.linearId !== p.fields.linearId) gaps.projects++;
+	}
+	for (const c of reference.cycles) {
+		const file = await read(() => store.readCycle(c.team, c.number));
+		if (!file || file.data?.linearId !== c.linearId) gaps.cycles++;
+	}
+	return { ...gaps, total: gaps.people + gaps.projects + gaps.labels + gaps.cycles };
 }
 
 /** The counts-only report of an issue run: per team read and what each file did, aliases, parents, dangling, flagged. Never a title, text or name. */

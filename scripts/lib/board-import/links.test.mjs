@@ -235,6 +235,28 @@ test('links: an outside address or phone number in a title or address is redacte
 	assert.match(JSON.stringify(raw[0].record), /outside\.example\.invalid/, 'the original is kept locally');
 });
 
+test('links: two different originals that read the same once redacted: the repeat is dropped but its original is kept in raw', () => {
+	const e = exportWith({
+		attachments: [
+			att('a1', 'PSE-1', 'https://tracker.example.invalid/q?owner=jane@outside.example.invalid', { sourceType: 'jira', title: 'Call 555-010-0199' }),
+			att('a2', 'PSE-1', 'https://tracker.example.invalid/q?owner=joe@outside.example.invalid', { sourceType: 'jira', title: 'Call 555-010-0100' }),
+			att('a3', 'PSE-1', 'https://tracker.example.invalid/q?owner=jane@outside.example.invalid', { sourceType: 'jira', title: 'Call 555-010-0199' }), // the very same original again
+		],
+	});
+	const r = run(e);
+	assert.equal(fieldsOf(r, 'PSE-1').links.length, 1, 'one link is written');
+	assert.equal(r.links.counts.links.repeated, 2);
+	assert.equal(r.links.counts.links.written, 1);
+	assert.equal(r.links.counts.links.flagged, 3, 'every attachment that had text redacted counts');
+	const raw = r.links.raw.filter((x) => x.type === 'links');
+	assert.equal(raw.length, 1);
+	const originals = raw[0].record.links;
+	assert.equal(originals.length, 2, 'both different originals, the identical one once');
+	assert.ok(originals.some((l) => l.url.includes('jane@outside.example.invalid') && l.title === 'Call 555-010-0199'));
+	assert.ok(originals.some((l) => l.url.includes('joe@outside.example.invalid') && l.title === 'Call 555-010-0100'));
+	assert.equal(JSON.stringify(r.links.fields).includes('0100'), false, 'nothing synced holds an original');
+});
+
 test('links: a source type that is not a plain word is "(other)", and a name such as __proto__ is an ordinary count', () => {
 	const e = exportWith({
 		attachments: [att('a1', 'PSE-1', 'https://example.invalid/a', { sourceType: 'weird<type>' }), att('a2', 'PSE-1', 'https://example.invalid/b', { sourceType: '__proto__' }), att('a3', 'PSE-1', 'https://example.invalid/c', { sourceType: 'constructor' })],
@@ -337,6 +359,19 @@ test('comments: an outside address or phone number is redacted in the thread and
 	const rows = r.links.report.summary();
 	assert.ok(rows.some((row) => row.field === 'comments' && row.texts === 3 && row.flagged === 1), 'the person-data report counts the comment texts');
 	assert.ok(rows.some((row) => row.field === 'comment-authors' && row.texts === 1 && row.flagged === 1), 'and the outside author names');
+});
+
+test('comments: the raw record keeps the full author as given, the thread keeps at most 80 characters', () => {
+	const name = `bob@outside.example.invalid ${'n'.repeat(120)}`;
+	const e = exportWith({ comments: [com('c1', 'PSE-1', 'Mail 555-010-0199.', { authorId: undefined, externalUserName: name })] });
+	const r = run(e);
+	const author = threadOf(r, 'PSE-1')[0].author;
+	assert.ok([...author].length <= 80 + 'external:'.length, 'the synced author is cut');
+	assert.equal(author.includes('outside.example.invalid'), false);
+	assert.equal(r.links.raw.find((x) => x.type === 'comments').record.author, `external:${name}`, 'the raw record holds the whole name');
+	// a person from the people map: the raw author is the name as given too
+	const f = exportWith({ comments: [com('c2', 'PSE-1', 'Mail 555-010-0199.')] });
+	assert.equal(typeof run(f).links.raw.find((x) => x.type === 'comments').record.author, 'string');
 });
 
 test('comments: a long author name is cut on whole characters, never in the middle of one', () => {

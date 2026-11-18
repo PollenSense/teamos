@@ -48,8 +48,11 @@ test('write then read gives back every record of every type', async () => {
 		assert.deepEqual(back.entities, fixture);
 		for (const type of TYPE_NAMES) assert.equal(back.manifest.entities[type].count, fixture[type].length);
 		assert.deepEqual(readdirSync(s.out).sort(), [MANIFEST_FILE, ...TYPE_NAMES.map((t) => `${t}.json`)].sort(), 'no temp files left behind');
-		assert.equal(statSync(join(s.out, MANIFEST_FILE)).mode & 0o077, 0, 'files are private to the owner');
-		assert.equal(statSync(s.out).mode & 0o077, 0, 'the folder is private to the owner');
+		// POSIX modes only: Windows reports its own mode bits, and stand-alone.md says Windows, Mac and Linux dev boxes are fine.
+		if (process.platform !== 'win32') {
+			assert.equal(statSync(join(s.out, MANIFEST_FILE)).mode & 0o077, 0, 'files are private to the owner');
+			assert.equal(statSync(s.out).mode & 0o077, 0, 'the folder is private to the owner');
+		}
 	} finally {
 		s.cleanup();
 	}

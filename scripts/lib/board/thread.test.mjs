@@ -102,3 +102,26 @@ test('unknown meta keys are kept on a rewrite, and __proto__ is not one', () => 
 	assert.equal(({}).x, undefined, 'the prototype was not touched');
 	assert.match(serializeThread(entries), /"future":\{"n":1\}/);
 });
+
+test('an extra value that JSON cannot hold is refused, not written as null; U+2028 and U+2029 in one are escaped and read back', () => {
+	for (const bad of [NaN, Infinity, 10n]) {
+		assert.throws(() => serializeThread([entry({ extra: { n: bad } })]), code('bad-value'), String(typeof bad));
+	}
+	assert.throws(() => serializeThread([entry({ extra: { nested: { deep: NaN } } })]), code('bad-value'));
+	const odd = `a${String.fromCodePoint(0x2028)}b${String.fromCodePoint(0x2029)}c`;
+	const text = serializeThread([entry({ extra: { note: odd } })]);
+	assert.equal(text.includes(String.fromCodePoint(0x2028)), false, 'no raw line separator in the file');
+	assert.equal(text.includes(String.fromCodePoint(0x2029)), false);
+	assert.equal(text.split('\n').length, 4, 'header, meta, text and the end: the meta stays on one line');
+	assert.deepEqual(parseThread(text).entries[0].extra, { note: odd });
+});
+
+test('a thread file with CRLF line ends reads the same as its LF form, and is written back with LF', () => {
+	const entries = [entry({ body: 'one\n\nthree' }), entry({ id: 'cm-2', replyTo: 'cm-1', body: 'two' })];
+	const lf = serializeThread(entries);
+	const crlf = lf.split('\n').join('\r\n');
+	assert.deepEqual(parseThread(crlf).entries, parseThread(lf).entries);
+	assert.equal(serializeThread(parseThread(crlf).entries), lf);
+	// a file that is still damaged stays damaged with CRLF ends
+	assert.throws(() => parseThread('### 2025-02-01T09:00:00Z alice\r\nnot a meta line\r\n> x\r\n'), code('damaged'));
+});

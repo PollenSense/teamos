@@ -201,20 +201,23 @@ export function planLinks(entities, issuesPlan, reference, { report = new Person
 		const titleRed = redactValue(typeof attachment.title === 'string' ? attachment.title : '');
 		if (typeof attachment.title === 'string') report.add(team, 'links', attachment.title);
 		report.add(team, 'link-urls', url);
+		const source = typeof attachment.sourceType === 'string' && PLAIN_TOKEN.test(attachment.sourceType) ? attachment.sourceType : '(other)';
+		const sourceRed = redactValue(source);
+		// The original of a flagged link goes to the raw record BEFORE the repeat check: two different originals can read the
+		// same once redacted, and the one dropped as a repeat would otherwise leave no original anywhere.
+		if (urlRed.flagged || titleRed.flagged || sourceRed.flagged) {
+			counts.links.flagged++;
+			const original = { url, title: typeof attachment.title === 'string' ? attachment.title : null, sourceType: attachment.sourceType ?? null };
+			if (!s.rawLinks.some((r) => r.url === original.url && r.title === original.title && r.sourceType === original.sourceType)) s.rawLinks.push(original);
+		}
 		if (s.links.has(urlRed.value)) {
 			counts.links.repeated++;
 			continue;
 		}
-		const source = typeof attachment.sourceType === 'string' && PLAIN_TOKEN.test(attachment.sourceType) ? attachment.sourceType : '(other)';
-		const sourceRed = redactValue(source);
 		const entry = { url: urlRed.value, ...(titleRed.value === '' ? {} : { title: titleRed.value }), sourceType: sourceRed.value };
 		s.links.set(entry.url, entry);
 		counts.links.written++;
 		bump(counts.links.bySource, sourceRed.value);
-		if (urlRed.flagged || titleRed.flagged || sourceRed.flagged) {
-			counts.links.flagged++;
-			s.rawLinks.push({ url, title: typeof attachment.title === 'string' ? attachment.title : null, sourceType: attachment.sourceType ?? null });
-		}
 	}
 
 	// --- comments on issues ---
@@ -244,17 +247,20 @@ export function planLinks(entities, issuesPlan, reference, { report = new Person
 
 		// Who wrote it: the people map first; a bot or an outside user by the name the export gives.
 		let author;
+		let authorOriginal; // the full name as the export gives it (`author` is one line of at most 80 characters)
 		let kind = 'unknown';
 		let authorFlagged = false;
 		const person = comment.authorId !== undefined && comment.authorId !== null && Object.hasOwn(people, comment.authorId) ? people[comment.authorId] : undefined;
 		if (typeof person?.name === 'string' && oneLine(person.name) !== '') {
 			author = oneLine(person.name);
+			authorOriginal = person.name;
 			kind = 'person';
 		} else {
 			if (comment.authorId !== undefined && comment.authorId !== null) dangle('comments.author');
 			for (const [field, label, type] of [['botName', 'bot', 'bot'], ['externalUserName', 'external', 'external']]) {
 				if (author === undefined && typeof comment[field] === 'string' && oneLine(comment[field]) !== '') {
 					author = `${label}:${oneLine(comment[field])}`;
+					authorOriginal = `${label}:${comment[field]}`;
 					kind = type;
 				}
 			}
@@ -266,7 +272,7 @@ export function planLinks(entities, issuesPlan, reference, { report = new Person
 		counts.comments.byAuthor[kind]++;
 		if (bodyRed.flagged || authorFlagged) {
 			counts.comments.flagged++;
-			raw.push({ type: 'comments', id: comment.id, record: { issue: comment.issueKey, author: author, body: comment.body } });
+			raw.push({ type: 'comments', id: comment.id, record: { issue: comment.issueKey, author: authorOriginal ?? author, body: comment.body } });
 		}
 		const entry = { time: comment.createdAt, author: authorRed.text, id: comment.id, source: 'linear', body: bodyRed.value, parent: comment.parentId };
 		if (!entriesOf.has(id)) entriesOf.set(id, []);

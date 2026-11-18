@@ -156,7 +156,9 @@ export function planIssues(entities, reference) {
 		}
 		let branch = issue.branchName ?? undefined;
 		let branchOriginal;
-		if (typeof branch === 'string' && (titleRedacted.flagged || redactValue(branch.replace(/[-_/]+/g, ' ')).flagged)) {
+		// Both readings: with its separators spaced (a title typed into a branch) and as written (an address typed into it:
+		// `pat@outside-example.invalid` is no address once its hyphens are spaces, but it is one as it stands).
+		if (typeof branch === 'string' && (titleRedacted.flagged || redactValue(branch).flagged || redactValue(branch.replace(/[-_/]+/g, ' ')).flagged)) {
 			branchOriginal = branch;
 			branch = undefined;
 			flagged = true;

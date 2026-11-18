@@ -1,4 +1,5 @@
 import { BoardError } from './errors.mjs';
+import { jsonLine } from './frontmatter.mjs';
 
 /**
  * The thread file of an issue (`issues/<TEAM>/<ID>.thread.md`): its comments, imported and later native, one entry each.
@@ -75,7 +76,7 @@ export function serializeThread(entries) {
 		if (entry.replyTo !== undefined) meta.replyTo = entry.replyTo;
 		for (const [key, value] of Object.entries(entry.extra ?? {})) if (!KNOWN_META.has(key) && key !== '__proto__' && value !== undefined) meta[key] = value;
 		const lines = splitLines(entry.body).map((line) => (line === '' ? '>' : `> ${line}`));
-		return `### ${entry.time} ${entry.author}\n<!-- ${JSON.stringify(meta)} -->\n${lines.join('\n')}\n`;
+		return `### ${entry.time} ${entry.author}\n<!-- ${jsonLine(meta)} -->\n${lines.join('\n')}\n`; // jsonLine: a NaN or BigInt is refused, U+2028 and U+2029 are escaped (one line, and it reads back)
 	});
 	return blocks.join('\n');
 }
@@ -83,7 +84,7 @@ export function serializeThread(entries) {
 /** `{ entries }` for a thread file's text; the text of an entry has its line ends as `\n`. Throws `damaged` for anything it does not understand. */
 export function parseThread(text) {
 	if (typeof text !== 'string') throw new BoardError('damaged', 'a thread file is not text');
-	const lines = text.split('\n');
+	const lines = text.split(/\r?\n/); // a file that went through a CRLF editor or checkout reads the same as its LF form
 	if (lines[lines.length - 1] === '') lines.pop();
 	const entries = [];
 	let i = 0;
