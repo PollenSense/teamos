@@ -157,6 +157,26 @@ test('a damaged reference file stops --apply before any write (a dry run only no
 	}
 });
 
+test('a damaged people file stops --apply with the same repair message (exit 2, nothing written); a dry run only notes it (independent review of round 5)', async () => {
+	const s = sandbox();
+	try {
+		await exported(s);
+		assert.equal(reference(s, '--apply').code, 0);
+		writeFileSync(join(s.board, 'people.json'), 'hand broken\n');
+		const r = issues(s, '--apply');
+		assert.equal(r.code, 2, r.out + r.err);
+		assert.match(r.err, /damaged|unreadable/);
+		assert.match(r.err, /repair or remove it by hand/);
+		assert.equal(existsSync(join(s.board, 'issues')), false, 'nothing was written');
+		const dry = issues(s);
+		assert.equal(dry.code, 0, dry.out + dry.err);
+		assert.match(dry.out, /note: 1 reference file\(s\) on the board are damaged and could not be compared; .*repair or remove it by hand/);
+		assert.equal(existsSync(join(s.board, 'issues')), false);
+	} finally {
+		s.cleanup();
+	}
+});
+
 test('--apply stops before any write when the sync filter would let raw/ reach Drive', async () => {
 	const s = sandbox();
 	try {

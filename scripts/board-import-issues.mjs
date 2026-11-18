@@ -72,15 +72,24 @@ try {
 	const { entities, manifest } = await readExport(resolve(opt.export), { require: TYPES });
 	process.stdout.write(`export read: complete ${manifest.complete === true}, ${TYPES.map((t) => `${t} ${entities[t].length}`).join(', ')}\n`);
 	const store = new BoardStore({ dir: board.dir, lockDir: board.lockDir, dryRun: !apply });
-	if (apply && !(await store.readSingle('people'))) {
-		usage('the reference data is not imported yet (no people.json): run board-import-reference.mjs --apply first');
+	if (apply) {
+		let people;
+		try {
+			people = await store.readSingle('people');
+		} catch (err) {
+			// A file the store refuses to read cannot be compared, and the reference import never overwrites it: same advice
+			// as for the other reference files below (exit 2, nothing written).
+			if (!(err instanceof BoardError) || err.code === 'locked') throw err;
+			usage(`the reference file people.json on the board is damaged or unreadable (${err.code}); repair or remove it by hand, then run board-import-reference.mjs --apply`);
+		}
+		if (!people) usage('the reference data is not imported yet (no people.json): run board-import-reference.mjs --apply first');
 	}
 	const existing = await loadExisting(store);
 	const reference = planReference(entities, { members, overrides, existing });
 	// The cards name people, projects, labels and cycles of this plan: the board must already hold exactly those (a file
 	// that is there but older, or made from another export or people map, counts as a gap).
 	const gaps = await referenceGaps(reference, store);
-	// A reference file the cards need but that cannot be read cannot be compared either, so the cards could name people or
+	// A reference file this plan names but that cannot be read cannot be compared either, so the cards could name people or
 	// projects the board does not have. The reference import never overwrites a damaged file, so running it again does not
 	// help: the person has to repair or remove the file first. --apply stops here; a dry run only says so.
 	if (gaps.damaged > 0) {
