@@ -145,13 +145,16 @@ export async function loadExisting(store) {
 		if (typeof id === 'string') codeByLinearId.set(id, code);
 	}
 	const map = await store.readSingle('project-map');
-	return { codeByLinearId, taken, projectMap: map?.data ?? null, damaged };
+	// `projectMapHash` is the hash of the file this snapshot came from ('new' when there is none): the write of the plan
+	// expects exactly it, so a hand edit made after the snapshot is refused (changed), not silently replaced.
+	return { codeByLinearId, taken, projectMap: map?.data ?? null, projectMapHash: map ? map.hash : 'new', damaged };
 }
 
 /**
  * Turns the export's reference types into the board files they become. `entities` is what `readExport` returned.
  * `members` is `members.json`'s list (`name`, `email`). `existing` is `loadExisting`'s answer (or empty).
- * Returns `{ people, teams, cycles, labels, projects, documents, projectMap, raw, counts, report }`; `counts` are
+ * Returns `{ people, teams, cycles, labels, projects, documents, projectMap, projectMapExpect, raw, counts, report }`
+ * (`projectMapExpect` is the hash of the project-map file the plan was made from); `counts` are
  * numbers by kind (read, dangling, flagged), `report` is a `PersonDataReport` (texts per kind and team).
  */
 export function planReference(entities, { members = [], overrides = {}, tags = DEFAULT_TAGS, tagHints = {}, existing } = {}) {
@@ -250,6 +253,7 @@ export function planReference(entities, { members = [], overrides = {}, tags = D
 	const taken = new Set(ex.taken);
 	const codeOf = new Map();
 	const projects = [];
+	const hintNames = []; // [original project name, code]: only for matching --tag-hints, in memory, never written
 	for (const p of [...get('projects')].sort(byDateThenId)) {
 		const teamsOfProject = p.teamKeys.filter((k) => {
 			if (teamKeys.has(k)) return true;
@@ -281,6 +285,7 @@ export function planReference(entities, { members = [], overrides = {}, tags = D
 		const code = known ?? uniqueCode(slugify(redactText(p.name).text), taken);
 		if (known) taken.add(known.toLowerCase());
 		codeOf.set(p.id, code);
+		hintNames.push([p.name, code]);
 		const fields = compact({
 			code,
 			name,
@@ -336,8 +341,10 @@ export function planReference(entities, { members = [], overrides = {}, tags = D
 
 	// message tags to board projects: an entry that is already set is never changed (it may be a hand edit)
 	const codes = new Set(projects.map((p) => p.fields.code));
+	// A hint names the project as it is in Linear, so match the original name; the stored name may have been redacted.
 	const codeByName = new Map();
-	for (const p of projects) codeByName.set(String(p.fields.name).toLowerCase(), p.fields.code);
+	for (const [name, code] of hintNames) if (typeof name === 'string') codeByName.set(name.toLowerCase(), code);
+	for (const p of projects) if (!codeByName.has(String(p.fields.name).toLowerCase())) codeByName.set(String(p.fields.name).toLowerCase(), p.fields.code);
 	const previous = ex.projectMap?.tags && typeof ex.projectMap.tags === 'object' ? ex.projectMap.tags : {};
 	const mapTags = { ...previous };
 	for (const tag of tags) {
@@ -357,5 +364,5 @@ export function planReference(entities, { members = [], overrides = {}, tags = D
 		raw.push({ type: 'names', id: 'reference', record: { names: flaggedNames } });
 	}
 
-	return { people: people, teams, cycles, labels: { version: 1, labels }, projects, documents, projectMap, raw, counts, report };
+	return { people: people, teams, cycles, labels: { version: 1, labels }, projects, documents, projectMap, projectMapExpect: ex.projectMapHash, raw, counts, report };
 }
