@@ -150,7 +150,7 @@ test('rule A: a branch name that holds an address as typed (a hyphen in its doma
 
 test('rule A: an address typed into a branch name and followed by more words is left out too', () => {
 	const e = buildExport();
-	const typed = ['me/pse-1-reply-to-pat@acme-corp.com-asap', 'pse-2/pat@outside-example.invalid-fix', 'me/ins-9-pat@outside-example.com_later'];
+	const typed = ['me/pse-1-reply-to-pat@acme-corp.example.com-asap', 'pse-2/pat@outside-example.invalid-fix', 'me/ins-9-pat@outside-example.example.com_later'];
 	e.issues[0].branchName = typed[0];
 	e.issues[1].branchName = typed[1];
 	e.issues[2].branchName = typed[2];
