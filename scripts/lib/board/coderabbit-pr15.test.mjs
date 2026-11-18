@@ -200,6 +200,48 @@ test('a note of our own write that lands in the middle of a refresh is not lost'
 	assert.equal(index.resolve('PSE-901'), 'PSE-2');
 });
 
+test('noteWritten called directly while a refresh is held waits for it, and its entry and alias are not pruned (CodeRabbit nit on #19, round 5)', async () => {
+	const { store } = fresh();
+	await store.writeIssue(issue('PSE-1'), { expect: 'new' });
+	await store.writeIssue(issue('PSE-3', { aliases: ['PSE-903'] }), { expect: 'new' });
+	await store.index.refresh();
+	const index = store.index;
+	const fields = { ...index.get('PSE-3').fields, id: 'PSE-2', title: 'Title of PSE-2', aliases: ['PSE-902'] };
+
+	// Hold a refresh after it has taken its file list (PSE-1 and PSE-3 only), then note a write that is not in that list.
+	const realList = index._listFiles.bind(index);
+	let release;
+	const gate = new Promise((resolve) => {
+		release = resolve;
+	});
+	let listed;
+	const listedPromise = new Promise((resolve) => {
+		listed = resolve;
+	});
+	index._listFiles = async () => {
+		const files = await realList();
+		listed();
+		await gate;
+		return files;
+	};
+	const refreshing = index.refresh();
+	await listedPromise;
+	index._listFiles = realList;
+	let noted = false;
+	const noting = index.noteWritten('PSE/PSE-2.md', fields, { m: 1, s: 1 }).then(() => {
+		noted = true;
+	});
+	await new Promise((resolve) => setTimeout(resolve, 50));
+	assert.equal(noted, false, 'noteWritten waits behind the held refresh instead of running inside it');
+	release();
+	await Promise.all([refreshing, noting]);
+
+	assert.equal(noted, true);
+	assert.deepEqual(index.entries().map((e) => e.id), ['PSE-1', 'PSE-2', 'PSE-3'], 'the entry noted during the refresh is not pruned by it');
+	assert.equal(index.resolve('PSE-902'), 'PSE-2', 'and neither is its alias');
+	assert.equal(index.resolve('PSE-903'), 'PSE-3');
+});
+
 test('readIssue by alias (a refresh without the write lock) running with many writes loses none of them', async () => {
 	const { store } = fresh();
 	await store.writeIssue(issue('PSE-1', { aliases: ['PSE-900'] }), { expect: 'new' });
