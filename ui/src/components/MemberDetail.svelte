@@ -1,5 +1,6 @@
 <script lang="ts">
 import { api } from '../lib/api.js';
+import { composeHref } from '../lib/compose.js';
 import { identity } from '../lib/identity.svelte.js';
 import { router } from '../lib/router.svelte.js';
 import type { MailboxCounts, MemberDetail, TodoItem } from '../lib/types.js';
@@ -217,7 +218,7 @@ async function deleteMember() {
 			</span>
 		</div>
 		<div class="header-actions">
-			<a class="compose-btn" href="#/compose">Send Message</a>
+			<a class="compose-btn" href={composeHref(isMe ? undefined : detail.name)}>Compose</a>
 			{#if !editingProfile}
 				<button class="edit-btn" onclick={startEditProfile}>Edit</button>
 			{/if}

@@ -1,5 +1,6 @@
 <script lang="ts">
 import { api } from '../lib/api.js';
+import { composeHref } from '../lib/compose.js';
 import { identity } from '../lib/identity.svelte.js';
 import type { MemberSummary, Memo, Project, SiblingInfo, TicketCounts } from '../lib/types.js';
 import MemberCard from './MemberCard.svelte';
@@ -169,6 +170,7 @@ const hasTickets = $derived(
 		<div class="section-header">
 			<h2 class="section-title">Team</h2>
 			<div class="section-actions">
+				<a class="compose-btn" href={composeHref()}>Compose</a>
 				{#if !showNewMember}
 					<button class="new-memo-btn" onclick={openNewMember}>New Member</button>
 				{/if}
@@ -356,6 +358,17 @@ const hasTickets = $derived(
 	}
 	.section-header .section-title { margin-bottom: 0; }
 	.section-actions { display: flex; align-items: center; gap: 0.5rem; }
+	.compose-btn {
+		padding: 0.375rem 0.875rem;
+		background: var(--primary);
+		color: var(--on-primary);
+		border-radius: var(--radius);
+		font-weight: 600;
+		font-size: 0.8125rem;
+		text-decoration: none;
+		transition: background var(--transition);
+	}
+	.compose-btn:hover { background: var(--primary-hover); text-decoration: none; }
 	.form-error {
 		font-size: 0.8rem;
 		color: var(--danger);

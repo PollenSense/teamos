@@ -239,6 +239,8 @@ keys it does not know are kept when it is rewritten; a file that cannot be read 
 when the next change replaces it). Only the member's own pins are stored; whether a message
 needs them is always derived.
 
+**Compose links.** The home screen's Team header and a member's page header have a **Compose** button. On a member's page it opens a new message with that member in the To line (nothing pre-filled on your own page): the link is `#/compose?to=name` (several names separated by commas; only active members are kept, a reply link `?re=` ignores `to`).
+
 **Dashboard.** Segments `Needs you N | FYI N | Done | Sent` replace the Inbox / Sent / Archived / All chips. A thread
 is listed in Needs you when any of its messages needs the viewed member (and then not in FYI), in FYI when it has
 inbox mail and nothing needs them, in Done when it has an archived message, in Sent when it has a sent one. Needs

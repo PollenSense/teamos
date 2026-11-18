@@ -135,6 +135,12 @@ export interface SendMessageArgs {
 	projectCode?: string;
 	/** Tokens from `uploadAttachment`; the body places them with `![caption](attachment:<token>)`, the rest go at the end. */
 	attachments?: string[];
+	/**
+	 * The sender wants a written answer: the message waits in each To recipient's Needs you until they reply. This mark
+	 * alone does not ask a Cc recipient to reply; a Cc can still see the message in Needs you for another reason (an
+	 * `@name` tag, a pin, or an open question for them).
+	 */
+	expectsReply?: boolean;
 }
 
 /** An image the server is holding until the message that names it is sent. */
