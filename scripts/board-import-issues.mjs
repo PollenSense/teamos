@@ -80,12 +80,19 @@ try {
 	// The cards name people, projects, labels and cycles of this plan: the board must already hold exactly those (a file
 	// that is there but older, or made from another export or people map, counts as a gap).
 	const gaps = await referenceGaps(reference, store);
+	// A reference file the cards need but that cannot be read cannot be compared either, so the cards could name people or
+	// projects the board does not have. The reference import never overwrites a damaged file, so running it again does not
+	// help: the person has to repair or remove the file first. --apply stops here; a dry run only says so.
+	if (gaps.damaged > 0) {
+		const text = `${gaps.damaged} reference file(s) on the board are damaged and could not be compared; the reference import leaves a damaged file alone, so repair or remove it by hand, then run board-import-reference.mjs --apply`;
+		if (apply) usage(text);
+		process.stdout.write(`note: ${text}\n`);
+	}
 	if (gaps.total > 0) {
 		const text = `the reference data on the board does not match what these cards use (people ${gaps.people}, projects ${gaps.projects}, labels ${gaps.labels}, cycles ${gaps.cycles}): run board-import-reference.mjs --apply first`;
 		if (apply) usage(text);
 		process.stdout.write(`note: ${text}\n`);
 	}
-	if (gaps.damaged > 0) process.stdout.write(`note: ${gaps.damaged} reference file(s) on the board are damaged and could not be compared; the reference import leaves a damaged file alone, so repair or remove it by hand\n`);
 	const plan = planIssues(entities, reference);
 	const rawDir = join(board.dir, 'raw');
 	let filterText = '';

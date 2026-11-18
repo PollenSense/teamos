@@ -127,18 +127,30 @@ test('--apply is refused when the board lacks a project or label file the cards 
 	}
 });
 
-test('a damaged reference file does not stop --apply for good: it is noted, the reference import leaves it alone, the run goes on', async () => {
+test('a damaged reference file stops --apply before any write (a dry run only notes it); once it is repaired the run goes through (CodeRabbit on #21, round 5)', async () => {
 	const s = sandbox();
 	try {
 		await exported(s);
 		assert.equal(reference(s, '--apply').code, 0);
-		writeFileSync(join(s.board, 'projects', 'test-project.md'), 'hand broken\n');
+		const projectFile = join(s.board, 'projects', 'test-project.md');
+		const good = readFileSync(projectFile, 'utf8');
+		writeFileSync(projectFile, 'hand broken\n');
 		assert.equal(reference(s, '--apply').code, 1, 'the reference import counts the damaged file as failed and does not overwrite it');
-		assert.equal(readFileSync(join(s.board, 'projects', 'test-project.md'), 'utf8'), 'hand broken\n');
+		assert.equal(readFileSync(projectFile, 'utf8'), 'hand broken\n');
+		// a dry run says so and goes on; it writes nothing either way
+		const dry = issues(s);
+		assert.equal(dry.code, 0, dry.out + dry.err);
+		assert.match(dry.out, /note: 1 reference file\(s\) on the board are damaged and could not be compared; .*repair or remove it by hand/);
+		// --apply stops: the cards cannot be checked against a file nobody can read
 		const r = issues(s, '--apply');
-		assert.equal(r.code, 0, r.out + r.err);
-		assert.match(r.out, /note: 1 reference file\(s\) on the board are damaged and could not be compared/);
-		assert.doesNotMatch(r.out, /does not match what these cards use/);
+		assert.equal(r.code, 2, r.out + r.err);
+		assert.match(r.err, /1 reference file\(s\) on the board are damaged and could not be compared; .*repair or remove it by hand/);
+		assert.equal(existsSync(join(s.board, 'issues')), false, 'nothing was written');
+		// repaired by hand: the run goes through
+		writeFileSync(projectFile, good);
+		const ok = issues(s, '--apply');
+		assert.equal(ok.code, 0, ok.out + ok.err);
+		assert.doesNotMatch(ok.out, /damaged/);
 		assert.ok(existsSync(join(s.board, 'issues', 'PSE', 'PSE-1.md')));
 	} finally {
 		s.cleanup();
