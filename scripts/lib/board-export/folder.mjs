@@ -51,16 +51,33 @@ async function writeAtomic(path, text) {
 }
 
 /** The name `writeAtomic` gives a file while it is being written: `<fixed file name>.tmp-<pid>-<8 hex digits>`. */
-const TEMP_LEFTOVER = /^[A-Za-z]+\.json\.tmp-\d+-[0-9a-f]{8}$/;
+const TEMP_SUFFIX = /\.tmp-\d+-[0-9a-f]{8}$/;
+/** The fixed file names the writer makes: the manifest and one file per entity type. Nothing else gets a temp file. */
+const WRITER_FILE_NAMES = new Set([MANIFEST_FILE, ...TYPE_NAMES.map((t) => fileNameFor(t))]);
 
-/** Is `name` a temp file this writer left (`TEMP_LEFTOVER`'s name) and a regular file? A folder or a link with such a name is somebody's. */
+/** Is `name` shaped like a temp file of this writer: one of its fixed file names plus the temp suffix (`notes.json.tmp-1-abcdef01` is not)? */
+function isTempName(name) {
+	const suffix = TEMP_SUFFIX.exec(name);
+	return suffix !== null && WRITER_FILE_NAMES.has(name.slice(0, suffix.index));
+}
+
+/** Is `name` a temp file this writer left (`isTempName`) and a regular file? A folder or a link with such a name is somebody's. */
 async function isOwnTempFile(dir, name) {
-	if (!TEMP_LEFTOVER.test(name)) return false;
+	if (!isTempName(name)) return false;
 	try {
 		return (await lstat(join(dir, name))).isFile();
 	} catch (err) {
 		if (err.code === 'ENOENT') return false;
 		throw err;
+	}
+}
+
+/** Remove `path` when it is a regular file (or already gone). A folder or a link of that name is somebody's: it stays, and nothing throws. */
+async function removeRegularFile(path) {
+	try {
+		if ((await lstat(path)).isFile()) await rm(path, { force: true });
+	} catch (err) {
+		if (err.code !== 'ENOENT') throw err;
 	}
 }
 
@@ -119,10 +136,10 @@ function prepareFile(type, records, maxFileBytes) {
  *   already holds a manifest, checked in the same listing the write works from, right before the first file changes.
  * @returns {Promise<{manifest: object}>}
  *
- * Types that are not in `data.entities` are removed from the folder (their fixed file names only: nothing
- * else in the folder is touched). A folder that has files but no manifest is refused, unless every file is
- * one this writer left from a first write that was killed (a temp file, or an entity file with the writer's own
- * header); those are removed.
+ * Types that are not in `data.entities` are removed from the folder (their fixed file names only, and only a
+ * regular file: a folder or a link with that name stays; nothing else in the folder is touched). A folder that has files but no manifest is refused, unless every file is
+ * one this writer left from a first write that was killed (a temp file of one of its own file names, or an entity
+ * file with the writer's own header); those are removed.
  */
 export async function writeExport(dir, data, guard, options = {}) {
 	if (!guard || typeof guard !== 'object') throw new ExportError('export-synced', 'writeExport needs the sync guard (workspaceRoot and filterText)');
@@ -176,7 +193,7 @@ export async function writeExport(dir, data, guard, options = {}) {
 	};
 	await writeAtomic(join(target, MANIFEST_FILE), `${JSON.stringify(manifest, null, 2)}\n`);
 	for (const type of TYPE_NAMES) {
-		if (!Object.prototype.hasOwnProperty.call(entities, type)) await rm(join(target, fileNameFor(type)), { force: true });
+		if (!Object.prototype.hasOwnProperty.call(entities, type)) await removeRegularFile(join(target, fileNameFor(type)));
 	}
 	return { manifest };
 }
