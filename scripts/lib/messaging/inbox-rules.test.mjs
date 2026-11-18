@@ -92,3 +92,19 @@ test('needsReasons: a tag (mention) counts in To or Cc until the member replies;
 	);
 	assert.deepEqual(needsReasons(tagged, 'van', { replied: new Set(['m1']), pinned: new Set(['m1']) }), ['pin']);
 });
+
+test('needsReasons: a reply to the member\'s own message (answer) until they reply; not fyi-marked, not their own', () => {
+	const reply = { id: 'm1', from: 'nate', to: ['van'] };
+	const facts = { answers: new Set(['m1']) };
+	assert.deepEqual(needsReasons(reply, 'van', facts), ['answer']);
+	assert.deepEqual(needsReasons(reply, 'van'), [], 'not known to reply to van\'s message');
+	assert.deepEqual(needsReasons({ ...reply, fyi: true }, 'van', facts), [], 'the sender says nothing is needed');
+	assert.deepEqual(needsReasons({ ...reply, from: 'van' }, 'van', facts), [], 'own message');
+	assert.deepEqual(needsReasons(reply, 'van', { ...facts, replied: new Set(['m1']) }), [], 'van replied since');
+	assert.deepEqual(needsReasons(reply, 'van', { ...facts, replied: new Set(['m1']), pinned: new Set(['m1']) }), ['pin']);
+	assert.deepEqual(
+		needsReasons({ ...reply, expectsReply: true, mentions: ['van'] }, 'van', { ...facts, cards: new Set(['m1']), pinned: new Set(['m1']) }),
+		['card', 'reply', 'mention', 'answer', 'pin'],
+		'the reason order',
+	);
+});

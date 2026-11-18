@@ -47,7 +47,7 @@ interface ThreadMessage {
 	expectsReply?: boolean;
 	/** Members the body tags with @name. */
 	mentions?: string[];
-	/** Why this message needs the viewed member (`card`, `reply`, `mention`, `pin`); absent when it does not. */
+	/** Why this message needs the viewed member (`card`, `reply`, `mention`, `answer`, `pin`); absent when it does not. */
 	needs?: string[];
 }
 

@@ -135,13 +135,31 @@ function stripReplyPrefix(subject) {
 	return (subject ?? '').replace(/^(re:\s*)+/i, '').trim();
 }
 
+/** An ISO time as given, or '' for none; a value that is not a time is ignored with a warning, never thrown. */
+function validIso(value) {
+	if (value === undefined || value === null || value === '') return '';
+	const t = typeof value === 'string' ? Date.parse(value) : Number.NaN;
+	if (Number.isNaN(t)) {
+		console.warn(`inbox.answersSince is not a time (${JSON.stringify(value)}); every reply counts`);
+		return '';
+	}
+	return new Date(t).toISOString();
+}
+
 function recipientsOf(msg) {
 	return [...(msg.to ?? []), ...(msg.cc ?? [])];
 }
 
 export class FileMessagingAdapter {
-	constructor(teamDir) {
+	/**
+	 * @param {string} teamDir
+	 * @param {{ answersSince?: string }} [options] `answersSince`: an ISO time (config `inbox.answersSince`). Only
+	 *   replies sent after it need the member as an `answer` (inbox-rules.mjs); empty means every reply does.
+	 *   Set it when switching the rule on, so the replies already in an inbox do not all jump to Needs you at once.
+	 */
+	constructor(teamDir, { answersSince } = {}) {
 		this.teamDir = teamDir;
+		this.answersSince = validIso(answersSince);
 		/** id -> `{ replyTo, sentAt }`. Neither ever changes after a message is written, so it is kept for the process's life. */
 		this._replyMeta = new Map();
 		this.messagesDir = join(teamDir, 'messages');
@@ -841,32 +859,94 @@ export class FileMessagingAdapter {
 		this._unpin(member, id);
 	}
 
-	/** `{ replyTo, sentAt }` of a message, read once; null when the message is not in the store. */
+	/** `{ replyTo, sentAt, supersedes }` of a message, read once; null when the message is not in the store. */
 	async _replyMetaOf(id) {
 		let meta = this._replyMeta.get(id);
 		if (!meta) {
 			const msg = await this._readRawMessage(id).catch(() => null);
 			if (!msg) return null;
-			meta = { replyTo: msg.replyTo, sentAt: msg.sentAt || '' };
-			this._replyMeta.set(id, meta);
+			meta = { replyTo: msg.replyTo, sentAt: msg.sentAt || '', supersedes: msg.supersedes ?? [] };
+			// A half-written file reads as a message with no time: answer for now, but do not remember it.
+			if (meta.sentAt) this._replyMeta.set(id, meta);
 		}
 		return meta;
 	}
 
 	/**
-	 * The ids `member` has replied to, among `candidates` (inbox messages that ask for a reply): every ancestor,
-	 * through `replyTo`, of a message they sent after the oldest candidate. Reads messages only when there is a
-	 * candidate, so a mailbox without `expectsReply` mail costs nothing, and each message at most once per process.
+	 * The message `id` replies to: its own `replyTo`, else the first one found by walking back through what it
+	 * supersedes (a replacement carries no `replyTo` of its own, and may replace a replacement). `seen` guards a
+	 * hand-edited loop of replacements. Undefined when the chain holds no parent.
 	 */
-	async _repliedAmong(member, candidates) {
-		if (candidates.length === 0) return new Set();
+	async _effectiveParent(id) {
+		const seen = new Set();
+		const todo = [id];
+		while (todo.length > 0) {
+			const cur = todo.pop();
+			if (seen.has(cur)) continue;
+			seen.add(cur);
+			const meta = await this._replyMetaOf(cur);
+			if (!meta) continue;
+			if (meta.replyTo) return meta.replyTo;
+			// Reversed, so the first predecessor is looked at first.
+			for (const pid of [...meta.supersedes].reverse()) todo.push(pid);
+		}
+		return undefined;
+	}
+
+	/**
+	 * What `member` has replied to, among `candidates` (inbox messages that ask for a reply), as
+	 * `{ replied, answerSettled }`:
+	 *   - `replied`: every ancestor, through `replyTo`, of a message they sent after the oldest candidate. It settles
+	 *     every reason (`reply`, `mention`, `answer`), because only a message below the candidate in its own chain counts;
+	 *   - `answerSettled`: the answers (`answers`: answer id -> the member's own message it replies to, from
+	 *     `_answersTo`) that a later message of the member's to the same parent handles ("thanks both"). It settles the
+	 *     `answer` reason only: that message does not reply to a `reply` or `mention` ask on the same candidate.
+	 * Reads messages only when there is a candidate, so a mailbox without `expectsReply` mail costs nothing, and each
+	 * message at most once per process.
+	 */
+	async _repliedAmong(member, candidates, answers = new Map()) {
+		if (candidates.length === 0) return { replied: new Set(), answerSettled: new Set() };
 		const oldest = candidates.reduce((min, c) => ((c.sentAt || '') < min ? c.sentAt || '' : min), candidates[0].sentAt || '');
 		const sent = [];
 		for (const id of await this._readMailbox(member, 'sent')) {
 			const meta = await this._replyMetaOf(id);
-			if (meta?.replyTo && meta.sentAt > oldest) sent.push({ id, replyTo: meta.replyTo });
+			if (!meta || meta.sentAt <= oldest) continue;
+			// A replacement of a reply counts as that reply, with its own (later) time.
+			const replyTo = await this._effectiveParent(id);
+			if (replyTo) sent.push({ id, replyTo, sentAt: meta.sentAt });
 		}
-		return repliedIds(sent, async (id) => (await this._replyMetaOf(id))?.replyTo);
+		const replied = await repliedIds(sent, (id) => this._effectiveParent(id));
+		// An answer is also handled by a later message of the member's to the same parent ("thanks both" sent to
+		// their own message, which several people replied to), not only by a reply below the answer itself. That
+		// settles the `answer` reason only, so it goes in its own set.
+		const answerSettled = new Set();
+		for (const c of candidates) {
+			const parent = answers.get(c.id);
+			if (parent && !replied.has(c.id) && sent.some((m) => m.replyTo === parent && m.sentAt > (c.sentAt || ''))) answerSettled.add(c.id);
+		}
+		return { replied, answerSettled };
+	}
+
+	/**
+	 * The `inbox` messages that answer the member, as `Map(id -> id of the member's own message it replies to)`:
+	 * someone else's reply, addressed To the member (a Cc is not asked, as for `reply`; a tag asks), not marked
+	 * `fyi`, sent after `answersSince`, whose direct parent is in the member's sent mailbox. A message that
+	 * supersedes a reply and carries no `replyTo` of its own takes its predecessor's, however many times it was
+	 * replaced (`_effectiveParent`). Reads a message's headers only when it is such a reply, and each at most
+	 * once per process.
+	 */
+	async _answersTo(member, inbox) {
+		const answers = new Map();
+		const candidates = inbox.filter(
+			(m) => (m.hasParent || m.supersedes?.length) && m.from !== member && !m.fyi && m.to?.includes(member) && (m.sentAt || '') > this.answersSince,
+		);
+		if (candidates.length === 0) return answers;
+		const sent = new Set(await this._readMailbox(member, 'sent'));
+		for (const m of candidates) {
+			const parent = await this._effectiveParent(m.id);
+			if (parent && sent.has(parent)) answers.set(m.id, parent);
+		}
+		return answers;
 	}
 
 	/**
@@ -888,7 +968,7 @@ export class FileMessagingAdapter {
 	/**
 	 * The member's inbox cut into sections: `{ inbox, needs, needsCount }`.
 	 *   - `inbox`: what `listInbox` returns;
-	 *   - `needs`: `{ [id]: reasons }` for every message that needs the member (`card`, `reply`, `pin`; see
+	 *   - `needs`: `{ [id]: reasons }` for every message that needs the member (`card`, `reply`, `mention`, `answer`, `pin`; see
 	 *     inbox-rules.mjs). A message with an open question for the member counts wherever it is (inbox, archive,
 	 *     or deleted from both), because the asker is still waiting; the other two reasons need it in the inbox;
 	 *   - `needsCount`: the size of `needs`.
@@ -901,9 +981,12 @@ export class FileMessagingAdapter {
 		const waitingAsks = new Set(waitingOn(member, [...(folded ?? (await this.questionStates())).values()]).map((w) => w.askId));
 		const inInbox = new Set(inbox.map((m) => m.id));
 		const pinned = new Set(Object.keys(readInboxState(this._statePath(member)).pinned));
-		const asks = inbox.filter((m) => m.from !== member && ((m.expectsReply && m.to?.includes(member)) || m.mentions?.includes(member)));
-		const replied = await this._repliedAmong(member, asks);
-		const classified = classifyInbox(inbox, member, { cards: waitingAsks, replied, pinned });
+		const answers = await this._answersTo(member, inbox);
+		const asks = inbox.filter(
+			(m) => m.from !== member && ((m.expectsReply && m.to?.includes(member)) || m.mentions?.includes(member) || answers.has(m.id)),
+		);
+		const { replied, answerSettled } = await this._repliedAmong(member, asks, answers);
+		const classified = classifyInbox(inbox, member, { cards: waitingAsks, replied, answerSettled, pinned, answers: new Set(answers.keys()) });
 		for (const id of waitingAsks) {
 			if (inInbox.has(id)) continue;
 			if (archived.has(id) || (await this._readRawMessage(id).catch(() => null))) classified.set(id, ['card']);

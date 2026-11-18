@@ -87,11 +87,11 @@ export interface ThreadMessage {
 	fyi?: boolean;
 	expectsReply?: boolean;
 	mentions?: string[];
-	/** Why it needs the viewed member: `card`, `reply`, `mention`, `pin`. Absent when it does not (FYI, or not theirs). */
+	/** Why it needs the viewed member: `card`, `reply`, `mention`, `answer`, `pin`. Absent when it does not (FYI, or not theirs). */
 	needs?: NeedsReason[];
 }
 
-export type NeedsReason = 'card' | 'reply' | 'mention' | 'pin';
+export type NeedsReason = 'card' | 'reply' | 'mention' | 'answer' | 'pin';
 
 /** Messages sharing a subject, with their reply chains resolved through the master store. */
 export interface Thread {
