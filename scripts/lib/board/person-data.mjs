@@ -57,8 +57,11 @@ function foldChar(cp) {
 /** `{ norm, startOf, endOf }`: the scan copy and, per UTF-16 unit of it, where that unit starts and ends in the original (null = identical). */
 function normalise(text) {
 	if (!NON_ASCII.test(text)) return { norm: text, startOf: null, endOf: null };
-	const startOf = new Int32Array(text.length);
-	const endOf = new Int32Array(text.length);
+	// The scan copy can be longer than the original (a ligature or a symbol that NFKC writes as several letters), so
+	// the maps grow with it: a typed array ignores a write past its end, which once left such a span unmapped.
+	let capacity = text.length + 16;
+	let startOf = new Int32Array(capacity);
+	let endOf = new Int32Array(capacity);
 	const out = [];
 	for (let i = 0; i < text.length; ) {
 		const cp = text.codePointAt(i);
@@ -66,6 +69,15 @@ function normalise(text) {
 		const rep = cp < 0x80 ? undefined : foldChar(cp);
 		if (rep !== null) {
 			const s = rep === undefined ? text.slice(i, i + len) : rep;
+			if (out.length + s.length > capacity) {
+				capacity = Math.max(capacity * 2, out.length + s.length);
+				const grownStart = new Int32Array(capacity);
+				const grownEnd = new Int32Array(capacity);
+				grownStart.set(startOf);
+				grownEnd.set(endOf);
+				startOf = grownStart;
+				endOf = grownEnd;
+			}
 			for (let k = 0; k < s.length; k++) {
 				startOf[out.length] = i;
 				endOf[out.length] = i + len;
@@ -81,15 +93,16 @@ function normalise(text) {
 
 // Letters and digits in any script, so an accented local part is a whole address. Built from code points and \p classes.
 const APOSTROPHE = String.fromCharCode(0x2019);
-const LOCAL = `[\\p{L}\\p{N}._%+'${APOSTROPHE}-]`;
-const LABEL = '[\\p{L}\\p{N}](?:[\\p{L}\\p{N}-]*[\\p{L}\\p{N}])?';
+// Combining marks (\p{M}) belong to the letters they sit on: `e` + U+0301 is a letter written in two code points.
+const LOCAL = `[\\p{L}\\p{N}\\p{M}._%+'${APOSTROPHE}-]`;
+const LABEL = '[\\p{L}\\p{N}](?:[\\p{L}\\p{N}\\p{M}-]*[\\p{L}\\p{N}\\p{M}])?';
 // The at-sign as it appears in query strings and HTML (fullwidth and small forms are folded to `@` in the scan copy).
 const AT = '(?:@|%40|&#0*64;|&#x0*40;|&commat;)';
 // The local part starts at the first character of its run (so a quote, `_`, `+` or `%20` before it is swallowed, never a gap),
 // or is a quoted string. The domain ends at a letter-only (or punycode) last label that is not followed by more label text;
 // `git@github.com:org/repo.git` (a path after the colon) is a repository address, not a person.
 const EMAIL = new RegExp(
-	`(?:(?<!${LOCAL})${LOCAL}+|"[^"\\r\\n@]{1,64}")${AT}(${LABEL}(?:\\.${LABEL})*\\.(xn--[a-z0-9-]{1,59}|\\p{L}{2,24}))(?![\\p{L}\\p{N}])(?!-[\\p{L}\\p{N}])(?!:[A-Za-z0-9_.~-]*/)`,
+	`(?:(?<!${LOCAL})${LOCAL}+|"[^"\\r\\n@]{1,64}")${AT}(${LABEL}(?:\\.${LABEL})*\\.(xn--[a-z0-9-]{1,59}|(?:\\p{L}\\p{M}*){2,24}))(?![\\p{L}\\p{N}])(?!-[\\p{L}\\p{N}])(?!:[A-Za-z0-9_.~-]*/)`,
 	'giu',
 );
 
@@ -114,9 +127,22 @@ const PHONE_RUN = /(?<![A-Za-z0-9_@+-])(\+?\(?\d[\d ()./-]*\d)(?!(?!(?:x|ext)\.?
 function maskNonPhones(text) {
 	// A dotted run led by a plus (+1.555.010.0199, +44.20.7946.0958) is a phone: keep it out of the date and version masks.
 	const kept = [...text.matchAll(/\+\d+(?:\.\d+){2,}/g)].map((m) => [m.index, m.index + m[0].length]);
-	const inKept = (offset, length) => kept.some(([from, to]) => offset < to && offset + length > from);
+	// One replace pass visits its matches in increasing order and `kept` is sorted and does not overlap, so a cursor
+	// that only moves forward answers "does this match touch a kept run" in linear time for the whole pass (a
+	// search from the first run on every match was quadratic: 128,000 dotted numbers took 25 s).
+	const overlapTest = () => {
+		let cursor = 0;
+		return (offset, length) => {
+			while (cursor < kept.length && kept[cursor][1] <= offset) cursor++;
+			return cursor < kept.length && kept[cursor][0] < offset + length;
+		};
+	};
 	let out = text;
-	for (const pattern of NOT_PHONE) out = out.replace(pattern, (m, ...rest) => (inKept(rest[rest.length - 2], m.length) ? m : '#'.repeat(m.length)));
+	for (const pattern of NOT_PHONE) {
+		const inKept = overlapTest();
+		out = out.replace(pattern, (m, ...rest) => (inKept(rest[rest.length - 2], m.length) ? m : '#'.repeat(m.length)));
+	}
+	const inKept = overlapTest();
 	return out.replace(DOTTED, (m, offset) => (inKept(offset, m.length) || PHONE_DOTTED.test(m) ? m : '#'.repeat(m.length)));
 }
 
@@ -187,18 +213,25 @@ function phoneSpansIn(run) {
 /** `{ emails, internalEmails, phones, spans }` for one string; spans are offsets into the original text, sorted, not overlapping. Internal use. */
 function findAll(text, internalDomains) {
 	const { norm, startOf, endOf } = normalise(text);
-	const emailSpans = [];
+	const emailSpans = []; // the addresses that are replaced (outside ones)
+	const addressSpans = []; // every address, ours too: digits inside any of them are part of the address, not a number
 	let emails = 0;
 	let internalEmails = 0;
 	for (const m of norm.matchAll(EMAIL)) {
-		if (FILE_EXTENSIONS.has(m[2].toLowerCase())) continue;
-		const domain = m[1].toLowerCase();
-		if (internalDomains.some((d) => domain === d || domain.endsWith(`.${d}`))) {
+		// Marks that trail the last label belong to the address's text, not to the name that is compared.
+		const bare = (label) => label.replace(/\p{M}+$/u, '').toLowerCase();
+		if (FILE_EXTENSIONS.has(bare(m[2]))) continue;
+		const domain = bare(m[1]);
+		const span = { start: m.index, end: m.index + m[0].length, label: '[email]' };
+		const internal = internalDomains.some((d) => domain === d || domain.endsWith(`.${d}`));
+		// A quoted local part can hold free text (`"call 555-010-0199 now"@...`): for one of our own addresses it does not hide a number.
+		if (!(internal && m[0].startsWith('"'))) addressSpans.push(span);
+		if (internal) {
 			internalEmails++;
 			continue;
 		}
 		emails++;
-		emailSpans.push({ start: m.index, end: m.index + m[0].length, label: '[email]' });
+		emailSpans.push(span);
 	}
 	const phoneSpans = [];
 	let k = 0; // runs come in order, so one pointer over the address spans is enough
@@ -207,8 +240,8 @@ function findAll(text, internalDomains) {
 		for (const s of phoneSpansIn(m[1])) {
 			const start = base + s.start;
 			const end = base + s.end;
-			while (k < emailSpans.length && emailSpans[k].end <= start) k++;
-			if (k < emailSpans.length && emailSpans[k].start < end) continue; // digits inside an address
+			while (k < addressSpans.length && addressSpans[k].end <= start) k++;
+			if (k < addressSpans.length && addressSpans[k].start < end) continue; // digits inside an address
 			phoneSpans.push({ start, end, label: '[phone]' });
 		}
 	}
@@ -296,7 +329,8 @@ export function redactValue(value, opts) {
 				const redacted = text(key);
 				let name = redacted;
 				for (let n = 2; Object.hasOwn(out, name); n++) name = `${redacted}#${n}`; // two keys that redact to the same text stay two keys
-				out[name] = walk(item, depth + 1);
+				// defineProperty, not assignment: `out['__proto__'] = x` would set the prototype and lose the key.
+				Object.defineProperty(out, name, { value: walk(item, depth + 1), enumerable: true, writable: true, configurable: true });
 			}
 			return out;
 		} finally {
@@ -327,11 +361,20 @@ export class PersonDataReport {
 	constructor(opts) {
 		this.opts = opts;
 		this.rows = new Map(); // team -> field -> counts
+		this.checkedNames = new Set();
+	}
+
+	/** A name the report may print: a plain name that the phone scan finds no number in. The message never holds the name. */
+	_checkName(name, what) {
+		if (typeof name !== 'string' || !SAFE_NAME.test(name)) throw new TypeError(`PersonDataReport.add: ${what} must be a plain name (letters, digits, _ . -, at most 40)`);
+		if (this.checkedNames.has(name)) return;
+		if (scanText(name, this.opts).flagged) throw new TypeError(`PersonDataReport.add: ${what} must not contain a number that looks like a phone number`);
+		this.checkedNames.add(name);
 	}
 
 	add(team, field, value) {
-		if (typeof team !== 'string' || !SAFE_NAME.test(team)) throw new TypeError('PersonDataReport.add: team must be a plain name (letters, digits, _ . -, at most 40)');
-		if (typeof field !== 'string' || !SAFE_NAME.test(field)) throw new TypeError('PersonDataReport.add: field must be a plain name (letters, digits, _ . -, at most 40)');
+		this._checkName(team, 'team');
+		this._checkName(field, 'field');
 		const r = scanValue(value, this.opts);
 		const fields = this.rows.get(team) ?? new Map();
 		const row = fields.get(field) ?? { team, field, texts: 0, withEmail: 0, withPhone: 0, flagged: 0, internalOnly: 0 };
