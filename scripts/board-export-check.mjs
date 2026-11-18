@@ -10,8 +10,9 @@
  * uploaded screenshot kept in Drive on its issue, 2026-11-13). Each folder is a path relative to the
  * workspace (or an absolute path; one outside the workspace is always local, so it fails as a `--synced` folder).
  * Prints one line per folder, "local" or "WOULD SYNC" for a folder that must stay local, "syncs" or "HIDDEN"
- * for one that must reach Drive (HIDDEN when ANY upload-shaped path in it is filtered: `<folder>/PSE-1/shot.png`
- * and the other extensions, see `uploadProbePaths`),
+ * for one that must reach Drive (HIDDEN when ANY path of the finite probe set is filtered: `<folder>/PSE-1/shot.png`,
+ * the other extensions in lower and upper case, and the issue folders that exist now, see `uploadProbePaths`;
+ * the set is not every possible path, so a rule that hides only some other file name passes),
  * and exits 1 if any line is wrong, 2 on a usage or filter-file error. Prints no file content. Run it after
  * the filter edit and the bisync `--resync`, and before the first import.
  */
