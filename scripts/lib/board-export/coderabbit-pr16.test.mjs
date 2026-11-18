@@ -188,3 +188,82 @@ test('assertSynced: a filter line for one existing issue folder (or one extensio
 		rmSync(ws, { recursive: true, force: true });
 	}
 });
+
+// --- folder.mjs: a relative folder is relative to the workspace root, not the current folder (round 2) ---
+
+test('writeExport with a relative folder writes where the guard checked, not under the current folder', async () => {
+	const s = sandbox();
+	const before = process.cwd();
+	try {
+		const cwd = join(s.workspace, 'team'); // the guard's root is the workspace; the process runs one level down
+		process.chdir(cwd);
+		await writeExport('team/board/raw/export', { source: 'fixture', entities: buildFixture() }, s.guard);
+		const where = join(s.workspace, 'team', 'board', 'raw', 'export');
+		assert.ok(existsSync(join(where, MANIFEST_FILE)), 'the manifest is in the folder the guard checked');
+		assert.equal(existsSync(join(cwd, 'team')), false, 'nothing was written under the current folder');
+		assert.equal((await readExport(where)).manifest.source, 'fixture');
+		// A killed first write in that folder is retried in the same place: its temp file is removed there too.
+		rmSync(join(where, MANIFEST_FILE));
+		const leftover = join(where, 'issues.json.tmp-123-abcdef01');
+		writeFileSync(leftover, 'half');
+		await writeExport('team/board/raw/export', { source: 'fixture', entities: buildFixture() }, s.guard);
+		assert.ok(existsSync(join(where, MANIFEST_FILE)));
+		assert.equal(existsSync(leftover), false, 'the leftover of the killed write is removed from the folder the guard checked');
+		assert.equal(existsSync(join(cwd, 'team')), false);
+		// A type that the next export does not have is removed from that folder as well.
+		const fewer = buildFixture();
+		delete fewer.users;
+		assert.ok(existsSync(join(where, 'users.json')));
+		await writeExport('team/board/raw/export', { source: 'fixture', entities: fewer }, s.guard);
+		assert.equal(existsSync(join(where, 'users.json')), false);
+		assert.equal(existsSync(join(cwd, 'team')), false);
+	} finally {
+		process.chdir(before);
+		s.cleanup();
+	}
+});
+
+test('a relative folder the filter does not keep local is refused before anything is created, wherever the process runs', async () => {
+	const s = sandbox();
+	const before = process.cwd();
+	try {
+		process.chdir(join(s.workspace, 'team'));
+		await assert.rejects(writeExport('team/board/synced-export', { source: 'fixture', entities: buildFixture() }, s.guard), code('export-synced'));
+		assert.equal(existsSync(join(s.workspace, 'team', 'board', 'synced-export')), false);
+		assert.equal(existsSync(join(s.workspace, 'team', 'team')), false);
+	} finally {
+		process.chdir(before);
+		s.cleanup();
+	}
+});
+
+// --- folder.mjs: replaceExisting: false is checked inside the writer's own listing (round 2) ---
+
+test('replaceExisting: false refuses a folder that already holds a manifest and changes nothing; the default still replaces', async () => {
+	const s = sandbox();
+	try {
+		await write(s);
+		const names = readdirSync(s.out).sort();
+		const manifestBefore = readFileSync(join(s.out, MANIFEST_FILE), 'utf8');
+		const fewer = buildFixture();
+		delete fewer.users;
+		await assert.rejects(write(s, fewer, { replaceExisting: false }), code('export-exists'));
+		assert.deepEqual(readdirSync(s.out).sort(), names, 'no file was removed or added');
+		assert.equal(readFileSync(join(s.out, MANIFEST_FILE), 'utf8'), manifestBefore);
+		// a folder with no manifest is not "an export that is there": the first write goes through
+		const fresh = sandbox();
+		try {
+			await write(fresh, buildFixture(), { replaceExisting: false });
+			assert.ok(existsSync(join(fresh.out, MANIFEST_FILE)));
+		} finally {
+			fresh.cleanup();
+		}
+		// default, and an explicit true, replace
+		await write(s, fewer);
+		assert.equal(existsSync(join(s.out, 'users.json')), false);
+		await write(s, buildFixture(), { replaceExisting: true });
+		assert.ok(existsSync(join(s.out, 'users.json')));
+	} finally {
+		s.cleanup();
+	}
+});

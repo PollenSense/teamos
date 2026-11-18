@@ -20,7 +20,7 @@ The field list of every type, and its kind, is `ENTITY_TYPES` in `format.mjs` (t
 
 ## Reading and writing
 
-- `writeExport(dir, { source, fetchedAt?, complete?, entities }, { workspaceRoot, filterText })` builds each file's text, parses it
+- `writeExport(dir, { source, fetchedAt?, complete?, entities }, { workspaceRoot, filterText })` (a relative `dir` is relative to `workspaceRoot`, never to the current folder: the guard and every write use the same resolved folder; option `replaceExisting: false` refuses a folder that already holds a manifest with `export-exists`, checked in the writer's own listing right before it changes anything) builds each file's text, parses it
   back and validates the parsed records (what a reader will see: a sparse list or a Date in an object field passes in
   memory and fails after JSON) and the size against the reader's cap (`maxFileBytes`), asks the sync guard (below), writes each file through a temp file and a rename, writes the manifest last, and removes
   the files of types left out (fixed names only). It refuses a folder that has files but no manifest, except one that holds only what a first write that was killed leaves: its temp files, and entity files that begin with the writer's own header (`{"type":"<type>","version":1,"records":`); those are removed and the write goes on. A foreign file with an entity name, a link, or another version's header is refused and nothing is removed.
