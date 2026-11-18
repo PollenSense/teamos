@@ -894,13 +894,18 @@ export class FileMessagingAdapter {
 	}
 
 	/**
-	 * The ids `member` has replied to, among `candidates` (inbox messages that ask for a reply): every ancestor,
-	 * through `replyTo`, of a message they sent after the oldest candidate (`answers`: answer id -> the member's own
-	 * message it replies to, from `_answersTo`). Reads messages only when there is a
-	 * candidate, so a mailbox without `expectsReply` mail costs nothing, and each message at most once per process.
+	 * What `member` has replied to, among `candidates` (inbox messages that ask for a reply), as
+	 * `{ replied, answerSettled }`:
+	 *   - `replied`: every ancestor, through `replyTo`, of a message they sent after the oldest candidate. It settles
+	 *     every reason (`reply`, `mention`, `answer`), because only a message below the candidate in its own chain counts;
+	 *   - `answerSettled`: the answers (`answers`: answer id -> the member's own message it replies to, from
+	 *     `_answersTo`) that a later message of the member's to the same parent handles ("thanks both"). It settles the
+	 *     `answer` reason only: that message does not reply to a `reply` or `mention` ask on the same candidate.
+	 * Reads messages only when there is a candidate, so a mailbox without `expectsReply` mail costs nothing, and each
+	 * message at most once per process.
 	 */
 	async _repliedAmong(member, candidates, answers = new Map()) {
-		if (candidates.length === 0) return new Set();
+		if (candidates.length === 0) return { replied: new Set(), answerSettled: new Set() };
 		const oldest = candidates.reduce((min, c) => ((c.sentAt || '') < min ? c.sentAt || '' : min), candidates[0].sentAt || '');
 		const sent = [];
 		for (const id of await this._readMailbox(member, 'sent')) {
@@ -912,12 +917,14 @@ export class FileMessagingAdapter {
 		}
 		const replied = await repliedIds(sent, (id) => this._effectiveParent(id));
 		// An answer is also handled by a later message of the member's to the same parent ("thanks both" sent to
-		// their own message, which several people replied to), not only by a reply below the answer itself.
+		// their own message, which several people replied to), not only by a reply below the answer itself. That
+		// settles the `answer` reason only, so it goes in its own set.
+		const answerSettled = new Set();
 		for (const c of candidates) {
 			const parent = answers.get(c.id);
-			if (parent && !replied.has(c.id) && sent.some((m) => m.replyTo === parent && m.sentAt > (c.sentAt || ''))) replied.add(c.id);
+			if (parent && !replied.has(c.id) && sent.some((m) => m.replyTo === parent && m.sentAt > (c.sentAt || ''))) answerSettled.add(c.id);
 		}
-		return replied;
+		return { replied, answerSettled };
 	}
 
 	/**
@@ -978,8 +985,8 @@ export class FileMessagingAdapter {
 		const asks = inbox.filter(
 			(m) => m.from !== member && ((m.expectsReply && m.to?.includes(member)) || m.mentions?.includes(member) || answers.has(m.id)),
 		);
-		const replied = await this._repliedAmong(member, asks, answers);
-		const classified = classifyInbox(inbox, member, { cards: waitingAsks, replied, pinned, answers: new Set(answers.keys()) });
+		const { replied, answerSettled } = await this._repliedAmong(member, asks, answers);
+		const classified = classifyInbox(inbox, member, { cards: waitingAsks, replied, answerSettled, pinned, answers: new Set(answers.keys()) });
 		for (const id of waitingAsks) {
 			if (inInbox.has(id)) continue;
 			if (archived.has(id) || (await this._readRawMessage(id).catch(() => null))) classified.set(id, ['card']);

@@ -149,6 +149,29 @@ test('sections: replying to your own message settles every reply to it; replying
 		assert.deepEqual((await adapter.inboxSections('van')).needs, { [late.id]: ['answer'] });
 	}));
 
+test('sections: a later message to the same parent settles the answer reason only, not a reply or mention ask on the same message', () =>
+	withAdapter(async (adapter) => {
+		const mine = await adapter.sendMessage({ from: 'van', to: ['nate', 'ivy'], subject: 'both', body: 'thoughts?' });
+		await tick();
+		const asks = await adapter.sendMessage({ from: 'ivy', to: ['van'], replyTo: mine.id, expectsReply: true, body: 'which one do you want?' });
+		await tick();
+		const tags = await adapter.sendMessage({ from: 'nate', to: ['van'], replyTo: mine.id, body: '@van please look at this' });
+		await tick();
+		assert.deepEqual((await adapter.inboxSections('van')).needs, { [asks.id]: ['reply', 'answer'], [tags.id]: ['mention', 'answer'] });
+
+		// "thanks both" goes to the parent, not below either reply: the answers are handled, the asks are not
+		await adapter.sendMessage({ from: 'van', to: ['nate', 'ivy'], replyTo: mine.id, body: 'thanks both' });
+		assert.deepEqual((await adapter.inboxSections('van')).needs, { [asks.id]: ['reply'], [tags.id]: ['mention'] }, 'only the answer reason is settled');
+
+		// a reply below the message settles the ask (and with it every reason on that message)
+		await tick();
+		await adapter.sendMessage({ from: 'van', to: ['ivy'], replyTo: asks.id, body: 'the second one' });
+		assert.deepEqual((await adapter.inboxSections('van')).needs, { [tags.id]: ['mention'] });
+		await tick();
+		await adapter.sendMessage({ from: 'van', to: ['nate'], replyTo: tags.id, body: 'looked' });
+		assert.deepEqual((await adapter.inboxSections('van')).needs, {});
+	}));
+
 test('sections: only a reply addressed To the member is an answer (a Cc is not asked, a tag is); superseding a reply keeps its parent', () =>
 	withAdapter(async (adapter) => {
 		const mine = await adapter.sendMessage({ from: 'van', to: ['nate'], cc: ['ivy'], subject: 'q', body: 'b' });

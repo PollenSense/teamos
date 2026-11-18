@@ -47,17 +47,22 @@ export function readMarks(metadata) {
  *
  * @param {{ id: string, from: string, to?: string[], expectsReply?: boolean, mentions?: string[] }} msg a message in the member's inbox
  * @param {string} member
- * @param {{ cards?: Set<string>, replied?: Set<string>, pinned?: Set<string>, answers?: Set<string> }} facts
+ * @param {{ cards?: Set<string>, replied?: Set<string>, answerSettled?: Set<string>, pinned?: Set<string>, answers?: Set<string> }} facts
  *   `cards`: ids of messages with an open question waiting on `member`; `replied`: ids of messages the member has
- *   replied to (or to a message below them); `pinned`: ids the member pinned; `answers`: ids of messages whose
- *   direct parent the member sent (a reply to them).
+ *   replied to (or to a message below them); `answerSettled`: ids of answers the member handled with a later
+ *   message to the same parent (it settles the `answer` reason only, not `reply` or `mention`); `pinned`: ids the
+ *   member pinned; `answers`: ids of messages whose direct parent the member sent (a reply to them).
  */
-export function needsReasons(msg, member, { cards = new Set(), replied = new Set(), pinned = new Set(), answers = new Set() } = {}) {
+export function needsReasons(
+	msg,
+	member,
+	{ cards = new Set(), replied = new Set(), answerSettled = new Set(), pinned = new Set(), answers = new Set() } = {},
+) {
 	const reasons = [];
 	if (cards.has(msg.id)) reasons.push('card');
 	if (msg.expectsReply && msg.from !== member && msg.to?.includes(member) && !replied.has(msg.id)) reasons.push('reply');
 	if (msg.mentions?.includes(member) && msg.from !== member && !replied.has(msg.id)) reasons.push('mention');
-	if (answers.has(msg.id) && msg.from !== member && !msg.fyi && !replied.has(msg.id)) reasons.push('answer');
+	if (answers.has(msg.id) && msg.from !== member && !msg.fyi && !replied.has(msg.id) && !answerSettled.has(msg.id)) reasons.push('answer');
 	if (pinned.has(msg.id)) reasons.push('pin');
 	return reasons;
 }
