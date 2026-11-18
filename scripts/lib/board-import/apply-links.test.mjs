@@ -339,11 +339,14 @@ test('the check after a real run compares whole thread entries: the same comment
 		const clean = await applyIssues(plan, store, { rawDir: s.rawDir, guard: async () => ({}) });
 		assert.equal(clean.checks.threadsBroken, 0);
 		// ... and the same files read back with one comment's text, then its author, then its time changed are each broken, ids unchanged
-		for (const change of [{ body: 'Another text.' }, { author: 'someone-else' }, { time: '2025-03-01T09:00:00.000Z' }, { replyTo: 'c9' }, { extra: { added: 1 } }]) {
+		for (const change of [{ body: 'Another text.' }, { author: 'someone-else' }, { time: '2025-03-01T09:00:00.000Z' }, { replyTo: 'c9' }, { source: 'teamos' }]) {
 			tamper = change;
 			const r = await applyIssues(plan, store, { rawDir: s.rawDir, guard: async () => ({}) });
 			assert.equal(r.checks.threadsBroken, 1, JSON.stringify(change));
 		}
+		// meta keys another step owns (the uploads' `files`) are kept by a rerun and are not a difference
+		tamper = { extra: { files: ['files/PSE-1/a.png'] } };
+		assert.equal((await applyIssues(plan, store, { rawDir: s.rawDir, guard: async () => ({}) })).checks.threadsBroken, 0);
 		tamper = null;
 		assert.equal((await applyIssues(plan, store, { rawDir: s.rawDir, guard: async () => ({}) })).checks.threadsBroken, 0);
 	} finally {

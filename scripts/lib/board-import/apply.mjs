@@ -321,8 +321,10 @@ export async function applyIssues(plan, store, { rawDir, guard } = {}) {
 				const file = await store.readThread(t.id);
 				const ours = (file?.entries ?? []).filter((e) => e.source === 'linear');
 				// The whole entries, not their ids: the planned ones as the file stores them (line ends, escapes), against what was read.
-				const want = parseThread(serializeThread(t.entries)).entries;
-				ok = ours.length === want.length && ours.every((entry, i) => isDeepStrictEqual(entry, want[i]));
+				// `extra` (meta keys another step owns, such as the uploads' `files`) is not compared: a rerun keeps it on purpose.
+				const bare = ({ extra, ...rest }) => rest;
+				const want = parseThread(serializeThread(t.entries)).entries.map(bare);
+				ok = ours.length === want.length && ours.every((entry, i) => isDeepStrictEqual(bare(entry), want[i]));
 			} catch (err) {
 				if (!(err instanceof BoardError) || err.code === 'locked') throw err;
 			}
