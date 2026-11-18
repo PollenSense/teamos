@@ -53,6 +53,17 @@ async function writeAtomic(path, text) {
 /** The name `writeAtomic` gives a file while it is being written: `<fixed file name>.tmp-<pid>-<8 hex digits>`. */
 const TEMP_LEFTOVER = /^[A-Za-z]+\.json\.tmp-\d+-[0-9a-f]{8}$/;
 
+/** Is `name` a temp file this writer left (`TEMP_LEFTOVER`'s name) and a regular file? A folder or a link with such a name is somebody's. */
+async function isOwnTempFile(dir, name) {
+	if (!TEMP_LEFTOVER.test(name)) return false;
+	try {
+		return (await lstat(join(dir, name))).isFile();
+	} catch (err) {
+		if (err.code === 'ENOENT') return false;
+		throw err;
+	}
+}
+
 /**
  * Is `name` an entity file this writer made: the fixed name of a known type, a regular file (not a link), whose
  * first bytes are the header the writer puts there, `{"type":"<type>","version":<this version>,"records":`? Only
@@ -125,10 +136,12 @@ export async function writeExport(dir, data, guard, options = {}) {
 	}
 	const fetchedAt = data.fetchedAt ?? new Date().toISOString();
 	if (!ISO_ANY.test(fetchedAt) || !isIsoDate(fetchedAt)) throw new ExportError('manifest-damaged', 'fetchedAt is not an ISO date-time');
-	assertLocalOnly(dir, guard);
-	// The guard reads a relative `dir` as relative to `workspaceRoot`; so must every file operation, whatever the
-	// process's current folder is. Resolved once here and used for the guard's folder, the folder, and each write.
+	// A relative `dir` is relative to `workspaceRoot`, whatever the process's current folder is. Resolved once here,
+	// the same way for the guard and for every write: the guard's own join onto the real workspace root differs from
+	// this one when the root is a link and `dir` has `..` in it, so the guard is given this exact path.
+	if (typeof guard.workspaceRoot !== 'string' || guard.workspaceRoot === '') throw new ExportError('bad-path', 'the workspace root is not given');
 	const target = resolve(guard.workspaceRoot, dir);
+	assertLocalOnly(target, guard);
 
 	await mkdir(target, { recursive: true, mode: 0o700 });
 	const existing = await readdir(target);
@@ -138,9 +151,10 @@ export async function writeExport(dir, data, guard, options = {}) {
 	if (existing.length > 0 && !existing.includes(MANIFEST_FILE)) {
 		// A first write that was killed leaves temp files, and the entity files it had already renamed in (the
 		// manifest comes last). Those are the writer's own and are removed. Anything else in a folder with no
-		// manifest is somebody's, and the write is refused before anything is removed.
+		// manifest is somebody's, and the write is refused before anything is removed: every name is checked
+		// first, and a name that fits a pattern but is a folder or a link is not the writer's.
 		for (const name of existing) {
-			if (!TEMP_LEFTOVER.test(name) && !(await isOwnEntityFile(target, name))) {
+			if (!(await isOwnTempFile(target, name)) && !(await isOwnEntityFile(target, name))) {
 				throw new ExportError('not-export-folder', 'the folder has files but no export manifest; refusing to write into it');
 			}
 		}

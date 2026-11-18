@@ -23,7 +23,7 @@ The field list of every type, and its kind, is `ENTITY_TYPES` in `format.mjs` (t
 - `writeExport(dir, { source, fetchedAt?, complete?, entities }, { workspaceRoot, filterText })` (a relative `dir` is relative to `workspaceRoot`, never to the current folder: the guard and every write use the same resolved folder; option `replaceExisting: false` refuses a folder that already holds a manifest with `export-exists`, checked in the writer's own listing right before it changes anything) builds each file's text, parses it
   back and validates the parsed records (what a reader will see: a sparse list or a Date in an object field passes in
   memory and fails after JSON) and the size against the reader's cap (`maxFileBytes`), asks the sync guard (below), writes each file through a temp file and a rename, writes the manifest last, and removes
-  the files of types left out (fixed names only). It refuses a folder that has files but no manifest, except one that holds only what a first write that was killed leaves: its temp files, and entity files that begin with the writer's own header (`{"type":"<type>","version":1,"records":`); those are removed and the write goes on. A foreign file with an entity name, a link, or another version's header is refused and nothing is removed.
+  the files of types left out (fixed names only). It refuses a folder that has files but no manifest, except one that holds only what a first write that was killed leaves: its temp files, and entity files that begin with the writer's own header (`{"type":"<type>","version":1,"records":`); those are removed and the write goes on. A foreign file with an entity name, a link, a folder, or another version's header is refused and nothing is removed (a temp-file name counts only when it is a regular file). Run one writer per folder at a time: two writers in the same folder can leave files that match neither manifest. Fetch again after a `hash-mismatch`.
 - `readExport(dir, { require?, allowIncomplete?, maxFileBytes? })` opens only the fixed file name of each known type
   (never a path from the manifest, never a link), compares size limit, sha256 and record count with the manifest, and
   validates every record. A run that stopped half-way leaves files that no longer match the manifest: refused as
@@ -48,7 +48,7 @@ importer calls it before writing). The uploads (`team/board/files/<issue key>/`)
 uploaded screenshot kept in Drive on its issue (2026-11-13), so that folder must stay unfiltered, and
 `assertSynced(folder, { workspaceRoot, filterText })` fails (`export-hidden`) when the filter hides ANY upload-shaped path
 (`uploadProbePaths`: `<folder>/<issue folder>/shot.<ext>` for the usual extensions in lower and upper case, no
-extension, one level deeper, the top, a dot name; the issue folders are `PSE-1` and every issue-key folder that exists
+extension, two levels deeper (`<issue folder>/a/b/shot.png`), the top, a dot name; the issue folders are `PSE-1` and every issue-key folder that exists
 under the upload folder now, so a line for one card, `- /team/board/files/PSE-2/**`, is caught once that card has a
 folder, and a card with no folder yet is not probed) or when the folder is outside the synced workspace. One visible path does not make
 the folder pass: `- *.png` hides screenshots and not videos. The downloader treats what it saves as person data (open
