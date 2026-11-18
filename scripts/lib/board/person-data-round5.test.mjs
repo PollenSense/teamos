@@ -62,7 +62,7 @@ test('a number with an address on each side is found once, and a second pass fin
 // starts a run (the address's last letter used to stop it), and three shapes of such a run were not read as a number. Each of
 // them is also a number standing alone, so the same inputs without an address are checked too.
 test('a bracket or a plus right after an address, in the shapes the number reader used to refuse: still a phone number', () => {
-	for (const prefix of ['jo@example.org', 'jo@pollensense.com', 'a.b@mail.example.org']) {
+	for (const prefix of ['jo@example.org', 'someone@pollensense.com', 'a.b@mail.example.org']) {
 		const a = redactText(`${prefix}(0171/1234567)`);
 		assert.equal(a.phones, 1, `${prefix}: national number with a slash in brackets`);
 		assert.ok(!a.text.includes('1234567'), a.text);
