@@ -121,8 +121,11 @@ function prepareFile(type, records, maxFileBytes) {
 	}
 	const bytes = Buffer.byteLength(text);
 	if (bytes > maxFileBytes) throw new ExportError('file-too-large', `the "${type}" file would be ${bytes} bytes, larger than the ${maxFileBytes} a reader accepts`);
-	validateRecords(type, JSON.parse(text).records);
-	return { type, file: fileNameFor(type), text, bytes };
+	const parsed = JSON.parse(text).records;
+	validateRecords(type, parsed);
+	// The count is the one of the text that is written: the caller's array may change while the files are written (the
+	// writes await), and a manifest count from that array would no longer match the file, which `readExport` refuses.
+	return { type, file: fileNameFor(type), text, bytes, count: parsed.length };
 }
 
 /**
@@ -179,9 +182,9 @@ export async function writeExport(dir, data, guard, options = {}) {
 	}
 
 	const manifestEntities = {};
-	for (const { type, file, text, bytes } of files) {
+	for (const { type, file, text, bytes, count } of files) {
 		await writeAtomic(join(target, file), text);
-		manifestEntities[type] = { file, count: entities[type].length, sha256: sha256(Buffer.from(text)), bytes };
+		manifestEntities[type] = { file, count, sha256: sha256(Buffer.from(text)), bytes };
 	}
 	const manifest = {
 		format: FORMAT,

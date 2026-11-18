@@ -21,6 +21,30 @@ const code = (c) => (e) => e.code === c;
 const NO_LINKS = process.platform === 'win32' ? 'a symbolic link needs extra rights on Windows' : false;
 const write = (s, entities = buildFixture(), options) => writeExport(s.out, { source: 'fixture', entities }, s.guard, options);
 
+// --- folder.mjs: the manifest count is the written file's (CodeRabbit on #20, round 5, R5-10) ---
+
+test('a record appended by the caller while the files are being written does not change the manifest count', async () => {
+	const s = sandbox();
+	try {
+		const entities = buildFixture();
+		const before = entities.users.length;
+		const writing = writeExport(s.out, { source: 'fixture', entities }, s.guard);
+		// writeExport has serialised every file (synchronously, before its first await); the caller adds a user now, while the
+		// folder is made and the files are written.
+		entities.users.push({ ...entities.users[0], id: 'late-user', email: 'late@example.org' });
+		entities.teams.push({ ...entities.teams[0], id: 'late-team' });
+		const { manifest } = await writing;
+		assert.equal(entities.users.length, before + 1, 'the caller really did append');
+		assert.equal(manifest.entities.users.count, before, 'the manifest counts what the file holds');
+		const back = await readExport(s.out);
+		assert.equal(back.entities.users.length, before, 'readExport accepts the folder (no count-mismatch)');
+		assert.equal(back.manifest.entities.teams.count, back.entities.teams.length);
+		for (const type of Object.keys(back.manifest.entities)) assert.equal(back.manifest.entities[type].count, back.entities[type].length, type);
+	} finally {
+		s.cleanup();
+	}
+});
+
 // --- folder.mjs: a killed first write (finding 5) ---
 
 test('a first write killed after some entity files were renamed in (no manifest) is retried', async () => {
