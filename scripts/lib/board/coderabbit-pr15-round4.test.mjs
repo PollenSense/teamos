@@ -108,7 +108,9 @@ for (const mode of ['removed', 'enoent']) {
 		await withReplaced('unlink', staleForever(mode, 400, counter), async () => {
 			await rejects(withLock(dir, 'x', async () => 'got it', { staleMs: 1000, waitMs: 60, pollMs: 5 }), 'locked');
 		});
-		assert.ok(counter.n >= 2, `the stale path ran more than once (${counter.n})`);
+		// Only outcomes that do not depend on how fast the machine is: the stale path ran, and the loop stopped at the
+		// deadline instead of after every round. (How many rounds fit into 60 ms varies; a loaded runner may fit one.)
+		assert.ok(counter.n >= 1, `the stale path ran (${counter.n})`);
 		assert.ok(counter.n < 400, `it gave up at the deadline, not after every round (${counter.n})`);
 	});
 }
