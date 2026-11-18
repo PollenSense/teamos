@@ -25,6 +25,8 @@ const AFTER = `${BEFORE}
 `;
 
 const synced = (text, p) => isSynced(parseFilter(text), p);
+/** Creating a symbolic link needs extra rights on Windows (EPERM): what needs one is skipped there. */
+const NO_LINKS = process.platform === 'win32' ? 'a symbolic link needs extra rights on Windows' : false;
 
 test('step 0: without the line raw/ would sync; with it raw/ is local', () => {
 	for (const p of ['team/board/raw/PSE-1.json', 'team/board/raw/a/b/c.json', 'team/board/raw/PSE/PSE-1.json']) {
@@ -221,7 +223,7 @@ test('assertLocalOnly: the workspace root itself is never local; a folder that d
 	}
 });
 
-test('assertLocalOnly: a link outside that points into the workspace is judged by where it lands', () => {
+test('assertLocalOnly: a link outside that points into the workspace is judged by where it lands', { skip: NO_LINKS }, () => {
 	const ws = workspace();
 	const holder = mkdtempSync(join(tmpdir(), 'board-export-link-'));
 	try {

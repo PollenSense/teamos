@@ -17,6 +17,8 @@ function sandbox() {
 	return { root, workspace, out: join(root, 'linear-export'), guard: { workspaceRoot: workspace, filterText: FILTER }, cleanup: () => rmSync(root, { recursive: true, force: true }) };
 }
 const code = (c) => (e) => e.code === c;
+/** Creating a symbolic link needs extra rights on Windows (EPERM): what needs one is skipped there. */
+const NO_LINKS = process.platform === 'win32' ? 'a symbolic link needs extra rights on Windows' : false;
 const write = (s, entities = buildFixture(), options) => writeExport(s.out, { source: 'fixture', entities }, s.guard, options);
 
 // --- folder.mjs: a killed first write (finding 5) ---
@@ -55,14 +57,15 @@ test('only the writer\'s own leftovers are removed: a foreign file with an entit
 		// the header of another type
 		writeFileSync(join(s.out, 'issues.json'), '{"type":"teams","version":1,"records":[]}\n');
 		await assert.rejects(write(s), code('not-export-folder'));
-		// a link with the right name
+		// a link with the right name (not on Windows: a symbolic link needs extra rights there)
 		rmSync(join(s.out, 'issues.json'));
-		writeFileSync(join(s.root, 'elsewhere.json'), before);
-		symlinkSync(join(s.root, 'elsewhere.json'), join(s.out, 'issues.json'));
-		await assert.rejects(write(s), code('not-export-folder'));
-		assert.equal(existsSync(join(s.root, 'elsewhere.json')), true);
-		// a folder with the right name
-		rmSync(join(s.out, 'issues.json'));
+		if (!NO_LINKS) {
+			writeFileSync(join(s.root, 'elsewhere.json'), before);
+			symlinkSync(join(s.root, 'elsewhere.json'), join(s.out, 'issues.json'));
+			await assert.rejects(write(s), code('not-export-folder'));
+			assert.equal(existsSync(join(s.root, 'elsewhere.json')), true);
+			rmSync(join(s.out, 'issues.json'));
+		}
 		mkdirSync(join(s.out, 'issues.json'));
 		await assert.rejects(write(s), code('not-export-folder'));
 		// and a name that is not an entity type at all

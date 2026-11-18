@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { MANIFEST_FILE, assertLocalOnly, isSynced, parseFilter, writeExport } from './index.mjs';
@@ -21,6 +21,8 @@ const code = (c) => (e) => e.code === c;
 const write = (s, dir = s.out, guard = s.guard) => writeExport(dir, { source: 'fixture', entities: buildFixture() }, guard);
 const OWN_TEMP = 'issues.json.tmp-4242-0a1b2c3d';
 const OTHER_TEMP = 'export.json.tmp-4242-0a1b2c3d';
+/** Creating a symbolic link needs extra rights on Windows (EPERM): the tests that need one are skipped there. */
+const NO_LINKS = process.platform === 'win32' ? 'a symbolic link needs extra rights on Windows' : false;
 
 // --- folder.mjs: a name that fits the temp pattern but is not a file (A6) ---
 
@@ -40,7 +42,7 @@ test('a folder with a temp-looking name is refused before anything is removed', 
 	}
 });
 
-test('a link with a temp-looking name is refused, and neither the link nor what it points at is touched', async () => {
+test('a link with a temp-looking name is refused, and neither the link nor what it points at is touched', { skip: NO_LINKS }, async () => {
 	const s = sandbox();
 	try {
 		mkdirSync(s.out);
@@ -87,7 +89,7 @@ function linkedWorkspace() {
 	return { root, real, workspaceRoot: join(root, 'L', 'ws'), cleanup: () => rmSync(root, { recursive: true, force: true }) };
 }
 
-test('a relative folder with `..` under a workspace root that is a link is checked where it is written', async () => {
+test('a relative folder with `..` under a workspace root that is a link is checked where it is written', { skip: NO_LINKS }, async () => {
 	const w = linkedWorkspace();
 	try {
 		const data = { source: 'fixture', entities: buildFixture() };
@@ -197,6 +199,90 @@ test('an include whose wildcard starts above or at the folder, or a folder kept 
 		// its later segments could not match here (fail closed: move it below the exclusion)
 		assert.deepEqual(guardWith(s, ['+ /team/board/files/**', EXCLUDE]), { where: 'filtered', rel: RAW });
 		assert.throws(() => guardWith(s, ['+ /team/*/files/x.md', EXCLUDE]), (e) => e.code === 'export-synced');
+	} finally {
+		s.cleanup();
+	}
+});
+
+// --- folder.mjs: only the writer's own file names count as its temp files (B1); a folder named like an omitted type does not stop the write (B2) ---
+
+test('a temp-looking file with a name the writer never uses is somebody\'s: refused, nothing removed (B1)', async () => {
+	for (const foreign of ['notes.json.tmp-1-abcdef01', 'Issues.json.tmp-1-abcdef01', 'issues.json.tmp-1-abcdef0', 'issues.json.tmp-1-abcdef012', 'issues.json.tmp--abcdef01', 'x.issues.json.tmp-1-abcdef01', 'export.json.bak.tmp-1-abcdef01']) {
+		const s = sandbox();
+		try {
+			mkdirSync(s.out);
+			writeFileSync(join(s.out, foreign), 'mine');
+			writeFileSync(join(s.out, OWN_TEMP), 'half'); // the writer's own leftover next to it: it must survive the refusal too
+			await assert.rejects(write(s), code('not-export-folder'), foreign);
+			assert.deepEqual(readdirSync(s.out).sort(), [foreign, OWN_TEMP].sort(), `${foreign}: nothing was removed`);
+			assert.equal(readFileSync(join(s.out, foreign), 'utf8'), 'mine');
+		} finally {
+			s.cleanup();
+		}
+	}
+});
+
+test('a temp file of every file name the writer makes (the manifest and each type) is still removed (B1)', async () => {
+	const s = sandbox();
+	try {
+		mkdirSync(s.out);
+		const names = [MANIFEST_FILE, ...Object.keys(buildFixture()).map((t) => `${t}.json`)];
+		for (const [i, name] of names.entries()) writeFileSync(join(s.out, `${name}.tmp-${100 + i}-0a1b2c3d`), 'half');
+		await write(s);
+		assert.ok(!readdirSync(s.out).some((n) => n.includes('.tmp-')), 'every leftover was removed');
+		assert.ok(readdirSync(s.out).includes(MANIFEST_FILE));
+	} finally {
+		s.cleanup();
+	}
+});
+
+test('a folder named like a type that is left out stays, and the write finishes (B2)', async () => {
+	const s = sandbox();
+	try {
+		await write(s);
+		const all = buildFixture();
+		const { issues, ...rest } = all;
+		assert.ok(issues !== undefined, 'the fixture has issues');
+		// the first export wrote issues.json as a file; make it a folder, as somebody else might have
+		rmSync(join(s.out, 'issues.json'));
+		mkdirSync(join(s.out, 'issues.json'));
+		writeFileSync(join(s.out, 'issues.json', 'inside.txt'), 'mine');
+		const { manifest } = await writeExport(s.out, { source: 'fixture', entities: rest }, s.guard);
+		assert.deepEqual(readdirSync(join(s.out, 'issues.json')), ['inside.txt'], 'the folder is still there');
+		assert.ok(!('issues' in manifest.entities), 'the manifest does not list the left-out type');
+		const again = await writeExport(s.out, { source: 'fixture', entities: rest }, s.guard);
+		assert.deepEqual(Object.keys(again.manifest.entities).sort(), Object.keys(rest).sort(), 'the manifest on disk is consistent');
+	} finally {
+		s.cleanup();
+	}
+});
+
+test('a link named like a type that is left out stays, and what it points at is untouched (B2)', { skip: NO_LINKS }, async () => {
+	const s = sandbox();
+	try {
+		await write(s);
+		const { issues, ...rest } = buildFixture();
+		assert.ok(issues !== undefined);
+		const elsewhere = join(s.root, 'elsewhere.json');
+		writeFileSync(elsewhere, 'mine');
+		rmSync(join(s.out, 'issues.json'));
+		symlinkSync(elsewhere, join(s.out, 'issues.json'));
+		await writeExport(s.out, { source: 'fixture', entities: rest }, s.guard);
+		assert.ok(lstatSync(join(s.out, 'issues.json')).isSymbolicLink(), 'the link is still there');
+		assert.equal(readFileSync(elsewhere, 'utf8'), 'mine');
+	} finally {
+		s.cleanup();
+	}
+});
+
+test('a left-out type whose file is an ordinary file of the writer is removed as before (B2)', async () => {
+	const s = sandbox();
+	try {
+		await write(s);
+		const { issues, ...rest } = buildFixture();
+		assert.ok(issues !== undefined);
+		await writeExport(s.out, { source: 'fixture', entities: rest }, s.guard);
+		assert.ok(!existsSync(join(s.out, 'issues.json')));
 	} finally {
 		s.cleanup();
 	}
