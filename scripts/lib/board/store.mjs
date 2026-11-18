@@ -235,6 +235,18 @@ export class BoardStore {
 				old.push({ id: r, doc });
 			}
 			const retiring = new Set(old.map((o) => o.id));
+			// Threads move with the card, and a rename replaces what is at the destination without a word. So look at every
+			// source and the destination BEFORE any issue file is touched: two threads for one card, or one landing on a
+			// thread that is already there, is a conflict for a person (a dry run says so too), never a silent loss.
+			const hasThread = (threadPath) => stat(threadPath).then(() => true, (err) => {
+				if (err?.code === 'ENOENT') return false;
+				throw new BoardError('unreadable', `a thread file of ${id} cannot be inspected (${err?.code ?? 'error'})`);
+			});
+			const threadsToMove = [];
+			for (const o of old) if (await hasThread(this.threadPath(o.id))) threadsToMove.push(o.id);
+			if (threadsToMove.length > 1 || (threadsToMove.length === 1 && (await hasThread(this.threadPath(id))))) {
+				throw new BoardError('thread-conflict', `moving ${threadsToMove.join(', ')} to ${id} would lose a thread: more than one thread file, or one already at ${id}`, { id, threads: threadsToMove });
+			}
 			const taken = this.index.aliasOwner.get(id);
 			if (taken && taken !== id && !retiring.has(taken)) throw new BoardError('alias-conflict', `${id} is an alias of ${taken}`, { alias: id, owner: taken });
 			for (const alias of aliases ?? []) {
@@ -256,8 +268,7 @@ export class BoardStore {
 			if (!this.dryRun) {
 				for (const o of old) {
 					const oldTeam = assertId(o.id).team;
-					const thread = this.threadPath(o.id);
-					if (await stat(thread).then(() => true, () => false)) await rename(thread, this.threadPath(id));
+					if (threadsToMove.includes(o.id)) await rename(this.threadPath(o.id), this.threadPath(id)); // checked above: no thread is replaced
 					await unlink(this.issuePath(o.id));
 					await this.index.noteRemoved(`${oldTeam}/${o.id}.md`);
 				}
