@@ -16,7 +16,7 @@
 
 import { createHash, randomBytes } from 'node:crypto';
 import { lstat, mkdir, open, readdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import {
 	ENTITY_TYPES,
 	ExportError,
@@ -100,10 +100,12 @@ function prepareFile(type, records, maxFileBytes) {
 /**
  * Write a complete export.
  *
- * @param {string} dir          the export folder
+ * @param {string} dir          the export folder: absolute, or relative to `guard.workspaceRoot` (not to the current folder)
  * @param {{source: string, fetchedAt?: string, complete?: boolean, entities: Record<string, object[]>}} data
  * @param {{workspaceRoot: string, filterText: string}} guard  who may hold the text: see `assertLocalOnly`
- * @param {{maxFileBytes?: number}} [options]  the size one file may have (default: what `readExport` accepts)
+ * @param {{maxFileBytes?: number, replaceExisting?: boolean}} [options]  `maxFileBytes`: the size one file may have
+ *   (default: what `readExport` accepts). `replaceExisting: false`: refuse with `export-exists` when the folder
+ *   already holds a manifest, checked in the same listing the write works from, right before the first file changes.
  * @returns {Promise<{manifest: object}>}
  *
  * Types that are not in `data.entities` are removed from the folder (their fixed file names only: nothing
@@ -124,24 +126,30 @@ export async function writeExport(dir, data, guard, options = {}) {
 	const fetchedAt = data.fetchedAt ?? new Date().toISOString();
 	if (!ISO_ANY.test(fetchedAt) || !isIsoDate(fetchedAt)) throw new ExportError('manifest-damaged', 'fetchedAt is not an ISO date-time');
 	assertLocalOnly(dir, guard);
+	// The guard reads a relative `dir` as relative to `workspaceRoot`; so must every file operation, whatever the
+	// process's current folder is. Resolved once here and used for the guard's folder, the folder, and each write.
+	const target = resolve(guard.workspaceRoot, dir);
 
-	await mkdir(dir, { recursive: true, mode: 0o700 });
-	const existing = await readdir(dir);
+	await mkdir(target, { recursive: true, mode: 0o700 });
+	const existing = await readdir(target);
+	if (options.replaceExisting === false && existing.includes(MANIFEST_FILE)) {
+		throw new ExportError('export-exists', 'the folder already holds an export, and this write must not replace it; use a new folder');
+	}
 	if (existing.length > 0 && !existing.includes(MANIFEST_FILE)) {
 		// A first write that was killed leaves temp files, and the entity files it had already renamed in (the
 		// manifest comes last). Those are the writer's own and are removed. Anything else in a folder with no
 		// manifest is somebody's, and the write is refused before anything is removed.
 		for (const name of existing) {
-			if (!TEMP_LEFTOVER.test(name) && !(await isOwnEntityFile(dir, name))) {
+			if (!TEMP_LEFTOVER.test(name) && !(await isOwnEntityFile(target, name))) {
 				throw new ExportError('not-export-folder', 'the folder has files but no export manifest; refusing to write into it');
 			}
 		}
-		for (const name of existing) await rm(join(dir, name), { force: true });
+		for (const name of existing) await rm(join(target, name), { force: true });
 	}
 
 	const manifestEntities = {};
 	for (const { type, file, text, bytes } of files) {
-		await writeAtomic(join(dir, file), text);
+		await writeAtomic(join(target, file), text);
 		manifestEntities[type] = { file, count: entities[type].length, sha256: sha256(Buffer.from(text)), bytes };
 	}
 	const manifest = {
@@ -152,9 +160,9 @@ export async function writeExport(dir, data, guard, options = {}) {
 		complete: data.complete !== false,
 		entities: manifestEntities,
 	};
-	await writeAtomic(join(dir, MANIFEST_FILE), `${JSON.stringify(manifest, null, 2)}\n`);
+	await writeAtomic(join(target, MANIFEST_FILE), `${JSON.stringify(manifest, null, 2)}\n`);
 	for (const type of TYPE_NAMES) {
-		if (!Object.prototype.hasOwnProperty.call(entities, type)) await rm(join(dir, fileNameFor(type)), { force: true });
+		if (!Object.prototype.hasOwnProperty.call(entities, type)) await rm(join(target, fileNameFor(type)), { force: true });
 	}
 	return { manifest };
 }
