@@ -39,10 +39,25 @@ test('a folder kept local only by file rules is refused, though every probe path
 			assert.equal(isSynced(rules, 'team/board/raw/files/PSE-1/signups.csv'), true, `${name}: an upload-shaped file really syncs`);
 			assert.throws(
 				() => guard(w.root, lines),
-				(e) => e.code === 'export-synced' && e.message.includes('no filter line excludes the whole folder') && e.message.includes('- /team/board/raw/**'),
+				(e) => e.code === 'export-synced' && e.message.includes('no exclude rule decides for the whole folder') && e.message.includes('- /team/board/raw/**'),
 				name,
 			);
 		}
+	} finally {
+		w.cleanup();
+	}
+});
+
+test('a directory include ahead of the exclusion decides first, so the folder is refused with a message that says so (R5-5, independent review)', () => {
+	const w = workspace();
+	try {
+		// Everything in the folder is still kept local here (the exclude is a file rule too), but the guard cannot show it
+		// from the directory rules: it refuses, and the message must not claim that no line excludes the folder.
+		for (const lines of [['+ /team/board/raw/', '- /team/board/raw/**'], ['- /team/board/raw/*', '- /team/board/raw/*/**']]) {
+			assert.throws(() => guard(w.root, lines), (e) => e.code === 'export-synced' && e.message.includes('no exclude rule decides for the whole folder') && e.message.includes('directory include'), lines.join(' | '));
+		}
+		// moved below the exclusion, the include never decides anything and the folder passes
+		assert.deepEqual(guard(w.root, ['- /team/board/raw/**', '+ /team/board/raw/']), { where: 'filtered', rel: RAW });
 	} finally {
 		w.cleanup();
 	}
@@ -67,7 +82,7 @@ test('one rule that excludes the whole folder is enough, in each form (R5-5)', (
 	}
 });
 
-test('the workspace filter file of this repository passes the guard (R5-5, live copy of the real rules)', () => {
+test('the folder lines of the workspace filter pass the guard; BOARD_RCLONE_FILTER reads the real file instead (R5-5)', () => {
 	const w = workspace();
 	try {
 		// The real file: scripts/rclone-filter.txt in the synced workspace. Set BOARD_RCLONE_FILTER to run this against it.
