@@ -35,6 +35,8 @@ function rewrite(dir, type, mutate, { fixHash = true } = {}) {
 }
 
 const code = (c) => (e) => e.code === c;
+/** Creating a symbolic link needs extra rights on Windows (EPERM): what needs one is skipped there. */
+const NO_LINKS = process.platform === 'win32' ? 'a symbolic link needs extra rights on Windows' : false;
 
 test('write then read gives back every record of every type', async () => {
 	const s = sandbox();
@@ -210,9 +212,11 @@ test('a listed file that is missing, a link, or a path out of the folder is refu
 		const elsewhere = join(s.root, 'elsewhere.json');
 		writeFileSync(elsewhere, readFileSync(join(s.out, 'labels.json')));
 		rmSync(join(s.out, 'labels.json'));
-		symlinkSync(elsewhere, join(s.out, 'labels.json'));
-		await assert.rejects(readExport(s.out), code('file-missing'));
-		rmSync(join(s.out, 'labels.json'));
+		if (!NO_LINKS) {
+			symlinkSync(elsewhere, join(s.out, 'labels.json'));
+			await assert.rejects(readExport(s.out), code('file-missing'));
+			rmSync(join(s.out, 'labels.json'));
+		}
 		writeFileSync(join(s.out, 'labels.json'), readFileSync(elsewhere));
 
 		put({ ...manifest, entities: { ...manifest.entities, labels: { ...manifest.entities.labels, file: '../elsewhere.json' } } });
