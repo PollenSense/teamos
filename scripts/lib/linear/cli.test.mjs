@@ -183,3 +183,59 @@ test('cli: the read-only key variable alone is enough, and no key at all stops b
 		s.cleanup();
 	}
 });
+
+test('cli: a value option followed by another option is a usage error; nothing is read or written (round 2)', async () => {
+	const s = sandbox('- /team/board/raw/**\n');
+	try {
+		const out = join(s.root, 'export');
+		const base = ['--workspace', s.workspace, '--out', out];
+		const cases = [
+			{ args: ['--workspace', '--dry-run', '--out', out], option: '--workspace' },
+			{ args: ['--workspace', s.workspace, '--out', '--dry-run'], option: '--out' },
+			{ args: [...base, '--filter', '--dry-run'], option: '--filter' },
+			{ args: [...base, '--types', '--dry-run'], option: '--types' },
+			{ args: [...base, '--types'], option: '--types' },
+			{ args: [...base, '--filter', ''], option: '--filter' },
+		];
+		for (const { args, option } of cases) {
+			const r = await cli(args);
+			assert.equal(r.code, 2, args.join(' '));
+			assert.match(r.err, new RegExp(`${option} needs a value`));
+			assert.equal(r.fake.requests.length, 0);
+		}
+		assert.equal(existsSync(out), false);
+		assert.equal(existsSync('--dry-run'), false, 'no folder named like the flag');
+		// a normal run is unaffected, and a full run still replaces a full export that is there
+		const ok = await cli([...base, '--dry-run']);
+		assert.equal(ok.code, 0, ok.err);
+		assert.equal((await cli(base)).code, 0);
+		const again = await cli(base);
+		assert.equal(again.code, 0, again.err);
+		assert.equal(JSON.parse(readFileSync(join(out, 'export.json'), 'utf8')).complete, true);
+	} finally {
+		s.cleanup();
+	}
+});
+
+test('cli: a partial run does not replace an export that appeared while it was reading (the writer repeats the check)', async () => {
+	const s = sandbox('- /team/board/raw/**\n');
+	try {
+		const out = join(s.root, 'export');
+		let planted = false;
+		const hook = () => {
+			if (!planted) {
+				planted = true;
+				mkdirSync(out, { recursive: true });
+				writeFileSync(join(out, 'export.json'), '{"format":"someone else\'s run"}\n');
+			}
+			return undefined;
+		};
+		const r = await cli(['--workspace', s.workspace, '--out', out, '--types', 'teams'], { fakeOpts: { hook } });
+		assert.equal(r.code, 1);
+		assert.match(r.err, /already holds an export/);
+		assert.deepEqual(readdirSync(out), ['export.json'], 'nothing was added or removed');
+		assert.equal(readFileSync(join(out, 'export.json'), 'utf8'), '{"format":"someone else\'s run"}\n');
+	} finally {
+		s.cleanup();
+	}
+});

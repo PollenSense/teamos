@@ -199,3 +199,25 @@ test('a nested list with no true-or-false hasNextPage, or a record that is not a
 	data2['issues:t-1'][0].labels = nested([null], false);
 	await assert.rejects(fetchWorkspace(setup(data2).client, { types: ['issues'] }), (e) => e.code === 'bad-response' && /not an object/.test(e.message));
 });
+
+test('a nested list that is missing, null or not an object is an error, not an empty list; an empty one with no next page is fine (round 2)', async () => {
+	for (const bad of [null, undefined, 'x', 5]) {
+		const labels = inventedWorkspace();
+		labels['issues:t-1'][0].labels = bad;
+		await assert.rejects(fetchWorkspace(setup(labels).client, { types: ['issues'] }), (e) => e.code === 'bad-response' && /issue labels is missing/.test(e.message) && !/PSE-1/.test(e.message), String(bad));
+		const teams = inventedWorkspace();
+		teams.projects[0].teams = bad;
+		await assert.rejects(fetchWorkspace(setup(teams).client, { types: ['projects'] }), (e) => e.code === 'bad-response' && /project teams is missing/.test(e.message), String(bad));
+		const miles = inventedWorkspace();
+		miles.projects[0].projectMilestones = bad;
+		await assert.rejects(fetchWorkspace(setup(miles).client, { types: ['milestones'] }), (e) => e.code === 'bad-response' && /project milestones is missing/.test(e.message), String(bad));
+	}
+	const empty = inventedWorkspace();
+	empty['issues:t-1'][0].labels = nested([]);
+	empty.projects[0].teams = nested([]);
+	empty.projects[0].projectMilestones = nested([]);
+	const { entities } = await fetchWorkspace(setup(empty).client, { types: ['issues', 'projects', 'milestones'] });
+	assert.deepEqual(entities.issues[0].labelIds, []);
+	assert.deepEqual(entities.projects[0].teamKeys, []);
+	assert.equal(entities.milestones.length, 0);
+});

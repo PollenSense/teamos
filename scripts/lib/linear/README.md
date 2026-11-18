@@ -13,7 +13,7 @@ Exit 0 ok, 1 error, 2 usage, 3 stopped on a budget or the rate limit (nothing wr
 checked with the sync guard (`board-export/sync-filter.mjs`) **before the first request**. `--types` reads only the
 named types: the export is then marked `complete: false` (the importer refuses it unless told otherwise) and the run
 refuses to write into a folder that already holds an export, so a partial read can never replace a full one (naming
-every type is a full read). The command line is `lib/linear/cli.mjs` (`runCli`, tested against the fake Linear); the
+every type is a full read). The command checks this once before the first request and the writer repeats it right before it writes (`replaceExisting: false`, error `export-exists`), but there is no lock: **run one fetch per folder at a time**. Two runs into the same folder can still overwrite each other's files; the reader then refuses the mix (hash mismatch) instead of importing it. A value option must be followed by its value: `--out --dry-run` is a usage error. A nested list (an issue's labels, a project's teams or milestones) that is missing from an answer is an error, not an empty list; an answer whose body cannot be read is retried like a network failure. The command line is `lib/linear/cli.mjs` (`runCli`, tested against the fake Linear); the
 script only calls it.
 
 ## Read-only by construction

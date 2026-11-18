@@ -231,3 +231,51 @@ test('every request carries an abort signal, so a hung connection ends', async (
 	await client.run('teams');
 	assert.equal(fake.requests[0].hasSignal, true);
 });
+
+// ---- an answer whose body cannot be read (round 2) ----
+
+const brokenBody = (status, headers = {}) => ({ status, headers: new Headers(headers), text: async () => { throw new TypeError('terminated'); } });
+const okAnswer = () => json(200, { data: { teams: { pageInfo: { hasNextPage: false }, nodes: [] } } });
+
+test('a body that cannot be read is retried like a network failure, then reported without detail', async () => {
+	let n = 0;
+	const sleeps = [];
+	const client = createClient({ env, paceMs: 0, sleep: async (ms) => sleeps.push(ms), fetchImpl: async () => (++n < 3 ? brokenBody(200) : okAnswer()) });
+	await client.run('teams');
+	assert.deepEqual(sleeps, [2000, 4000]);
+	assert.equal(n, 3);
+
+	let m = 0;
+	const stuck = createClient({ env, paceMs: 0, maxRetries: 2, sleep: async () => {}, fetchImpl: async () => { m++; return brokenBody(200); } });
+	await assert.rejects(stuck.run('teams'), (e) => e.code === 'network' && /\(HTTP 200\) could not be read after 3 tries/.test(e.message) && !e.message.includes(KEY));
+	assert.equal(m, 3, 'bounded: maxRetries + 1 requests');
+});
+
+test('malformed JSON is not a network failure (no retry); 401 and 403 still stop at once; a 429 keeps its Retry-After pause', async () => {
+	let n = 0;
+	const malformed = createClient({ env, paceMs: 0, sleep: async () => {}, fetchImpl: async () => { n++; return new Response('<html>', { status: 200 }); } });
+	await assert.rejects(malformed.run('teams'), code('bad-response'));
+	assert.equal(n, 1);
+
+	for (const status of [401, 403]) {
+		let k = 0;
+		const sleeps = [];
+		const refused = createClient({ env, paceMs: 0, sleep: async (ms) => sleeps.push(ms), fetchImpl: async () => { k++; return brokenBody(status); } });
+		await assert.rejects(refused.run('teams'), code('auth'));
+		assert.equal(k, 1, String(status));
+		assert.deepEqual(sleeps, []);
+	}
+
+	// a client error whose body cannot be read keeps its status in the message
+	const gone = createClient({ env, paceMs: 0, maxRetries: 1, sleep: async () => {}, fetchImpl: async () => brokenBody(404) });
+	await assert.rejects(gone.run('teams'), (e) => e.code === 'network' && /HTTP 404/.test(e.message));
+	// a server error whose body cannot be read is still judged by its status
+	const down = createClient({ env, paceMs: 0, maxRetries: 2, sleep: async () => {}, fetchImpl: async () => brokenBody(503) });
+	await assert.rejects(down.run('teams'), (e) => e.code === 'http' && /503/.test(e.message));
+
+	let r = 0;
+	const sleeps = [];
+	const limited = createClient({ env, paceMs: 0, sleep: async (ms) => sleeps.push(ms), fetchImpl: async () => (++r === 1 ? brokenBody(429, { 'Retry-After': '3' }) : okAnswer()) });
+	await limited.run('teams');
+	assert.deepEqual(sleeps, [3000], 'paused by the header, not by the network backoff');
+});

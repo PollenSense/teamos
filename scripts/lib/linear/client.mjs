@@ -156,13 +156,28 @@ export function createClient(options = {}) {
 			if (res.status === 401 || res.status === 403) {
 				throw new FetchError('auth', `${name}: Linear refused the key (HTTP ${res.status}); it may be revoked or lack read access`);
 			}
-			let payload = null;
 			let text = '';
+			let unreadable = null;
 			try {
 				text = await res.text();
+			} catch (err) {
+				unreadable = err;
+			}
+			// A body that cannot be read (the connection dropped part-way, the timeout fired) is a network failure and
+			// gets the same bounded retry. Rate-limit and server-error answers are judged by their status and headers,
+			// which do not need the body, so they keep their own handling below.
+			if (unreadable && res.status !== 429 && res.status < 500) {
+				if (++attempts > maxRetries) throw new FetchError('network', `${name}: the answer (HTTP ${res.status}) could not be read after ${attempts} tries (${scrub(unreadable?.name ?? 'error')})`);
+				const wait = Math.min(maxWaitMs, 1000 * 2 ** attempts);
+				onEvent({ name, status: 0, waitedMs: wait, requestsRemaining: state.requestsRemaining, complexityRemaining: state.complexityRemaining });
+				await sleep(wait);
+				continue;
+			}
+			let payload = null;
+			try {
 				payload = text ? JSON.parse(text) : null;
 			} catch {
-				payload = null;
+				payload = null; // malformed JSON is an answer, not a network failure: it ends as `bad-response` below
 			}
 			const rateLimited = res.status === 429 || (payload?.errors ?? []).some((e) => e?.extensions?.code === 'RATELIMITED');
 			if (rateLimited) {

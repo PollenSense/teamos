@@ -11,6 +11,8 @@ import { join, resolve } from 'node:path';
 import { ExportError, MANIFEST_FILE, assertLocalOnly, validateRecords, writeExport } from '../board-export/index.mjs';
 import { FETCH_TYPES, FetchError, createClient, fetchWorkspace } from './index.mjs';
 
+const VALUE_OPTIONS = ['--workspace', '--out', '--filter', '--types'];
+
 export const USAGE = 'usage: board-fetch-linear.mjs --workspace <dir> --out <dir> [--filter <file>] [--types a,b] [--dry-run]';
 
 /**
@@ -35,11 +37,17 @@ export async function runCli(argv, io = {}) {
 	let dryRun = false;
 	for (let i = 0; i < argv.length; i++) {
 		const a = argv[i];
-		if (a === '--workspace' && argv[i + 1]) workspace = argv[++i];
-		else if (a === '--out' && argv[i + 1]) outDir = argv[++i];
-		else if (a === '--filter' && argv[i + 1]) filter = argv[++i];
-		else if (a === '--types' && argv[i + 1]) types = argv[++i].split(',').filter(Boolean);
-		else if (a === '--dry-run') dryRun = true;
+		if (VALUE_OPTIONS.includes(a)) {
+			// A value that is missing, or is itself an option (`--out --dry-run`), is a usage error: the option would
+			// otherwise swallow the next one and write to a folder named like a flag.
+			const value = argv[i + 1];
+			if (value === undefined || value === '' || value.startsWith('--')) return usage(`${a} needs a value`);
+			i++;
+			if (a === '--workspace') workspace = value;
+			else if (a === '--out') outDir = value;
+			else if (a === '--filter') filter = value;
+			else types = value.split(',').filter(Boolean);
+		} else if (a === '--dry-run') dryRun = true;
 		else return usage(`unknown argument "${a}"`);
 	}
 	if (!workspace || !outDir) return usage('--workspace and --out are required');
@@ -72,7 +80,9 @@ export async function runCli(argv, io = {}) {
 		const startedAt = new Date().toISOString();
 		const { entities, counts, skipped } = await fetchWorkspace(client, { types: types ?? FETCH_TYPES, onProgress: (e) => err(`read ${e.type}: ${e.count}\n`) });
 		for (const [type, list] of Object.entries(entities)) validateRecords(type, list);
-		if (!dryRun) await writeExport(resolve(outDir), { source: 'linear-api', fetchedAt: startedAt, complete, entities }, { workspaceRoot: resolve(workspace), filterText });
+		// A partial run must not replace a full export: the check above ran before the fetch, so the writer repeats it
+		// right before it writes (the folder may have got a manifest while this run was reading).
+		if (!dryRun) await writeExport(resolve(outDir), { source: 'linear-api', fetchedAt: startedAt, complete, entities }, { workspaceRoot: resolve(workspace), filterText }, { replaceExisting: complete });
 		out(`${dryRun ? 'dry run, nothing written' : `written to ${outDir}${complete ? '' : ' (partial: marked incomplete, the importer refuses it)'}`}; ${client.requests} requests, ${client.requestsRemaining ?? '?'} left this hour\n`);
 		for (const [type, n] of Object.entries(counts)) out(`${type}: ${n}\n`);
 		for (const [type, n] of Object.entries(skipped)) out(`skipped ${type}: ${n} (no place in the export format)\n`);

@@ -62,7 +62,9 @@ export async function pageAll(client, name, variables = {}, { maxPages = MAX_PAG
 }
 
 function nestedNodes(connection, name, what) {
-	if (connection === null || connection === undefined) return [];
+	// A connection that is missing or null is not an empty list: an answer without it would otherwise read as "no
+	// labels" or "no teams" and be written into the export as fact. Only `nodes: []` (and no next page) is empty.
+	if (connection === null || connection === undefined || typeof connection !== 'object') throw new FetchError('bad-response', `${name}: ${what} is missing from the answer`);
 	if (!Array.isArray(connection.nodes)) throw new FetchError('bad-response', `${name}: ${what} has no node list`);
 	if (connection.nodes.some((n) => n === null || typeof n !== 'object' || Array.isArray(n))) throw new FetchError('bad-response', `${name}: ${what} has a record that is not an object`);
 	if (typeof connection.pageInfo?.hasNextPage !== 'boolean') throw new FetchError('bad-response', `${name}: ${what} has no true or false "hasNextPage"`);
