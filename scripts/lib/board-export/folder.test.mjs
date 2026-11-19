@@ -344,3 +344,20 @@ test('a stopped write leaves a folder the reader refuses, never a mix', async ()
 		s.cleanup();
 	}
 });
+
+test('a caller that deletes an entity type from its input while the write runs does not lose a file the manifest lists (CodeRabbit R5-15)', async () => {
+	const s = sandbox();
+	try {
+		const entities = buildFixture();
+		assert.ok(Object.prototype.hasOwnProperty.call(entities, 'users'), 'the fixture has users');
+		const pending = writeExport(s.out, { source: 'fixture', entities }, s.guard);
+		delete entities.users; // the write has taken its snapshot already; this edit comes after the call
+		const { manifest } = await pending;
+		assert.ok(manifest.entities.users, 'the manifest lists users');
+		assert.ok(existsSync(join(s.out, 'users.json')), 'users.json was not removed after being written');
+		const back = await readExport(s.out);
+		assert.equal(back.entities.users.length, manifest.entities.users.count);
+	} finally {
+		s.cleanup();
+	}
+});
