@@ -196,7 +196,7 @@ export async function writeExport(dir, data, guard, options = {}) {
 	};
 	await writeAtomic(join(target, MANIFEST_FILE), `${JSON.stringify(manifest, null, 2)}\n`);
 	for (const type of TYPE_NAMES) {
-		if (!Object.prototype.hasOwnProperty.call(entities, type)) await removeRegularFile(join(target, fileNameFor(type)));
+		if (!Object.prototype.hasOwnProperty.call(manifestEntities, type)) await removeRegularFile(join(target, fileNameFor(type)));
 	}
 	return { manifest };
 }
