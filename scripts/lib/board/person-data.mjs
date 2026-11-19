@@ -225,7 +225,10 @@ function findAll(text, internalDomains) {
 		if (FILE_EXTENSIONS.has(bare(m[2]))) continue;
 		const domain = m[1].toLowerCase();
 		const span = { start: m.index, end: m.index + m[0].length, label: '[email]' };
-		const internal = internalDomains.some((d) => domain === d || domain.endsWith(`.${d}`));
+		// A mark right after the match belongs to the last label (the pattern gave it up because a digit follows), so the whole
+		// domain is not one of ours: `jo@pollensense.com` + U+0301 + `5` is an outside address and is redacted (CodeRabbit, round 6).
+		const markAfter = /^\p{M}/u.test(norm.slice(span.end, span.end + 2));
+		const internal = !markAfter && internalDomains.some((d) => domain === d || domain.endsWith(`.${d}`));
 		// A quoted local part can hold free text (`"call 555-010-0199 now"@...`): for one of our own addresses it does not hide a number.
 		if (!(internal && m[0].startsWith('"'))) addressSpans.push(span);
 		if (internal) {
