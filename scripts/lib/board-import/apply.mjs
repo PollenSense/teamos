@@ -268,7 +268,10 @@ export async function applyIssues(plan, store, { rawDir, guard } = {}) {
 				}
 				if (!current && linear.length === 0) return SKIP;
 				const native = (current?.entries ?? []).filter((e) => e.source !== 'linear');
-				merged = [...linear, ...native].sort(byTimeThenId);
+				// What a later step put in the meta line of a Linear comment (the uploads importer's `files`) stays with that comment.
+				const extras = new Map((current?.entries ?? []).filter((e) => e.source === 'linear' && e.extra !== undefined).map((e) => [e.id, e.extra]));
+				const kept = linear.map((e) => (extras.has(e.id) ? { ...e, extra: extras.get(e.id) } : e));
+				merged = [...kept, ...native].sort(byTimeThenId);
 				return current;
 			}, async (expect) => {
 				if (!heldByOldId) return store.writeThread(id, merged, { expect });

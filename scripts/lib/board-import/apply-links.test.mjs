@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { BoardStore, parseDocument } from '../board/index.mjs';
+import { BoardStore, parseDocument, parseThread } from '../board/index.mjs';
 import { applyIssues, formatIssuesSummary, loadExisting, planIssues, planLinks, planReference, withLinks } from './index.mjs';
 import { MEMBERS, buildExport } from './fixture.mjs';
 
@@ -380,6 +380,28 @@ test('the check after a real run notices an issue file that does not say what th
 		const plan = withLinks(issues, planLinks(e, issues, reference, { report: issues.report }));
 		const r = await applyIssues(plan, store, { rawDir: s.rawDir, guard: async () => ({}) });
 		assert.ok(r.checks.relationsBroken >= 1, JSON.stringify(r.checks));
+	} finally {
+		s.cleanup();
+	}
+});
+
+test('threads: a rerun keeps the meta keys another step put on a Linear comment (the uploads\' `files`) in the thread file itself', async () => {
+	const s = sandbox();
+	try {
+		const e = exportWith();
+		await runLinks(s, e);
+		const path = join(s.dir, 'issues', 'PSE', 'PSE-1.thread.md');
+		const before = readFileSync(path, 'utf8');
+		assert.match(before, /"id":"c1","source":"linear"/);
+		// the uploads step adds `files` to one comment's meta line
+		writeFileSync(path, before.replace('"id":"c1","source":"linear"', '"id":"c1","source":"linear","files":["files/PSE-1/a.png"]'));
+		assert.ok(readFileSync(path, 'utf8').includes('files/PSE-1/a.png'));
+		const r = await runLinks(s, e);
+		assert.equal(r.checks.threadsBroken, 0);
+		const after = readFileSync(path, 'utf8');
+		assert.ok(after.includes('"files":["files/PSE-1/a.png"]'), 'the raw thread text still holds the comment\'s files');
+		assert.equal(after.includes('files/PSE-1/a.png', after.indexOf('files/PSE-1/a.png') + 1), false, 'once');
+		assert.equal(parseThread(after).entries.find((x) => x.id === 'c2').extra, undefined, 'a comment without files stays without');
 	} finally {
 		s.cleanup();
 	}
