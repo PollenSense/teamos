@@ -52,7 +52,7 @@ or is the card's own ID is refused (`alias-conflict`), never overwritten.
 Every write says what it replaces: `expect: 'new'` or the content hash it read earlier. Under the lock
 (`lock.mjs`: exclusive-create file, pid, stale timeout) the store re-reads, compares, and renames a temp file into
 place. A different hash is `changed`; identical text writes nothing (`changed: false`). Errors are `BoardError`
-with a `code` (`errors.mjs`). Phase (a) has one writer, the importer; field-level merge is phase (c).
+with a `code` (`errors.mjs`). Phase (a) has one writer, the importer; field-level merge is phase (c). Known window (one writer assumed): moving an issue to a new ID checks that no thread file is at the new ID and then renames the old thread there, both inside one locked call; a thread file that a second writer creates at the new ID between the check and the rename would be replaced, because a move that never replaces needs hard links, which not every folder has.
 
 `store.nextNumber(key)` allocates IDs (one writer assumed: two waiters that take over the same stale team lock can read the same number, see the known window in `lock.mjs`); `raiseNextNumber` is for the importer's last step. `nextNumber` belongs to the allocator: `writeTeam` keeps it from the existing file and only ever raises it. A lock file with no readable content (empty, half-written) is judged by its age on disk; a stale lock that cannot be removed ends in `locked` at the deadline. A lock file that exists but cannot be read or inspected (permissions, I/O error) is `unreadable`: only "gone" (ENOENT) means released, and release never removes a lock it cannot read.
 

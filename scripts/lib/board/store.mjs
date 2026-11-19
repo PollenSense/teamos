@@ -268,7 +268,7 @@ export class BoardStore {
 			if (!this.dryRun) {
 				for (const o of old) {
 					const oldTeam = assertId(o.id).team;
-					if (threadsToMove.includes(o.id)) await rename(this.threadPath(o.id), this.threadPath(id)); // checked above: no thread is replaced
+					if (threadsToMove.includes(o.id)) await rename(this.threadPath(o.id), this.threadPath(id)); // checked above; one writer assumed (phase (a)), see the README
 					await unlink(this.issuePath(o.id));
 					await this.index.noteRemoved(`${oldTeam}/${o.id}.md`);
 				}
