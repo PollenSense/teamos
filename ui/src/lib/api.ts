@@ -4,6 +4,7 @@ import type {
 	ChatSession,
 	ChatTranscriptEntry,
 	ChatStatus,
+	Effort,
 	MemberDetail,
 	MemberSummary,
 	Memo,
@@ -147,6 +148,8 @@ export interface SendMessageArgs {
 	projectCode?: string;
 	/** Tokens from `uploadAttachment`; the body places them with `![caption](attachment:<token>)`, the rest go at the end. */
 	attachments?: string[];
+	/** Human senders only; the server refuses it from an agent. */
+	effort?: Effort;
 }
 
 /** An image the server is holding until the message that names it is sent. */
@@ -253,6 +256,7 @@ export const api = {
 			description?: string;
 			recurrence?: { frequency: string; interval: number; endDate?: string };
 			projectCode?: string;
+			effort?: Effort;
 		},
 	) => post<{ id: string }>(`/api/members/${encodeURIComponent(name)}/schedule`, input),
 	updateEvent: (
@@ -264,6 +268,7 @@ export const api = {
 			time?: string;
 			recurrence?: { frequency: string; interval: number; endDate?: string } | null;
 			projectCode?: string;
+			effort?: Effort | null;
 		},
 	) => patch(`/api/members/${encodeURIComponent(name)}/schedule/${encodeURIComponent(id)}`, patchBody),
 	removeEvent: (name: string, id: string) =>

@@ -167,6 +167,7 @@ interface MessagingAdapter {
 		answers?: { ask: string; q: string; option?: number; other?: string; dismissed?: boolean }[];
 		/** `false`: the body is a record (a transcript, a reply that repeats question text), so it tags nobody. */
 		tags?: boolean;
+		effort?: string;
 	}): Promise<{ id: string; sentAt: string }>;
 	supersedeMessage(args: {
 		from: string;
@@ -207,6 +208,7 @@ interface ScheduleEvent {
 	time: string;
 	recurrence?: { frequency: 'daily' | 'weekly' | 'monthly'; interval: number; endDate?: string };
 	projectCode?: string;
+	effort?: string;
 	isDue?: boolean;
 }
 
@@ -220,6 +222,7 @@ interface ScheduleAdapter {
 			description?: string;
 			recurrence?: { frequency: string; interval: number; endDate?: string };
 			projectCode?: string;
+			effort?: string;
 		},
 	): Promise<{ id: string }>;
 	updateEvent(
@@ -231,6 +234,7 @@ interface ScheduleAdapter {
 			time?: string;
 			recurrence?: { frequency: string; interval: number; endDate?: string } | null;
 			projectCode?: string;
+			effort?: string | null;
 		},
 	): Promise<void>;
 	removeEvent(member: string, id: string): Promise<void>;
@@ -993,6 +997,7 @@ export function teamosApi(opts: ApiOptions): Plugin {
 		replyTo?: string;
 		projectCode?: string;
 		attachments?: { path: string; name: string; ref: string }[];
+		effort?: string;
 	}) {
 		return messagingAdapter.sendMessage(msg);
 	}
