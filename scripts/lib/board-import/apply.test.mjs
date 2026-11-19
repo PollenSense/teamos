@@ -557,6 +557,28 @@ test('referenceGaps: every kind of difference is counted on its own, a damaged f
 	}
 });
 
+test('referenceGaps: a labels file whose list is not a list is a damaged file, not a crash (CodeRabbit, round 6)', async () => {
+	const s = sandbox();
+	try {
+		await run(s, buildExport());
+		const store = s.store();
+		const reference = planReference(buildExport(), { members: MEMBERS, existing: await loadExisting(store) });
+		const path = store.singlePath('labels');
+		const file = JSON.parse(readFileSync(path, 'utf8'));
+		for (const bad of [{}, 'text', 5, true]) {
+			writeFileSync(path, JSON.stringify({ ...file, labels: bad }));
+			assert.deepEqual(await referenceGaps(reference, store), { people: 0, projects: 0, labels: 0, cycles: 0, damaged: 1, total: 0 }, JSON.stringify(bad));
+		}
+		// a missing list is still an empty list (every label is a gap), and a real list is compared as before
+		writeFileSync(path, JSON.stringify({ ...file, labels: undefined }));
+		assert.equal((await referenceGaps(reference, store)).labels, reference.labels.labels.length);
+		writeFileSync(path, JSON.stringify(file));
+		assert.deepEqual(await referenceGaps(reference, store), { people: 0, projects: 0, labels: 0, cycles: 0, damaged: 0, total: 0 });
+	} finally {
+		s.cleanup();
+	}
+});
+
 test('issues: a key that is an alias of another card on disk is refused, and the check does not take the other card for it', async () => {
 	const s = sandbox();
 	try {
