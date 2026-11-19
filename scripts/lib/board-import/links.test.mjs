@@ -126,7 +126,7 @@ test('pull requests: the address is rebuilt, the state comes from the status, th
 	assert.deepEqual(fieldsOf(r, 'PSE-10').prs.map((p) => [p.number, p.state]), [[99, 'closed'], [100, 'open']]);
 	assert.equal(fieldsOf(r, 'INS-9').prs[0].state, 'open');
 	assert.deepEqual(r.links.counts.prs, { read: 6, written: 6, byState: { open: 2, closed: 2, merged: 2 }, repeated: 0, flagged: 0 });
-	assert.equal(JSON.stringify(r.links.fields).includes('someone'), false, 'no reviewer, no branch, no title');
+	assert.equal(JSON.stringify([...r.links.fields]).includes('someone'), false, 'no reviewer, no branch, no title');
 	assert.equal(fieldsOf(r, 'PSE-1').links, undefined);
 });
 
@@ -199,7 +199,7 @@ test('links: url, title and source type are kept, sorted, one entry per address'
 	assert.equal(c.written, 4);
 	assert.equal(c.repeated, 1);
 	assert.deepEqual(c.bySource, { jira: 2, api: 1, 'Microsoft Teams': 1 });
-	assert.equal(JSON.stringify(r.links.fields).includes('dropped'), false);
+	assert.equal(JSON.stringify([...r.links.fields]).includes('dropped'), false);
 });
 
 test('links: only http and https addresses without a password are kept', () => {
@@ -227,7 +227,7 @@ test('links: an outside address or phone number in a title or address is redacte
 	assert.match(flagged.url, /\[email\]/);
 	assert.equal(flagged.title, 'Call [phone] about it');
 	assert.equal(internal.title, 'Mail nobody.invented@pollensense.com', 'a company address is not redacted');
-	assert.equal(JSON.stringify(r.links.fields).includes('555-010-0199'), false);
+	assert.equal(JSON.stringify([...r.links.fields]).includes('555-010-0199'), false);
 	assert.equal(r.links.counts.links.flagged, 1, 'the internal address alone is not flagged');
 	const raw = r.links.raw.filter((x) => x.type === 'links');
 	assert.equal(raw.length, 1);
@@ -254,7 +254,7 @@ test('links: two different originals that read the same once redacted: the repea
 	assert.equal(originals.length, 2, 'both different originals, the identical one once');
 	assert.ok(originals.some((l) => l.url.includes('jane@outside.example.invalid') && l.title === 'Call 555-010-0199'));
 	assert.ok(originals.some((l) => l.url.includes('joe@outside.example.invalid') && l.title === 'Call 555-010-0100'));
-	assert.equal(JSON.stringify(r.links.fields).includes('0100'), false, 'nothing synced holds an original');
+	assert.equal(JSON.stringify([...r.links.fields]).includes('0100'), false, 'nothing synced holds an original');
 });
 
 test('links: a source type that is not a plain word is "(other)", and a name such as __proto__ is an ordinary count', () => {

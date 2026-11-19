@@ -390,8 +390,13 @@ export async function referenceGaps(reference, store) {
 	}
 	const labelFile = await read(() => store.readSingle('labels'));
 	if (labelFile) {
-		const labels = new Map((labelFile.file?.data?.labels ?? []).map((l) => [l?.id, l?.name]));
-		for (const l of reference.labels.labels) if (!labels.has(l.id) || labels.get(l.id) !== l.name) gaps.labels++;
+		const stored = labelFile.file?.data?.labels ?? [];
+		if (!Array.isArray(stored)) {
+			gaps.damaged++; // `{"labels":{}}` reads back as a file; its list is not one (CodeRabbit, round 6): damaged like any file nobody can read
+		} else {
+			const labels = new Map(stored.map((l) => [l?.id, l?.name]));
+			for (const l of reference.labels.labels) if (!labels.has(l.id) || labels.get(l.id) !== l.name) gaps.labels++;
+		}
 	}
 	for (const p of reference.projects) {
 		const result = await read(() => store.readProject(p.fields.code));
