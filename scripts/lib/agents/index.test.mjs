@@ -3,7 +3,7 @@ import { chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { agentSupportsResume, gitAuthorEnv, runAgent } from './index.mjs';
+import { agentSupportsResume, runAgent } from './index.mjs';
 import { createClaudeAdapter, formatClaudeJsonLine } from './claude.mjs';
 
 /**
@@ -125,15 +125,6 @@ test('runAgent kills the child when the caller aborts', async () => {
 		// rather than reparented and still burning tokens.
 		assert.throws(() => process.kill(pid, 0), /ESRCH/);
 	});
-});
-
-test('git author names the member; email only from the template', () => {
-	assert.deepEqual(gitAuthorEnv('Devin', {}), { GIT_AUTHOR_NAME: 'Devin (teamos)' });
-	assert.deepEqual(gitAuthorEnv('Devin', { TEAMOS_GIT_AUTHOR_EMAIL: '{member}@example.com' }), {
-		GIT_AUTHOR_NAME: 'Devin (teamos)',
-		GIT_AUTHOR_EMAIL: 'devin@example.com',
-	});
-	assert.deepEqual(gitAuthorEnv(undefined, {}), {});
 });
 
 test('only claude resumes', () => {

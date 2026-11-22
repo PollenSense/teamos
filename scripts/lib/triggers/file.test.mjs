@@ -23,14 +23,14 @@ async function initRepo(repoRoot) {
 }
 
 /** Commit as `author`, touching each key of `files` (default: an empty commit). Returns the new SHA. */
-async function commit(repoRoot, { message, author = 'Test', files = {} }) {
+async function commit(repoRoot, { message, author = 'Test', email = `${author}@example.com`, files = {} }) {
 	for (const [path, content] of Object.entries(files)) {
 		const full = join(repoRoot, path);
 		await mkdir(dirname(full), { recursive: true });
 		await writeFile(full, content);
 		await git(repoRoot, ['add', path]);
 	}
-	const args = ['commit', '-q', '-m', message, `--author=${author} <${author}@example.com>`];
+	const args = ['commit', '-q', '-m', message, `--author=${author} <${email}>`];
 	if (Object.keys(files).length === 0) args.splice(1, 0, '--allow-empty');
 	await git(repoRoot, args);
 	return git(repoRoot, ['rev-parse', 'HEAD']);
@@ -72,6 +72,15 @@ test('commits authored by the member are skipped by default', async () => {
 		await adapter.addTrigger('alice', { priority: 'today' });
 		await commit(repoRoot, { message: 'self', author: 'alice' });
 		assert.deepEqual(await adapter.pendingMatches('alice'), []);
+	});
+});
+
+test('the member’s own cycle commits are skipped by default; another member’s, under the same runner email, still match', async () => {
+	await withAdapter(async (adapter, repoRoot) => {
+		await adapter.addTrigger('alice', { priority: 'today' });
+		await commit(repoRoot, { message: 'own cycle', author: 'alice (teamos)', email: 'runner@example.com' });
+		await commit(repoRoot, { message: 'bob cycle', author: 'bob (teamos)', email: 'runner@example.com' });
+		assert.deepEqual((await adapter.pendingMatches('alice')).map((m) => m.subject), ['bob cycle']);
 	});
 });
 

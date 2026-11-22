@@ -3,6 +3,7 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { promisify } from 'node:util';
 import { isEffort, optionalEffort, patchEffort } from '../effort.mjs';
+import { isMemberAuthor } from '../git-author.mjs';
 import { PRIORITY_ORDER } from '../scheduler.mjs';
 
 /**
@@ -160,10 +161,9 @@ function computeMatches(commits, items, member, matchedAt) {
 		const matchedIds = [];
 		for (const trigger of items) {
 			const compiled = compilePaths(trigger.paths);
-			// Default: skip commits authored by the member themselves. Triggers
-			// override by setting `author` or explicitly matching themselves.
-			const effectiveAuthorNot = trigger.authorNot ?? (trigger.author ? null : member);
-			if (effectiveAuthorNot && (commit.author === effectiveAuthorNot || commit.email === effectiveAuthorNot)) continue;
+			// Default: skip the member's own commits, under the author their cycles
+			// commit as too (`isMemberAuthor`). `author` or `authorNot` replaces it.
+			if (!trigger.author && !trigger.authorNot && isMemberAuthor(member, commit.author, commit.email)) continue;
 			if (!matchesAuthor(trigger, commit.author, commit.email)) continue;
 			if (!matchesPaths(compiled, commit.files)) continue;
 			if (!matchesSubject(trigger, commit.subject)) continue;
