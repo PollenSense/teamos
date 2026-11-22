@@ -1,6 +1,7 @@
 import { execSync, spawn } from 'node:child_process';
 import { createWriteStream } from 'node:fs';
 import { unlink, writeFile } from 'node:fs/promises';
+import { gitAuthorEnv } from '../git-author.mjs';
 import { createAuggieAdapter } from './auggie.mjs';
 import { createClaudeAdapter } from './claude.mjs';
 import { createCursorAdapter } from './cursor.mjs';
@@ -52,20 +53,6 @@ const RESUMABLE = new Set(['claude']);
 /** Whether `agentName` can resume a session. */
 export function agentSupportsResume(agentName) {
 	return RESUMABLE.has(agentName);
-}
-
-/**
- * Git author for a member's commits, so history says which member made each one.  The
- * committer stays whoever runs the runner.  TEAMOS_GIT_AUTHOR_EMAIL may give a per-member
- * address with `{member}` (lowercased name) in it; otherwise the runner's own email is kept,
- * so hosts that match commits to accounts by email still credit the human who runs the team.
- */
-export function gitAuthorEnv(memberName, env = process.env) {
-	if (!memberName) return {};
-	const out = { GIT_AUTHOR_NAME: `${memberName} (teamos)` };
-	const template = env.TEAMOS_GIT_AUTHOR_EMAIL;
-	if (template) out.GIT_AUTHOR_EMAIL = template.replaceAll('{member}', memberName.toLowerCase());
-	return out;
 }
 
 /** Get list of available agent names. */

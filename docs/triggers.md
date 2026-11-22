@@ -10,7 +10,7 @@ Triggers only fire on commits to the **host project repo**. Peer repos (`TEAMOS_
 
 - **Per-member ownership.** A trigger lives in exactly one member's subscription list. Cross-member "everyone watch the auth module" patterns compose from multiple individual subscriptions.
 - **Conjunctive filters.** Every supplied field on a trigger narrows the match. A commit must satisfy **all** filters the trigger declares.
-- **Self-commits ignored by default.** A trigger skips commits where the author equals the member (by name or email). Override by setting `author` or clearing `authorNot` explicitly.
+- **Self-commits ignored by default.** A trigger skips the member's own commits: author `<member>` or `<member> (teamos)` (the author the runner gives a member's cycles), or the member's own email when `TEAMOS_GIT_AUTHOR_EMAIL` gives one. The runner's shared email never counts, since every member's cycle commits carry it. Setting `author` or `authorNot` replaces the default.
 - **Merge commits ignored.** The file adapter runs `git log --no-merges` so merge commits never wake anyone.
 - **A match is durable until explicitly cleared.** Once a commit matches a trigger, it stays in the member's match ledger — and keeps appearing in every cycle prompt — until `clear_trigger_matches` removes it. This is the same "must be actively cleared" contract an unarchived inbox message already has. The scan cursor (which commits have been *checked* against the filters) is a separate, much cheaper concept: it advances eagerly on essentially every scan, independent of whether any cycle that saw a match acted on it. See "On-Disk Layout" and "No post-cycle acknowledgement step" below.
 - **First-run anchors to HEAD, no backfill.** The first time a member has triggers but no cursor, the cursor is set to the current HEAD — adding a trigger does not replay a week of history.
@@ -57,7 +57,7 @@ Field reference:
 | `reason` | no | Short note explaining why the subscription exists |
 | `paths` | no | Array of glob patterns (`**`, `*`, `?`); match if the commit touches any matching file. Omit to match any path. |
 | `author` | no | Only match commits whose author name or email equals this |
-| `authorNot` | no | Skip commits by this author. Defaults to the member's own name; set explicitly to override (`""` to allow self-commits through) |
+| `authorNot` | no | Skip commits by this author name or email. Unset, the member's own commits are skipped (see *Self-commits ignored by default*); setting it replaces that default, and so does setting `author` |
 | `messageMatches` | no | JavaScript regex (string) tested against the commit subject line |
 
 A `triggers.json` written before this split may still carry a `cursor` field inline — the adapter migrates it into the ledger file the first time it's loaded (adopting it as the initial scan position, not re-anchoring at HEAD, so nothing already pending gets silently skipped) and rewrites this file without it.
