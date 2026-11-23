@@ -29,16 +29,28 @@ export async function withProject(fn, members = [{ name: 'alice' }, { name: 'bob
 	}
 }
 
-/** The server as `member` (default alice); `call` resolves with the JSON-RPC response, `tool` unwraps a tools/call. */
-export async function withServer(dir, fn, member = 'alice') {
+/**
+ * The server as `member` (default alice); `call` resolves with the JSON-RPC response, `tool` unwraps a tools/call.
+ * `onStderr(text)` receives what the server writes to stderr (it is ignored otherwise).
+ */
+export async function withServer(dir, fn, member = 'alice', { onStderr } = {}) {
 	const child = spawn(process.execPath, [SERVER], {
 		cwd: dir,
 		env: { ...process.env, TEAMOS_TEAM_DIR: join(dir, 'team'), TEAMOS_MEMBER_NAME: member },
-		stdio: ['pipe', 'pipe', 'ignore'],
+		stdio: ['pipe', 'pipe', onStderr ? 'pipe' : 'ignore'],
 	});
+	if (onStderr) child.stderr.on('data', (chunk) => onStderr(chunk.toString('utf8')));
 	const waiting = new Map();
+	// stdout is the protocol and nothing else: a line that is not JSON is recorded and fails the test afterwards.
+	const stray = [];
 	createInterface({ input: child.stdout }).on('line', (line) => {
-		const msg = JSON.parse(line);
+		let msg;
+		try {
+			msg = JSON.parse(line);
+		} catch {
+			stray.push(line.slice(0, 120));
+			return;
+		}
 		waiting.get(msg.id)?.(msg);
 	});
 	let next = 1;
@@ -61,4 +73,5 @@ export async function withServer(dir, fn, member = 'alice') {
 		child.stdin.end();
 		child.kill();
 	}
+	if (stray.length > 0) throw new Error(`the MCP server wrote ${stray.length} line(s) to stdout that are not JSON-RPC: ${JSON.stringify(stray)}`);
 }
