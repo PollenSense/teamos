@@ -60,11 +60,14 @@ async function readHolder(path, name) {
 export async function withLock(dir, name, fn, { staleMs = 60_000, waitMs = 10_000, pollMs = 25 } = {}) {
 	await mkdir(dir, { recursive: true });
 	const path = join(dir, `${name}.lock`);
-	const mine = JSON.stringify({ pid: process.pid, host: hostname(), at: Date.now() });
+	// The record names the moment the lock was taken, not the moment this writer started waiting: it is built right
+	// after `open` succeeds, so a waiter that finds the lock judges it stale `staleMs` after acquisition.
+	let mine;
 	const deadline = Date.now() + waitMs;
 	for (;;) {
 		try {
 			const handle = await open(path, 'wx');
+			mine = JSON.stringify({ pid: process.pid, host: hostname(), at: Date.now() });
 			try {
 				await handle.writeFile(mine);
 			} catch (err) {
