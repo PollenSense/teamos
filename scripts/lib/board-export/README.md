@@ -60,7 +60,7 @@ reach Drive (`team/board/files` by default; `--synced` names others; `--filter` 
 any line is wrong. Run it after the filter edit and the bisync `--resync`, before the first import.
 
 The live check in the tests, `BOARD_RCLONE_FILTER=<path of scripts/rclone-filter.txt> node --test 'scripts/lib/board-export/*.test.mjs'`,
-fails until the one step-0 line (`- /team/board/raw/**`) is in that file, and fails if a line hides any probe path of `team/board/files`. Both guards check a finite probe set, not every possible path: a rule that hides one specific file name (`- files/INS-9/screenshot.png`) is outside what they can see, because file names do not exist when the filter is checked.
+fails until the one step 0 line (`- /team/board/raw/**`) is in that file, and fails if a line hides any probe path of `team/board/files/PSE-1`. The live test probes the folder `PSE-1` only: an issue folder that already exists and is hidden by a rule (say `PSE-2`) passes the live test, and only `assertSynced` refuses it (the unit tests create `PSE-2` and cover that case). Both guards check a finite probe set, not every possible path: a rule that hides one specific file name (`- files/INS-9/screenshot.png`) is outside what they can see, because file names do not exist when the filter is checked.
 
 ## Tests
 
