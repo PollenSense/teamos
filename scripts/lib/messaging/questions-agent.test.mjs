@@ -59,15 +59,17 @@ test('ask, answer and list over the real MCP server', () =>
 				assert.equal(read.json.questions[0].id, 'q1');
 				assert.equal(read.json.questionState[0].status, 'open');
 
-				// kris answers, acting as kris through the `member` argument
-				const answered = await tool('send_message', {
-					member: 'kris',
+				// kris answers from the dashboard (an agent's MCP call cannot send as a human member), so through the store
+				const answered = await new FileMessagingAdapter(join(dir, 'team')).sendMessage({
+					from: 'kris',
 					to: ['ivy'],
 					replyTo: id,
 					body: 'Meadow.',
 					answers: [{ ask: id, q: 'q1', option: 1 }],
 				});
-				assert.equal(answered.isError, false, answered.text);
+				assert.ok(answered.id);
+				const refusedHuman = await tool('send_message', { member: 'kris', to: ['ivy'], replyTo: id, body: 'x' });
+				assert.match(refusedHuman.error?.message ?? '', /human member/, 'the MCP server refuses to send as a human');
 				const after = await tool('read_message', { id });
 				assert.deepEqual([after.json.questionState[0].status, after.json.questionState[0].answer.by], ['answered', 'kris']);
 
@@ -82,7 +84,7 @@ test('ask, answer and list over the real MCP server', () =>
 
 				const sent = await tool('list_sent', {});
 				assert.deepEqual(sent.json.find((m) => m.id === id).questions, { open: 0, total: 1 });
-			}, 'ivy'),
+			}, 'ivy', { anyMember: true }),
 		MEMBERS,
 	));
 

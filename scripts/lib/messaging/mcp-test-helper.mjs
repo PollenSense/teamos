@@ -32,11 +32,18 @@ export async function withProject(fn, members = [{ name: 'alice' }, { name: 'bob
 /**
  * The server as `member` (default alice); `call` resolves with the JSON-RPC response, `tool` unwraps a tools/call.
  * `onStderr(text)` receives what the server writes to stderr (it is ignored otherwise).
+ * `anyMember: true` runs it as an interactive session (no TEAMOS_MEMBER_NAME): a `member` argument is honoured for
+ * any member, and `tool` fills in `member` with the one given when a call names none. Since the identity check
+ * (upstream bacdefa) a server run as a member refuses a `member` naming someone else, so a test that works as two
+ * members at once needs this.
  */
-export async function withServer(dir, fn, member = 'alice', { onStderr } = {}) {
+export async function withServer(dir, fn, member = 'alice', { onStderr, anyMember = false } = {}) {
+	const env = { ...process.env, TEAMOS_TEAM_DIR: join(dir, 'team') };
+	if (anyMember) delete env.TEAMOS_MEMBER_NAME;
+	else env.TEAMOS_MEMBER_NAME = member;
 	const child = spawn(process.execPath, [SERVER], {
 		cwd: dir,
-		env: { ...process.env, TEAMOS_TEAM_DIR: join(dir, 'team'), TEAMOS_MEMBER_NAME: member },
+		env,
 		stdio: ['pipe', 'pipe', onStderr ? 'pipe' : 'ignore'],
 	});
 	if (onStderr) child.stderr.on('data', (chunk) => onStderr(chunk.toString('utf8')));
@@ -61,7 +68,8 @@ export async function withServer(dir, fn, member = 'alice', { onStderr } = {}) {
 			child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id, method, params })}\n`);
 		});
 	const tool = async (name, args) => {
-		const res = await call('tools/call', { name, arguments: args });
+		const withMember = anyMember && member && args && args.member === undefined ? { ...args, member } : args;
+		const res = await call('tools/call', { name, arguments: withMember });
 		if (res.error) return { error: res.error };
 		const text = res.result.content[0].text;
 		return { isError: !!res.result.isError, text, json: res.result.isError ? null : JSON.parse(text) };
