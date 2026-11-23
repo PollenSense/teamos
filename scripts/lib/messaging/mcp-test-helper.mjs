@@ -78,8 +78,19 @@ export async function withServer(dir, fn, member = 'alice', { onStderr, anyMembe
 		await call('initialize', {});
 		await fn({ call, tool });
 	} finally {
+		// Closing stdin ends the server; wait for it so everything it wrote to stderr has arrived (a kill straight after
+		// the last call could drop the last line under load), and kill only a server that has not left in 3 s.
 		child.stdin.end();
-		child.kill();
+		await new Promise((resolve) => {
+			const timer = setTimeout(() => {
+				child.kill();
+				resolve();
+			}, 3000);
+			child.once('close', () => {
+				clearTimeout(timer);
+				resolve();
+			});
+		});
 	}
 	if (stray.length > 0) throw new Error(`the MCP server wrote ${stray.length} line(s) to stdout that are not JSON-RPC: ${JSON.stringify(stray)}`);
 }
