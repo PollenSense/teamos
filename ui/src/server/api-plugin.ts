@@ -4,6 +4,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import { join } from 'node:path';
 import type { Plugin } from 'vite';
 import { refusalReason } from './identity-gate.js';
+import { sendableFields } from './sendable-fields.js';
 import { createLinker, type LinksConfig } from './linkify.js';
 
 interface MessageSummary {
@@ -978,16 +979,6 @@ export function teamosApi(opts: ApiOptions): Plugin {
 		return threads;
 	}
 
-	/**
-	 * What a browser may hand to `sendMessage`: the message's own fields and the marks, nothing else. Options that
-	 * belong to the server (`tags`) and anything else in the JSON are dropped, so a caller cannot switch off the
-	 * @tag rule for their own message.
-	 */
-	function sendableFields(msg: Record<string, unknown>) {
-		const { from, to, cc, subject, body, replyTo, projectCode, attachments, questions, answers, fyi, expectsReply } = msg;
-		return { from, to, cc, subject, body, replyTo, projectCode, attachments, questions, answers, fyi, expectsReply } as Parameters<typeof sendMessage>[0];
-	}
-
 	async function sendMessage(msg: {
 		from: string;
 		to: string[];
@@ -1468,7 +1459,7 @@ export function teamosApi(opts: ApiOptions): Plugin {
 							if (!attachments) return json(res, { error: 'Attachments are not available' }, 400);
 							msg.attachments = await attachments.claim(msg.attachments, msg.from);
 						}
-						const sent = await sendMessage(sendableFields(msg));
+						const sent = await sendMessage(sendableFields(msg) as Parameters<typeof sendMessage>[0]);
 						if (attachments && tokens.length > 0) await attachments.release(tokens);
 						return json(res, sent, 201);
 					}

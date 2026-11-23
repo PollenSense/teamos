@@ -747,7 +747,7 @@ export class FileMessagingAdapter {
 				subject: msg.subject,
 				sentAt: msg.sentAt,
 				projectCode: msg.projectCode,
-				effort: msg.effort,
+				...(msg.effort ? { effort: msg.effort } : {}),
 				hasParent: !!msg.replyTo,
 				supersedes: msg.supersedes?.length ? msg.supersedes : undefined,
 				supersededBy: msg.supersededBy,
