@@ -65,7 +65,7 @@ refreshes first (to check aliases), so a write costs a stat per issue: about 4 m
 
 ## Config (`config.mjs`)
 
-`board:` in `teamos.config.json`: `path` (inside `team/`, default `team/board`), `pollMinutes`, `importer`, `teams`,
+`board:` in `teamos.config.json`: `path` (inside `team/`, default `team/board`; changing it means changing the sync filter that names `/team/board/...` (see `config.mjs`), otherwise `raw/` and `files/` person data can sync to Drive), `pollMinutes`, `importer`, `teams`,
 `enabled` (`true` or `false`; anything else is off). **Without the section the module is off**: `openBoard(config, repoRoot)` returns
 null. A bad value turns it off with the reason instead of half on.
 
