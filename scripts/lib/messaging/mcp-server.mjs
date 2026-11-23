@@ -18,6 +18,9 @@
  *   TEAMOS_TRIGGERS_ADAPTER  — commit-triggers adapter name (default: file)
  *   TEAMOS_WATCHES_ADAPTER   — watches adapter name       (default: file)
  *
+ * Extra tools: the host lists tool modules under `mcp.modules` in teamos.config.json
+ * (see docs/mcp-modules.md); with none listed the tool list is the built-in one.
+ *
  * Every tool accepts an optional `member` argument identifying the team member
  * whose mailbox / todos / schedule / triggers / watches the call operates against. When
  * omitted, the server falls back to `TEAMOS_MEMBER_NAME`. This makes the same
@@ -34,6 +37,7 @@ import { FileTasksAdapter } from '../tasks/file.mjs';
 import { FileTriggersAdapter } from '../triggers/file.mjs';
 import { FileWatchesAdapter } from '../watches/file.mjs';
 import { FileMessagingAdapter } from './file.mjs';
+import { callToolModule, loadToolModules } from './mcp-modules.mjs';
 
 // ─── Resolve adapters from env ─────────────────────────────────────────────────
 
@@ -106,6 +110,11 @@ function makeTriggersAdapter(name) {
 			process.exit(1);
 	}
 }
+
+// stdout carries the protocol and nothing else: a line that is not a JSON-RPC message breaks the client's
+// reader. `loadConfig` prints "[runner] Loaded config ..." with console.log, and a tool module may call
+// console.log too, so log, info and debug go to stderr (the runner shares `config.mjs`, so it is not changed there).
+for (const name of ['log', 'info', 'debug']) console[name] = (...args) => console.error(...args);
 
 // The probe registry is host-owned and lives in teamos.config.json — an agent
 // can subscribe to a probe but can never define one.
@@ -639,13 +648,47 @@ const BASE_TOOLS = [
 
 // Inject the optional `member` field into every tool's input schema. Kept out
 // of the per-tool definitions so the schemas above stay legible.
-const TOOLS = BASE_TOOLS.map((tool) => ({
-	...tool,
-	inputSchema: {
-		...tool.inputSchema,
-		properties: { member: MEMBER_PROP, ...(tool.inputSchema.properties || {}) },
-	},
-}));
+function withMember(tool) {
+	return {
+		...tool,
+		inputSchema: {
+			...tool.inputSchema,
+			properties: { member: MEMBER_PROP, ...(tool.inputSchema.properties || {}) },
+		},
+	};
+}
+
+// Extra tools from the host's `mcp.modules` list (see ./mcp-modules.mjs). A module that fails to load, or a tool
+// that is malformed or named like another tool, is reported on stderr and left out; the rest keep working.
+//
+// Module code can leave a rejected promise or a timer that throws, during the load as well as after a call has
+// returned (a module may start a timer in `registerTools` and keep loading). So when the host lists any module,
+// both guards are installed BEFORE the first import: such a late failure is logged and the server keeps answering.
+// With no module listed nothing is installed and nothing changes.
+if (Array.isArray(config.mcp?.modules) && config.mcp.modules.length > 0) {
+	process.on('unhandledRejection', (reason) => {
+		process.stderr.write(`[mcp-server] unhandled rejection (module code?): ${reason && reason.message ? reason.message : String(reason)}\n`);
+	});
+	process.on('uncaughtException', (err) => {
+		process.stderr.write(`[mcp-server] uncaught exception (module code?): ${err && err.message ? err.message : String(err)}\n`);
+	});
+}
+const moduleContext = { teamDir, repoRoot, config };
+const { tools: MODULE_TOOLS } = await loadToolModules({
+	modulePaths: config.mcp?.modules,
+	repoRoot,
+	context: moduleContext,
+	reserved: BASE_TOOLS.map((tool) => tool.name),
+	timeoutMs: config.mcp?.moduleLoadTimeoutMs,
+});
+const MODULE_TOOLS_BY_NAME = new Map(MODULE_TOOLS.map((tool) => [tool.definition.name, tool]));
+
+// The caller as the built-in tools see it: `args.member`, else the server's default, validated; null when neither is set.
+function callerMember(args) {
+	return args.member || envMemberName ? resolveMember(args) : null;
+}
+
+const TOOLS = [...BASE_TOOLS, ...MODULE_TOOLS.map((tool) => tool.definition)].map(withMember);
 
 // ─── Tool handlers ─────────────────────────────────────────────────────────────
 
@@ -836,8 +879,11 @@ async function handleToolCall(name, args) {
 			return textResult(`Removed ${id}`);
 		}
 
-		default:
+		default: {
+			const moduleTool = MODULE_TOOLS_BY_NAME.get(name);
+			if (moduleTool) return callToolModule(moduleTool, args, { ...moduleContext, member: callerMember(args) });
 			throw { code: -32601, message: `Unknown tool: ${name}` };
+		}
 	}
 }
 
