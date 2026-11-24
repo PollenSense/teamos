@@ -194,10 +194,19 @@ export class BoardStore {
 	/**
 	 * Write one issue file. `fields.id` is the ID (the file name); `body` is the description (left as it is when
 	 * undefined). Throws `bad-id`, `duplicate-id`, `alias-conflict`, `changed`, `missing`, `damaged`, `locked`.
-	 * Returns `{ id, changed, hash }`.
+	 * Returns `{ id, changed, hash, retired }`.
+	 *
+	 * `retire` (a list of IDs) is for a card that moved teams since it was imported: the old files are the SAME Linear
+	 * issue under its earlier keys (their `linearId` equals `fields.linearId`; a file of any other card is refused as
+	 * `alias-conflict`), and are removed in the same step, after the new file is written. The new card keeps the fields
+	 * the old file had that the writer does not own (relations, links, ...), and the old thread file follows it. The
+	 * old IDs must be in `fields.aliases`, so they keep opening the card. Nothing is removed in a dry run (`retired`
+	 * still says which would be).
 	 */
-	async writeIssue({ fields, body }, { expect } = {}) {
+	async writeIssue({ fields, body }, { expect, retire = [] } = {}) {
 		const { id, team } = assertId(fields?.id);
+		const retireIds = [...new Set(retire.map((r) => assertId(r).id))];
+		if (retireIds.includes(id)) throw new BoardError('bad-id', `${id} cannot retire itself`);
 		if (fields.team !== undefined && fields.team !== team) throw new BoardError('bad-id', `team ${JSON.stringify(fields.team)} does not match the ID ${id}`);
 		let aliases;
 		if (fields.aliases !== undefined) {
@@ -210,25 +219,60 @@ export class BoardStore {
 				if (!aliases.includes(alias)) aliases.push(alias);
 			}
 		}
+		for (const r of retireIds) if (!(aliases ?? []).includes(r)) throw new BoardError('bad-id', `${r} is retired by ${id} but is not one of its aliases`);
 		const path = this.issuePath(id);
 		return withLock(this.lockDir, 'issues', async () => {
 			await this.index.refresh();
+			// The files to retire must be the same Linear issue. Read them first: a file of another card is a conflict, whatever the index says.
+			const old = [];
+			for (const r of retireIds) {
+				const doc = await this._readDocument(this.issuePath(r), `issue ${r}`);
+				if (!doc) continue;
+				if (typeof fields.linearId !== 'string' || doc.fields.linearId !== fields.linearId) {
+					throw new BoardError('alias-conflict', `alias ${r} of ${id} is the file of another issue`, { alias: r, owner: r });
+				}
+				old.push({ id: r, doc });
+			}
+			const retiring = new Set(old.map((o) => o.id));
+			// Threads move with the card, and a rename replaces what is at the destination without a word. So look at every
+			// source and the destination BEFORE any issue file is touched: two threads for one card, or one landing on a
+			// thread that is already there, is a conflict for a person (a dry run says so too), never a silent loss.
+			const hasThread = (threadPath) => stat(threadPath).then(() => true, (err) => {
+				if (err?.code === 'ENOENT') return false;
+				throw new BoardError('unreadable', `a thread file of ${id} cannot be inspected (${err?.code ?? 'error'})`);
+			});
+			const threadsToMove = [];
+			for (const o of old) if (await hasThread(this.threadPath(o.id))) threadsToMove.push(o.id);
+			if (threadsToMove.length > 1 || (threadsToMove.length === 1 && (await hasThread(this.threadPath(id))))) {
+				throw new BoardError('thread-conflict', `moving ${threadsToMove.join(', ')} to ${id} would lose a thread: more than one thread file, or one already at ${id}`, { id, threads: threadsToMove });
+			}
 			const taken = this.index.aliasOwner.get(id);
-			if (taken && taken !== id) throw new BoardError('alias-conflict', `${id} is an alias of ${taken}`, { alias: id, owner: taken });
+			if (taken && taken !== id && !retiring.has(taken)) throw new BoardError('alias-conflict', `${id} is an alias of ${taken}`, { alias: id, owner: taken });
 			for (const alias of aliases ?? []) {
+				if (retiring.has(alias)) continue;
 				if (this.index.byId.has(alias)) throw new BoardError('alias-conflict', `alias ${alias} of ${id} is the real ID of another issue`, { alias, owner: alias });
 				const owner = this.index.aliasOwner.get(alias);
-				if (owner && owner !== id) throw new BoardError('alias-conflict', `alias ${alias} of ${id} already belongs to ${owner}`, { alias, owner });
+				if (owner && owner !== id && !retiring.has(owner)) throw new BoardError('alias-conflict', `alias ${alias} of ${id} already belongs to ${owner}`, { alias, owner });
 				// A file with that name is a real issue even when the index cannot read it (damaged, id mismatch).
 				if (await stat(this.issuePath(alias)).then(() => true, () => false)) throw new BoardError('alias-conflict', `alias ${alias} of ${id} is the name of an existing issue file`, { alias, owner: alias });
 			}
 			const current = await this._readDocument(path, `issue ${id}`);
 			this._check(current && { hash: current.hash }, expect, `issue ${id}`);
-			const merged = mergeFields(current?.fields, { ...fields, ...(aliases ? { aliases } : {}), team }, ISSUE_FIELDS);
-			const text = serializeDocument(merged, body ?? current?.body ?? '');
+			// The fields the writer does not own come from the new file, or from the oldest retired one (a move keeps them).
+			const base = current?.fields ?? old[0]?.doc.fields;
+			const merged = mergeFields(base, { ...fields, ...(aliases ? { aliases } : {}), team }, ISSUE_FIELDS);
+			const text = serializeDocument(merged, body ?? current?.body ?? old[0]?.doc.body ?? '');
 			// The index gets what the file says, not the caller's objects, with the stat of the file we wrote (a dry run writes nothing, so the index hears nothing).
 			const result = await this._put(path, text, expect, `issue ${id}`, (written) => this.index.noteWritten(`${team}/${id}.md`, parseDocument(text).fields, written));
-			return { id, ...result };
+			if (!this.dryRun) {
+				for (const o of old) {
+					const oldTeam = assertId(o.id).team;
+					if (threadsToMove.includes(o.id)) await rename(this.threadPath(o.id), this.threadPath(id)); // checked above: no thread is replaced
+					await unlink(this.issuePath(o.id));
+					await this.index.noteRemoved(`${oldTeam}/${o.id}.md`);
+				}
+			}
+			return { id, ...result, retired: old.map((o) => o.id) };
 		}, this.lockOptions);
 	}
 

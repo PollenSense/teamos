@@ -156,7 +156,7 @@ export class IssueIndex {
 	}
 
 	/**
-	 * Run `task` after every earlier index change has finished. `refresh`, `noteWritten` and `flush` all go through
+	 * Run `task` after every earlier index change has finished. `refresh`, `noteWritten`, `noteRemoved` and `flush` all go through
 	 * here: a refresh works from a file list it took at its start and ends by rebuilding from that list, so a
 	 * `noteWritten` that landed in between would be pruned and lost. In one queue they cannot overlap (a plain
 	 * `readIssue` refreshes without the write lock, so this is reachable inside one process).
@@ -277,6 +277,16 @@ export class IssueIndex {
 		return this._serial(() => {
 			if (written && typeof written.m === 'number' && typeof written.s === 'number') this.cache.set(rel, { m: written.m, s: written.s, fields });
 			else this.cache.delete(rel);
+			const files = [...this.cache.keys()].map((r) => ({ rel: r, team: r.split('/')[0], id: r.split('/')[1].replace(/\.md$/, '') }));
+			this._rebuild(files);
+			this.dirty = true;
+		});
+	}
+
+	/** After the store removed `rel` itself (a card retired by a move): forget it without waiting for the next refresh. */
+	noteRemoved(rel) {
+		return this._serial(() => {
+			this.cache.delete(rel);
 			const files = [...this.cache.keys()].map((r) => ({ rel: r, team: r.split('/')[0], id: r.split('/')[1].replace(/\.md$/, '') }));
 			this._rebuild(files);
 			this.dirty = true;
