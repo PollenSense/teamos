@@ -2,7 +2,7 @@
 
 Reads a board export folder (`scripts/lib/board-export/`) and writes the reference data of the team work board:
 people, teams with workflow states, cycles, labels, projects with milestones and updates, documents, and the map from
-message tags to projects. Phase (a) of Linear inside TeamOS, ticket A4. Issues, comments and relations are A5 and A6.
+message tags to projects. Phase (a) of Linear inside TeamOS, ticket A4. Issues are A5; relations, pull requests, links and comments (A6) are in the section at the end.
 PollenSense-only (it knows what a Linear user and a Linear project are); the store extensions it uses (`dryRun`,
 documents, single files) are general.
 
@@ -124,3 +124,47 @@ On the real export (read-only dry run, 2026-11-16, counts only): 1,464 issues (P
 archived (439, 118, 6, 10), 600 issues with 1,214 earlier keys, 177 with a parent, 43 with a title, description or branch name
 redacted or left out (29 by title or description; 14 more only through the branch name, 17 branch names left out in all), no
 dangling reference. The counts equal the inventory.
+
+## Relations, pull requests, links and comments (ticket A6, `links.mjs`)
+
+`board-import-issues.mjs` also reads the export's `relations`, `attachments` and `comments` and writes them with the issues
+(`planLinks`, then `withLinks` adds the fields to the issue plan; `applyIssues` writes thread files after the cards).
+
+- **Keys** resolve through the plan: a real key first, then an earlier key the plan kept as an alias (so `INS-5` finds the card
+  that moved to `PSE-2`). A key nobody holds is dangling and left out, counted per kind (`relations.issue`, `attachments.issue`,
+  `comments.issue`).
+- **Relations** become `relations: {blocks, blockedBy, related, duplicateOf}` (only the non-empty keys). `blockedBy` is the
+  inverse of `blocks`; `related` is on both sides; `duplicateOf` is one key (a second one is kept as `related` on both sides and
+  counted). A relation to the issue itself, a repeat (also a `related` pair seen from the other side) and a type the board does
+  not know are counted and left out. Keys sort as numbers (`PSE-9` before `PSE-10`).
+- **Pull requests**: a `github` attachment whose address is `https://github.com/<owner>/<repo>/pull/<n>` becomes `prs: [{url, repo,
+  number, state}]` with `state` open, closed or merged (the metadata's status, else its `mergedAt` / `closedAt`; draft and
+  in-review are open). The address is rebuilt (no query or fragment); nothing else of the metadata is kept (no title, branch,
+  reviewer or login). The same pull request on two issues is an entry on each; twice on one issue is one entry.
+- **Links**: every other attachment becomes `links: [{url, title, sourceType}]`. Only `http` and `https` addresses without a
+  user name or password are kept (a `javascript:` or `data:` link would run when shown); the others are counted as refused.
+  Rule A applies to url, title and source type: an outside address or phone number is redacted in the issue file and the original
+  goes to `raw/links/<KEY>.json`, written first.
+- **Comments on issues** become entries of `<KEY>.thread.md` (format in `scripts/lib/board/README.md`), oldest first (the
+  instant, then the text of the time, then the id), author from the people map, else `bot:<name>` or `external:<name>`, else
+  `unknown`; a reply names the comment it answers when that comment is on the same issue (otherwise dangling). A text is redacted
+  by rule A and the original of a changed comment goes to `raw/comments/<id>.json`. **No comment text is ever in an issue
+  file.** Comments on projects, documents and project updates are counted and left for later.
+- **A rerun**: the plan decides `relations`, `prs` and `links` (a relation Linear removed goes); only `deleted` is carried over
+  from the old file. In a thread, Linear's own entries are replaced by what the export says now (a comment deleted in Linear
+  goes) and entries from any other source stay. A thread file that cannot be read as a thread is counted as failed, never
+  overwritten, and the run exits 1. A card whose write was refused gets no thread.
+  A native entry and a Linear comment with the same id cannot share a thread: that thread is counted as failed (`bad-value`), left as
+  it was, and the run exits 1 (nothing is lost; native ids must not look like Linear's, which is a phase (b) rule). When every
+  Linear comment of an issue is gone, its thread file stays as an empty file (or holds the native entries). The dry run reads the
+  thread of a card that moved under its old key, so it says what the real run will do.
+  The report's `dangling references` line adds the link plan's kinds (`relations.issue`, `attachments.issue`, `comments.issue`,
+  `comments.author`, `comments.parent`, `comments.target`) to the issue plan's.
+- **Checked after a real run, against the files**: every issue a relation names is a card and the file holds the planned relations;
+  every thread holds the planned comments, in order. A broken one makes the run exit 1. The run's second `--apply` changes no file.
+
+On the real export (read-only dry run and a full apply on a scratch board, 2026-11-17, counts only): 121 relations (blocks 69,
+duplicate 7, related 45; none dangling), 210 pull requests, all kept (merged 195, closed 7, open 8, as Linear), 871 other links
+(Jira 846, api 21, Teams 4), 1,439 comments on issues in 1,003 thread files (people 527, bots 912; 245 replies; 18 had text
+redacted), 59 comments left for later (12 on projects, 38 on documents, 9 on project updates). The apply ran in about a minute,
+exit 0, every check held, and a second apply changed no file.

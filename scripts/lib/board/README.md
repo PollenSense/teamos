@@ -10,7 +10,7 @@ Nothing here talks to Linear or knows what an importer is; later tickets build o
 team/board/
   teams/PSE.json            key, name, states, nextNumber, ...
   issues/PSE/PSE-1061.md    one issue: front matter + description
-  issues/PSE/PSE-1061.thread.md   (comments; later ticket)
+  issues/PSE/PSE-1061.thread.md   the comments of the issue (`thread.mjs`; `readThread` / `writeThread`)
   projects/<code>.md        one board project: front matter + description
   cycles/PSE/37.json        one cycle
   people.json               one object; its shape belongs to the importer
@@ -52,7 +52,7 @@ or is the card's own ID is refused (`alias-conflict`), never overwritten.
 Every write says what it replaces: `expect: 'new'` or the content hash it read earlier. Under the lock
 (`lock.mjs`: exclusive-create file, pid, stale timeout) the store re-reads, compares, and renames a temp file into
 place. A different hash is `changed`; identical text writes nothing (`changed: false`). Errors are `BoardError`
-with a `code` (`errors.mjs`). Phase (a) has one writer, the importer; field-level merge is phase (c).
+with a `code` (`errors.mjs`). Phase (a) has one writer, the importer; field-level merge is phase (c). Known window (one writer assumed): moving an issue to a new ID checks that no thread file is at the new ID and then renames the old thread there, both inside one locked call; a thread file that a second writer creates at the new ID between the check and the rename would be replaced, because a move that never replaces needs hard links, which not every folder has.
 
 `store.nextNumber(key)` allocates IDs (one writer assumed: two waiters that take over the same stale team lock can read the same number, see the known window in `lock.mjs`); `raiseNextNumber` is for the importer's last step. `nextNumber` belongs to the allocator: `writeTeam` keeps it from the existing file and only ever raises it. A lock file with no readable content (empty, half-written) is judged by its age on disk; a stale lock that cannot be removed ends in `locked` at the deadline. A lock file that exists but cannot be read or inspected (permissions, I/O error) is `unreadable`: only "gone" (ENOENT) means released, and release never removes a lock it cannot read.
 
@@ -91,3 +91,16 @@ it again before every write; a flagged issue keeps its description and comments 
 ## Tests
 
 `node --test scripts/lib/board/*.test.mjs`
+
+## Thread files (`thread.mjs`)
+
+One entry per comment: a header line `### <ISO time> <author>`, one line `<!-- {"id":"...","source":"linear","replyTo":"..."} -->`,
+then the text with every line prefixed `> ` (an empty line is a lone `>`). Because every text line starts with `>`, a comment
+can never contain a header, a meta line or an entry break; entries are separated by a blank line. `source` says where an
+entry came from (`linear` for imported ones; a native comment of a later phase has its own source and is kept when the
+importer runs again). `serializeThread` refuses a value that could break the structure (an author with a line end, an id or
+source that is not a plain name, a time that is not ISO) and turns every kind of line end in a text (CR LF, CR, U+0085,
+U+2028, U+2029) into one line end. `parseThread` is strict: a line that belongs to no entry is a `damaged` error, and
+`writeThread` never overwrites a damaged thread, whatever hash the caller read. Same write rules as every other file
+(`expect: 'new'` or the hash read, an identical text is not a write, nothing in a dry run); in a real run the issue must
+have its file. Unknown keys of the meta object are kept on a rewrite.

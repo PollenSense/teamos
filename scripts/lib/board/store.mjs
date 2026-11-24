@@ -5,6 +5,7 @@ import { contentHash, mergeFields, parseDocument, serializeDocument } from './fr
 import { assertCycleNumber, assertDocumentId, assertId, assertProjectCode, assertTeamKey, normalizeId } from './ids.mjs';
 import { IssueIndex } from './issue-index.mjs';
 import { withLock } from './lock.mjs';
+import { parseThread, serializeThread } from './thread.mjs';
 
 /**
  * The fields each file type owns (design 2.2, 2.5). A writer replaces these from what it is given, so a field
@@ -267,12 +268,38 @@ export class BoardStore {
 			if (!this.dryRun) {
 				for (const o of old) {
 					const oldTeam = assertId(o.id).team;
-					if (threadsToMove.includes(o.id)) await rename(this.threadPath(o.id), this.threadPath(id)); // checked above: no thread is replaced
+					if (threadsToMove.includes(o.id)) await rename(this.threadPath(o.id), this.threadPath(id)); // checked above; one writer assumed (phase (a)), see the README
 					await unlink(this.issuePath(o.id));
 					await this.index.noteRemoved(`${oldTeam}/${o.id}.md`);
 				}
 			}
 			return { id, ...result, retired: old.map((o) => o.id) };
+		}, this.lockOptions);
+	}
+
+	// --- threads (the comments of an issue, `<ID>.thread.md`; format in thread.mjs) ---
+	/** The thread of an issue: `{ id, entries, hash, path }`, or null when it has none. A file that cannot be read as a thread is `damaged`. */
+	async readThread(id) {
+		assertId(id);
+		const path = this.threadPath(id);
+		const file = await this._read(path);
+		if (!file) return null;
+		return { id, entries: parseThread(file.text).entries, hash: file.hash, path };
+	}
+	/**
+	 * Replace the thread of an issue with `entries` (see `serializeThread` for what an entry holds and what is refused).
+	 * Same rules as every write: `expect: 'new'` or the hash read, identical text is not a write, nothing is written in a
+	 * dry run. In a real run the issue must have its file (a thread without a card is a mistake). Returns `{ id, changed, hash }`.
+	 */
+	async writeThread(id, entries, { expect } = {}) {
+		assertId(id);
+		const text = serializeThread(entries);
+		return withLock(this.lockDir, 'issues', async () => {
+			if (!this.dryRun && !(await stat(this.issuePath(id)).then(() => true, () => false))) throw new BoardError('missing', `issue ${id} has no file to hold a thread`);
+			const current = await this._read(this.threadPath(id));
+			if (current) parseThread(current.text); // a damaged thread is never overwritten, whatever the caller expects
+			const result = await this._put(this.threadPath(id), text, expect, `thread ${id}`);
+			return { id, ...result };
 		}, this.lockOptions);
 	}
 

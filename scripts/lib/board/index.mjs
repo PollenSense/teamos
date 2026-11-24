@@ -8,6 +8,7 @@ export { IssueIndex } from './issue-index.mjs';
 export { assertDocumentId, assertId, isProjectCode, isTeamKey, normalizeId, parseId } from './ids.mjs';
 export { PersonDataReport, redactText, redactValue, scanText, scanValue } from './person-data.mjs';
 export { contentHash, mergeFields, parseDocument, serializeDocument } from './frontmatter.mjs';
+export { parseThread, serializeThread } from './thread.mjs';
 
 /**
  * The board for a checkout, or null when the module is off (no `board:` section, or one that is not valid).
