@@ -420,7 +420,7 @@ function sse(res: ServerResponse): (event: unknown) => void {
  * by Sec-Fetch-Site. Tools without a browser (curl) send neither header and
  * still work. Returns the reason to refuse, or null.
  */
-function crossSiteRefusal(req: IncomingMessage, method: string): string | null {
+export function crossSiteRefusal(req: IncomingMessage, method: string, path = ''): string | null {
 	if (method === 'GET' || method === 'HEAD') return null;
 	const header = (name: string) => {
 		const raw = req.headers[name];
@@ -448,7 +448,10 @@ function crossSiteRefusal(req: IncomingMessage, method: string): string | null {
 	const length = Number.parseInt(header('content-length') ?? '0', 10) || 0;
 	const hasBody = length > 0 || header('transfer-encoding') !== undefined;
 	const type = header('content-type')?.split(';')[0].trim().toLowerCase();
-	if ((hasBody || type) && type !== 'application/json') {
+	// The one route that takes raw bytes (POST /api/attachments: a picture as the browser holds it, not JSON).
+	// It still gets the Sec-Fetch-Site and Origin checks above; its own handler validates size, type and name.
+	const rawUpload = method === 'POST' && path === '/api/attachments';
+	if ((hasBody || type) && type !== 'application/json' && !rawUpload) {
 		return 'Writes must be sent as application/json';
 	}
 	return null;
@@ -1230,7 +1233,7 @@ export function teamosApi(opts: ApiOptions): Plugin {
 				const path = url.pathname;
 				const method = req.method?.toUpperCase() ?? 'GET';
 
-				const refusal = crossSiteRefusal(req, method);
+				const refusal = crossSiteRefusal(req, method, path);
 				if (refusal) return json(res, { error: refusal }, 403);
 
 				try {
