@@ -14,7 +14,7 @@ import { ImportError } from './reference.mjs';
  */
 
 const RAW_NAME = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
-const RAW_TYPES = ['projects', 'documents', 'names', 'issues', 'links', 'comments'];
+const RAW_TYPES = ['projects', 'documents', 'names', 'issues', 'links', 'comments', 'uploads'];
 
 function rawPath(rawDir, type, id) {
 	if (!RAW_TYPES.includes(type)) throw new ImportError('bad-raw', 'a raw record has a type the importer does not know');
