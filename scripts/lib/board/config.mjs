@@ -8,7 +8,8 @@ import { isTeamKey } from './ids.mjs';
  *   "board": { "path": "team/board", "pollMinutes": 5, "importer": false, "teams": ["PSE", "INS", "REV", "AER"] }
  *
  *   path         where the store lives; relative, inside `team/` (default `team/board`). The sync filter that keeps
- *                `raw/` and `files/` out of Drive names `/team/board/...`: change this path and the filter with it.
+ *                `raw/` (the Linear texts) out of Drive names `/team/board/raw/**`; `files/` (uploads) is meant to sync
+ *                (Van, 2026-11-13). Change this path and the filter with it.
  *   pollMinutes  how often the Linear poll (A11) asks, 1 to 60 (default 5)
  *   importer     whether the importer and the poll may run at all (default false)
  *   teams        the team keys the board knows; optional

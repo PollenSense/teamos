@@ -54,6 +54,14 @@ export function assertProjectCode(text) {
 	return text;
 }
 
+const DOCUMENT_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
+
+/** A document's file name: the tracker's own id (letters, digits, _ or -, 1 to 64), so no name can leave its folder. */
+export function assertDocumentId(text) {
+	if (typeof text !== 'string' || !DOCUMENT_ID.test(text)) throw new BoardError('bad-id', 'a document id is letters, digits, _ or - (1 to 64)');
+	return text;
+}
+
 export function assertCycleNumber(value) {
 	if (!Number.isInteger(value) || value < 1 || value > 999999) throw new BoardError('bad-id', `cycle number ${JSON.stringify(value)} is not a positive whole number`);
 	return value;

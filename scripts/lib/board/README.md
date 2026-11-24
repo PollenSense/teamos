@@ -14,6 +14,8 @@ team/board/
   projects/<code>.md        one board project: front matter + description
   cycles/PSE/37.json        one cycle
   people.json               one object; its shape belongs to the importer
+  labels.json, project-map.json   more one-object files written by the importer (A4); `store.readSingle` / `writeSingle`
+  documents/<id>.md         read-only text (Linear documents): front matter + text
 team/.logs/board/           local, never synced: index.json (cache), <name>.lock
 ```
 
@@ -53,6 +55,13 @@ place. A different hash is `changed`; identical text writes nothing (`changed: f
 with a `code` (`errors.mjs`). Phase (a) has one writer, the importer; field-level merge is phase (c).
 
 `store.nextNumber(key)` allocates IDs (one writer assumed: two waiters that take over the same stale team lock can read the same number, see the known window in `lock.mjs`); `raiseNextNumber` is for the importer's last step. `nextNumber` belongs to the allocator: `writeTeam` keeps it from the existing file and only ever raises it. A lock file with no readable content (empty, half-written) is judged by its age on disk; a stale lock that cannot be removed ends in `locked` at the deadline. A lock file that exists but cannot be read or inspected (permissions, I/O error) is `unreadable`: only "gone" (ENOENT) means released, and release never removes a lock it cannot read.
+
+## Dry run
+
+`new BoardStore({ dir, lockDir, dryRun: true })` runs every check of a write (lock, re-read, `expect`, hash compare) and
+says `{ changed }` as the real write would, but writes no file into the board folder and does not teach the index about it.
+The importer's dry run is this: counts of files that would be new, changed or the same. Locks and the index cache under
+`lockDir` are local and may still be touched.
 
 ## Index (`issue-index.mjs`)
 
