@@ -45,7 +45,7 @@ test('a number right after a chain ending in our own address is still a number',
 
 test('glued after an apostrophe or a mark, and with non-ASCII local parts', () => {
 	assert.equal(redactText(`jo@example.org'bo@example.net`).text, `[email]'[email]`);
-	assert.equal(redactText(`jo@example.org${ACUTE}_bo@example.net`).text.includes('@'), false);
+	assert.equal(redactText(`jo@example.org${ACUTE}_bo@example.net`).text, "[email]_[email]"); // the mark belongs to the last label
 	assert.equal(redactText('josé@example.org_üß@example.net').text, '[email]_[email]');
 });
 
@@ -57,4 +57,23 @@ test('the unglued cases do not change', () => {
 	assert.equal(redactText('jo@example.org bo@example.net').text, '[email] [email]');
 	assert.equal(redactText('jo@example.org, sales@pollensense.com').text, '[email], sales@pollensense.com');
 	assert.equal(redactText('_jo@example.org').text, '[email]');
+});
+
+test('an outside address followed directly by an at-sign is still redacted (independent review)', () => {
+	for (const [text, want] of [
+		['jo@example.org@', '[email]@'],
+		['(jo@example.org@)', '([email]@)'],
+		['jo@example.org%40', '[email]%40'],
+		['jo@example.org&#64;x', '[email]&#64;x'],
+		['ssh jo@example.org@bastion.example.org', 'ssh [email]@bastion.example.org'],
+		['jo@example.org@bo@example.invalid', '[email]@[email]'],
+	]) {
+		assert.equal(redactText(text).text, want, JSON.stringify(text));
+		assert.equal(scanText(text).flagged, true, JSON.stringify(text));
+	}
+});
+
+test('the shorter-domain rule holds for a later address and inside a chain', () => {
+	assert.equal(redactText('jo@example.org then a@example.org.bob@example.net').text, '[email] then [email].[email]');
+	assert.equal(redactText('jo@example.org_bo@example.net.al@example.invalid').text, '[email]_[email].[email]');
 });
