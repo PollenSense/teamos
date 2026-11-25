@@ -65,7 +65,7 @@ test('a file that is not an image is refused and nothing is sent', () =>
 
 			const badShape = await tool('send_message', { to: ['bob'], subject: 's', body: 'x', attachments: 'pics/shot.png' });
 			assert.equal(badShape.error.code, -32602);
-		}),
+		}, 'alice', { anyMember: true }),
 	));
 
 test('supersede_message can carry images too', () =>

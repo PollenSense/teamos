@@ -39,6 +39,7 @@ teamos/
 │       ├── cycle.mjs            # Cycle/pass execution, prompt building
 │       ├── maintenance.mjs      # Housekeeping, clerk invocation, efficiency
 │       ├── logs.mjs             # Read-only log listing/reading for the dashboard's Logs tab
+│       ├── memos.mjs            # Memo rendering + per-member seen marks
 │       ├── agents/
 │       │   ├── index.mjs        # Registry + common invocation (spawn, timeout, logging)
 │       │   ├── claude.mjs       # Claude CLI adapter + stream parser
@@ -91,7 +92,7 @@ team/
 ├── org.md               # Organization description
 ├── members.json         # Member manifest
 ├── projects.json        # Goals and projects
-├── memos.json           # Timely information for all members
+├── memos.json           # Timely information for all members (seen marks in .logs/memos/)
 ├── messages/            # Master store — one file per message
 │   └── <id>.md
 ├── members/
@@ -150,6 +151,7 @@ title: Software Engineer
 roles: [developer]
 active: true
 type: ai
+effort: high          # optional — overrides the run-wide effort; `model:` likewise
 personality:
   openness: 8
   conscientiousness: 9
@@ -214,6 +216,8 @@ node teamos/scripts/run.mjs --no-commit
 | Option | Default | Description |
 |---|---|---|
 | `--agent <name>` | `claude` | Agent adapter: `claude`, `cursor`, or `auggie` |
+| `--model <name>` | config `model`, then `opus` | Run-wide model; member profiles override it (see **Model and effort**) |
+| `--effort <level>` | config `effort`, then `medium` | Run-wide effort; member profiles and work items override it |
 | `--messaging <name>` | `file` | Messaging adapter: `file` |
 | `--tasks <name>` | `file` | Tasks adapter: `file` |
 | `--schedule <name>` | `file` | Schedule adapter: `file` |
@@ -248,6 +252,18 @@ tree (outside `team/`) before each cycle; if a clean cycle added or changed anyt
 it resumes that member's session once with the list and asks it to commit, stash or revert each
 path. Whatever is still left is logged for a person. Sessions therefore persist (Claude Code prunes
 them after `cleanupPeriodDays`).
+
+### Model and effort
+
+Every Claude spawn — cycle, clerk, chat — is given a `--model` and an `--effort` (`low`, `medium`, `high`, `xhigh`, `max`). They resolve in this order, the later one winning:
+
+1. **Defaults** — `opus`, `medium`.
+2. **Config** — top-level `model` / `effort` in `teamos.config.json`. For dashboard chats, `chat.model` / `chat.effort` then override these.
+3. **CLI** — `--model` / `--effort` on the runner.
+4. **Member profile** — `model:` / `effort:` in the member's `profile.md` frontmatter. An unknown effort there is logged and ignored.
+5. **Work items** (effort only) — a todo, event, commit trigger or watch may carry `effort`, and so may a message, but only when a human sent it; the adapter refuses it from an agent. A cycle runs at the **highest** effort among the items it serves at its priority, where an item without one counts as the member's. So a lone low-effort event (a light check-in) runs low, but beside an ordinary todo it runs at the member's effort; a human who wants a message handled carefully sends it with `effort: high`.
+
+The clerk runs at the run-wide settings. Each cycle log's header and `--dry-run` show the resolved model and effort, and which items set the effort. Cursor and Augment ignore both. The rules live in `teamos/scripts/lib/effort.mjs`.
 
 ### Loop Mode (Default)
 
@@ -355,7 +371,7 @@ When the event fires, the member follows the rules in `teamos/agent-rules/self-a
 - **Communication quality** — clear, actionable, appropriately targeted
 - **Project impact** — meaningful progress toward team goals
 
-Assessments are saved to `team/members/<name>/archives/self-assessments/assessment-YYYY-MM-DD.md`. The runner advances the recurring event's `time` automatically after a successful cycle — the member never bumps it manually. See `teamos/docs/schedule.md` for the full schedule protocol.
+Each assessment also moves anything in `state.md` that should hold permanently — standing directives, role boundaries, lasting lessons — into a `## Standing notes` section of the member's `profile.md` (or a doc linked from it), so later state rollups can't drop it; the saved assessment and the summary to the manager both lead with what moved. Assessments are saved to `team/members/<name>/archives/assessments/YYYY-MM-DD.md`. The runner advances the recurring event's `time` automatically after a successful cycle — the member never bumps it manually. See `teamos/docs/schedule.md` for the full schedule protocol.
 
 ## Priority Levels
 
@@ -378,11 +394,12 @@ A member is given a cycle when any of these are true:
 - They have **schedule events** that are due
 - They have **commit triggers** matching new host-repo commits at or above the current priority level (checked via the triggers adapter's `hasPendingMatches` contract — see `teamos/docs/triggers.md`)
 - They have **watches** whose probe result changed since they were last woken, at or above the current priority level (checked via the watches adapter's `hasPendingObservations` contract — see `teamos/docs/watches.md`)
+- There is a **memo they have not seen** at `high` (`today`) or `critical` (`pressing`) importance — see `teamos/docs/memos.md`
 
 ## Cycle Behavior
 
 During a cycle, the agent:
-1. Reviews organization context (org, memos, projects)
+1. Reviews organization context (org, memos, projects). Memos it has not seen are marked `[NEW]` / `[REVISED]`; the rest are listed by title. The member's seen mark advances when the cycle succeeds (`teamos/docs/memos.md`).
 2. Processes inbox messages — reads them via MCP and calls `archive_message` for each one it has fully handled. Anything left in the inbox carries to the next cycle.
 3. Performs one unit of work at the current priority
 4. Updates state.md with what was accomplished
@@ -399,7 +416,7 @@ A unit of work can include:
 
 Messages behave like email — `from`, `to`, `cc`, `subject`, `body`, and an optional `replyTo` back-pointer that forms a thread. Every message is stored once in `team/messages/<id>.md` with YAML frontmatter; per-member mailboxes (`inbox.json`, `sent.json`, `archives.json`) are lists of message ids.
 
-Agents interact with messages exclusively through MCP tools — they never touch `team/messages/` or the mailbox json files directly. Every tool accepts an optional `member` argument identifying whose mailbox/todos/schedule/triggers the call operates against; when omitted, the server uses the `TEAMOS_MEMBER_NAME` set by the runner. Cycle agents never need to pass `member` explicitly — interactive sessions do.
+Agents interact with messages exclusively through MCP tools — they never touch `team/messages/` or the mailbox json files directly. Every tool accepts an optional `member` argument identifying whose mailbox/todos/schedule/triggers the call operates against; when omitted, the server uses the `TEAMOS_MEMBER_NAME` set by the runner. Cycle agents never need to pass `member` explicitly — interactive sessions do. When the runner (or a dashboard chat) has set `TEAMOS_MEMBER_NAME`, `member` may only name that member — except that the clerk may work on other members' todos, events, triggers and watches (never their mailboxes) — and no call may send as a human member.
 
 | Tool | Purpose |
 |---|---|
@@ -433,7 +450,7 @@ If you're an interactive agent (e.g. Cursor, Claude chat) asked to "be" a team m
 1. **Cycle rules** — `teamos/agent-rules/cycle.md` (how to execute a cycle)
 2. **System architecture** — `teamos/README.md` (this file)
 3. **Organization** — `team/org.md`
-4. **Memos** — `team/memos.json` (timely info for all members)
+4. **Memos** — `team/memos.json` (timely info for all members; your seen mark is `team/.logs/memos/<you>.json` — interactive sessions read it but don't advance it)
 5. **Projects** — `team/projects.json`
 6. **Team roster** — `team/members.json`
 7. **Your profile** — `team/members/<you>/profile.md`
@@ -527,11 +544,13 @@ Adapters can be configured via `teamos.config.json` at the project root, with CL
   "probes": {},
   "sync": { "adapter": "git" },
   "agent": "claude",
+  "model": "opus",
+  "effort": "medium",
   "chat": { "agent": "claude", "env": {} }
 }
 ```
 
-The `chat` section configures the dashboard's live chat with a member (see `teamos/docs/chat.md`). `chat.agent` defaults to the top-level `agent`; `chat.env` layers env vars over the inherited environment for chat spawns only, so conversation tokens can be billed to a different Claude account than the automated cycles:
+`model` and `effort` are the run-wide defaults described under **Model and effort**. The `chat` section configures the dashboard's live chat with a member (see `teamos/docs/chat.md`). `chat.agent`, `chat.model` and `chat.effort` default to the top-level values; `chat.env` layers env vars over the inherited environment for chat spawns only, so conversation tokens can be billed to a different Claude account than the automated cycles:
 
 ```json
 {
@@ -716,7 +735,7 @@ Agents always see a local filesystem. The sync adapter handles durability *aroun
 
 ## Web Dashboard
 
-TeamOS includes a web dashboard for viewing team status, member details, inboxes, todos and agent logs, and sending messages.
+TeamOS includes a web dashboard for viewing team status, member details, inboxes, todos and agent logs, sending messages, and posting, editing and archiving memos.
 
 ### Running the Dashboard
 

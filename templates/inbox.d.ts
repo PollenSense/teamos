@@ -1,3 +1,5 @@
+import type { Effort } from './effort';
+
 /**
  * TeamOS messaging shapes.
  *
@@ -9,6 +11,14 @@
  */
 
 /**
+ * Effort for the recipient cycle that handles a message. Only a human sender may set it; the
+ * adapter refuses it from an agent.
+ */
+export interface EffortArgs {
+	effort?: Effort;
+}
+
+/**
  * A full message as returned by `read_message(id)`.
  *
  * TeamOS messages behave like email: a message has `from`, `to`, `cc`,
@@ -16,7 +26,7 @@
  * a thread. `to` and `cc` deliver identically; the distinction is only
  * how the recipient perceives their involvement.
  */
-export interface Message {
+export interface Message extends EffortArgs {
 	id: string; // opaque — never parse or construct
 	from: string; // sender member name
 	to: string[]; // primary recipients
@@ -48,7 +58,7 @@ export interface Message {
  * Inbox/archives listings collapse a predecessor when its consolidated
  * version is reachable in the same mailbox; sent listings do not collapse.
  */
-export interface MessageSummary {
+export interface MessageSummary extends EffortArgs {
 	id: string;
 	from: string;
 	to: string[];
@@ -64,7 +74,7 @@ export interface MessageSummary {
 /**
  * Arguments to `send_message`. Returns `{ id, sentAt }`.
  */
-export interface SendMessageArgs {
+export interface SendMessageArgs extends EffortArgs {
 	to: string[];
 	body: string;
 	subject?: string; // required on new threads; optional on replies
@@ -84,7 +94,7 @@ export interface SendMessageArgs {
  *     out of their inbox (typically archived); they receive the new message
  *     normally and can re-read.
  */
-export interface SupersedeMessageArgs {
+export interface SupersedeMessageArgs extends EffortArgs {
 	supersedes: string[];
 	to: string[];
 	body: string;

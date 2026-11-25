@@ -1,6 +1,7 @@
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { appendFile, mkdir, readFile, unlink, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
+import { isEffort, optionalEffort } from '../effort.mjs';
 import { pathExists } from '../util.mjs';
 import { applyAttachmentsToBody, isAttachmentName, prepareAttachments, removeAttachments, writeAttachments } from './attachments.mjs';
 import { inboxStatePath, readInboxState, updateInboxState } from './inbox-state.mjs';
@@ -84,6 +85,7 @@ function serializeMessage(msg) {
 	if (msg.supersedes?.length) lines.push(`supersedes: [${msg.supersedes.map(oneLine).join(', ')}]`);
 	if (msg.supersededBy) lines.push(`supersededBy: ${oneLine(msg.supersededBy)}`);
 	if (msg.projectCode) lines.push(`projectCode: ${oneLine(msg.projectCode)}`);
+	if (msg.effort) lines.push(`effort: ${msg.effort}`);
 	if (msg.fyi) lines.push('fyi: true');
 	if (msg.expectsReply) lines.push('expectsReply: true');
 	if (msg.mentions?.length) lines.push(`mentions: [${msg.mentions.map(oneLine).join(', ')}]`);
@@ -114,6 +116,7 @@ function normalizeMessage(metadata, body) {
 		projectCode: typeof metadata.projectCode === 'string' && metadata.projectCode ? metadata.projectCode : undefined,
 		attachments: (Array.isArray(metadata.attachments) ? metadata.attachments : []).filter(isAttachmentName),
 		...readMarks(metadata),
+		...(isEffort(metadata.effort) ? { effort: metadata.effort } : {}),
 		...nonEmpty('mentions', readMentions(metadata)),
 		...nonEmpty('questions', readQuestions(metadata.questions)),
 		...nonEmpty('answers', readAnswers(metadata.answers)),
@@ -276,6 +279,31 @@ export class FileMessagingAdapter {
 		}
 	}
 
+	/**
+	 * A message's `effort` sets the effort of the cycle that handles it (effort.mjs). Only a human
+	 * may set it: an agent raising another agent's effort would spend on its own judgment what a
+	 * person never approved.
+	 */
+	_checkEffort(op, from, effort, humans) {
+		if (effort === undefined || effort === null || effort === '') return undefined;
+		if (!humans.has(from)) throw Object.assign(new Error(`${op}: only a human member can set effort on a message`), { status: 400 });
+		try {
+			return optionalEffort(effort, op);
+		} catch (err) {
+			throw Object.assign(new Error(err.message), { status: 400 });
+		}
+	}
+
+	/** Names of human members (`type: "human"` in members.json). Empty without a roster. */
+	async humanMembers() {
+		try {
+			const data = JSON.parse(await readFile(join(this.teamDir, 'members.json'), 'utf-8'));
+			return new Set((data.members ?? []).filter((m) => m?.type === 'human' && typeof m.name === 'string').map((m) => m.name));
+		} catch {
+			return new Set();
+		}
+	}
+
 	_assertInRoster(role, name, roster) {
 		if (roster.includes(name)) return;
 		const lower = name.toLowerCase();
@@ -397,7 +425,7 @@ export class FileMessagingAdapter {
 		return summaries.length > 0;
 	}
 
-	async sendMessage({ from, to, cc, subject, body, replyTo, projectCode, attachments, questions, answers, fyi, expectsReply, tags }) {
+	async sendMessage({ from, to, cc, subject, body, replyTo, projectCode, attachments, questions, answers, fyi, expectsReply, effort: effortArg, tags }) {
 		if (!from) throw new Error('sendMessage: from is required');
 		if (!Array.isArray(to) || to.length === 0) throw new Error('sendMessage: to is required');
 		if (body == null) throw new Error('sendMessage: body is required');
@@ -405,6 +433,8 @@ export class FileMessagingAdapter {
 		const tagged = await this._applyMentions({ from, to, cc, body, fyi, tags });
 		cc = tagged.cc;
 		await this._validateParties('sendMessage', from, to, cc);
+		const humans = await this.humanMembers();
+		const effort = this._checkEffort('sendMessage', from, effortArg, humans);
 
 		let derivedSubject = subject;
 		if ((!derivedSubject || !derivedSubject.trim()) && replyTo) {
@@ -443,6 +473,7 @@ export class FileMessagingAdapter {
 			replyTo,
 			projectCode,
 			...marks,
+			effort,
 			mentions: tagged.mentions,
 			attachments: prepared.map((a) => a.name),
 			questions: checkedQuestions,
@@ -480,7 +511,7 @@ export class FileMessagingAdapter {
 	 * the predecessors reached — otherwise dropped recipients would be left
 	 * with neither the predecessor (if removed from inbox) nor a replacement.
 	 */
-	async supersedeMessage({ from, supersedes, to, cc, subject, body, projectCode, replyTo, attachments, questions, answers, fyi, expectsReply, tags }) {
+	async supersedeMessage({ from, supersedes, to, cc, subject, body, projectCode, replyTo, attachments, questions, answers, fyi, expectsReply, effort: effortArg, tags }) {
 		if (!from) throw new Error('supersedeMessage: from is required');
 		if (!Array.isArray(supersedes) || supersedes.length === 0) {
 			throw new Error('supersedeMessage: supersedes must list at least one prior message id');
@@ -491,6 +522,8 @@ export class FileMessagingAdapter {
 		const tagged = await this._applyMentions({ from, to, cc, body, fyi, tags });
 		cc = tagged.cc;
 		await this._validateParties('supersedeMessage', from, to, cc);
+		const humans = await this.humanMembers();
+		const effort = this._checkEffort('supersedeMessage', from, effortArg, humans);
 
 		// Load and validate every predecessor up front — no partial commits.
 		const predecessors = [];
@@ -571,6 +604,7 @@ export class FileMessagingAdapter {
 			supersedes: [...supersedes],
 			projectCode,
 			...marks,
+			effort,
 			mentions: tagged.mentions,
 			attachments: prepared.map((a) => a.name),
 			questions: checkedQuestions,
@@ -713,6 +747,7 @@ export class FileMessagingAdapter {
 				subject: msg.subject,
 				sentAt: msg.sentAt,
 				projectCode: msg.projectCode,
+				...(msg.effort ? { effort: msg.effort } : {}),
 				hasParent: !!msg.replyTo,
 				supersedes: msg.supersedes?.length ? msg.supersedes : undefined,
 				supersededBy: msg.supersededBy,

@@ -4,6 +4,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import { join } from 'node:path';
 import type { Plugin } from 'vite';
 import { refusalReason } from './identity-gate.js';
+import { sendableFields } from './sendable-fields.js';
 import { createLinker, type LinksConfig } from './linkify.js';
 
 interface MessageSummary {
@@ -167,6 +168,7 @@ interface MessagingAdapter {
 		answers?: { ask: string; q: string; option?: number; other?: string; dismissed?: boolean }[];
 		/** `false`: the body is a record (a transcript, a reply that repeats question text), so it tags nobody. */
 		tags?: boolean;
+		effort?: string;
 	}): Promise<{ id: string; sentAt: string }>;
 	supersedeMessage(args: {
 		from: string;
@@ -207,6 +209,7 @@ interface ScheduleEvent {
 	time: string;
 	recurrence?: { frequency: 'daily' | 'weekly' | 'monthly'; interval: number; endDate?: string };
 	projectCode?: string;
+	effort?: string;
 	isDue?: boolean;
 }
 
@@ -220,6 +223,7 @@ interface ScheduleAdapter {
 			description?: string;
 			recurrence?: { frequency: string; interval: number; endDate?: string };
 			projectCode?: string;
+			effort?: string;
 		},
 	): Promise<{ id: string }>;
 	updateEvent(
@@ -231,6 +235,7 @@ interface ScheduleAdapter {
 			time?: string;
 			recurrence?: { frequency: string; interval: number; endDate?: string } | null;
 			projectCode?: string;
+			effort?: string | null;
 		},
 	): Promise<void>;
 	removeEvent(member: string, id: string): Promise<void>;
@@ -401,6 +406,55 @@ function sse(res: ServerResponse): (event: unknown) => void {
 	return (event: unknown) => {
 		res.write(`data: ${JSON.stringify(event)}\n\n`);
 	};
+}
+
+/**
+ * Refuse writes a page on another site could forge from the browser of
+ * someone who can reach the dashboard. The dashboard has no login, so any
+ * page that knows its address can try to POST to it; a "simple" request
+ * (form post, text/plain fetch) skips the CORS preflight and would land.
+ * Every write the UI makes is a same-origin fetch, with a JSON body or none
+ * (DELETE), so a write must: carry JSON when it carries a body, come from
+ * this origin when the browser says where it came from (Origin, which
+ * browsers send on every cross-origin write), and not be marked cross-site
+ * by Sec-Fetch-Site. Tools without a browser (curl) send neither header and
+ * still work. Returns the reason to refuse, or null.
+ */
+export function crossSiteRefusal(req: IncomingMessage, method: string, path = ''): string | null {
+	if (method === 'GET' || method === 'HEAD') return null;
+	const header = (name: string) => {
+		const raw = req.headers[name];
+		return (Array.isArray(raw) ? raw[0] : raw)?.trim();
+	};
+
+	const fetchSite = header('sec-fetch-site')?.toLowerCase();
+	if (fetchSite && fetchSite !== 'same-origin' && fetchSite !== 'none') {
+		return 'Cross-site request refused';
+	}
+
+	const origin = header('origin');
+	if (origin) {
+		let originHost: string | null = null;
+		try {
+			const u = new URL(origin);
+			if (u.protocol === 'http:' || u.protocol === 'https:') originHost = u.host.toLowerCase();
+		} catch {
+			/* "null" or garbage: refused below */
+		}
+		const host = header('host')?.toLowerCase();
+		if (!originHost || !host || originHost !== host) return 'Cross-origin request refused';
+	}
+
+	const length = Number.parseInt(header('content-length') ?? '0', 10) || 0;
+	const hasBody = length > 0 || header('transfer-encoding') !== undefined;
+	const type = header('content-type')?.split(';')[0].trim().toLowerCase();
+	// The one route that takes raw bytes (POST /api/attachments: a picture as the browser holds it, not JSON).
+	// It still gets the Sec-Fetch-Site and Origin checks above; its own handler validates size, type and name.
+	const rawUpload = method === 'POST' && path === '/api/attachments';
+	if ((hasBody || type) && type !== 'application/json' && !rawUpload) {
+		return 'Writes must be sent as application/json';
+	}
+	return null;
 }
 
 function readBody(req: IncomingMessage): Promise<string> {
@@ -928,16 +982,6 @@ export function teamosApi(opts: ApiOptions): Plugin {
 		return threads;
 	}
 
-	/**
-	 * What a browser may hand to `sendMessage`: the message's own fields and the marks, nothing else. Options that
-	 * belong to the server (`tags`) and anything else in the JSON are dropped, so a caller cannot switch off the
-	 * @tag rule for their own message.
-	 */
-	function sendableFields(msg: Record<string, unknown>) {
-		const { from, to, cc, subject, body, replyTo, projectCode, attachments, questions, answers, fyi, expectsReply } = msg;
-		return { from, to, cc, subject, body, replyTo, projectCode, attachments, questions, answers, fyi, expectsReply } as Parameters<typeof sendMessage>[0];
-	}
-
 	async function sendMessage(msg: {
 		from: string;
 		to: string[];
@@ -947,6 +991,7 @@ export function teamosApi(opts: ApiOptions): Plugin {
 		replyTo?: string;
 		projectCode?: string;
 		attachments?: { path: string; name: string; ref: string }[];
+		effort?: string;
 	}) {
 		return messagingAdapter.sendMessage(msg);
 	}
@@ -966,30 +1011,69 @@ export function teamosApi(opts: ApiOptions): Plugin {
 		return { name: 'tess', url: `http://localhost:${siblingPort}` };
 	}
 
-	async function createMemo(memo: {
+	interface MemoInput {
 		title: string;
 		content: string;
 		importance: string;
 		authorName: string;
 		projectCodes?: string[];
 		expiresAt?: string;
-	}) {
-		const memosPath = join(teamDir, 'memos.json');
-		const data = await readJson(memosPath, { items: [] });
-		const items: any[] = data.items ?? [];
-		const newMemo = {
+	}
+
+	/** The stored shape of a memo; optional fields are omitted rather than written empty. */
+	function memoRecord(memo: MemoInput, postedAt: string) {
+		return {
 			title: memo.title,
 			content: memo.content,
-			postedAt: new Date().toISOString(),
+			postedAt,
 			...(memo.expiresAt ? { expiresAt: memo.expiresAt } : {}),
 			importance: memo.importance,
 			authorName: memo.authorName,
 			...(memo.projectCodes?.length ? { projectCodes: memo.projectCodes } : {}),
 		};
+	}
+
+	async function createMemo(memo: MemoInput) {
+		const memosPath = join(teamDir, 'memos.json');
+		const data = await readJson(memosPath, { items: [] });
+		const items: any[] = data.items ?? [];
+		const newMemo = memoRecord(memo, new Date().toISOString());
 		items.push(newMemo);
 		data.items = items;
 		await writeFile(memosPath, JSON.stringify(data, null, '\t'), 'utf-8');
 		return newMemo;
+	}
+
+	/**
+	 * Replace the editable fields of the memo at `index`, keeping its `postedAt`.
+	 * Memos are addressed by position, so the caller also sends the `postedAt` it
+	 * saw: if the clerk or an agent reordered or removed memos since the page
+	 * loaded, the position no longer names the same memo and the edit is refused
+	 * (null) rather than landing on a different one.
+	 *
+	 * A change to what the memo says (title, content, importance) stamps
+	 * `revisedAt`, which re-surfaces it to members as REVISED in their next cycle
+	 * (teamos/docs/memos.md); changing only its expiry or projects does not.
+	 */
+	async function updateMemo(index: number, memo: MemoInput & { postedAt: string }) {
+		const memosPath = join(teamDir, 'memos.json');
+		const data = await readJson(memosPath, { items: [] });
+		const items: any[] = data.items ?? [];
+		const current = items[index];
+		if (current?.postedAt !== memo.postedAt) return null;
+		const reworded =
+			current.title !== memo.title || current.content !== memo.content || current.importance !== memo.importance;
+		const updated = {
+			...current,
+			...memoRecord(memo, memo.postedAt),
+			...(reworded ? { revisedAt: new Date().toISOString() } : {}),
+		};
+		if (!memo.expiresAt) delete updated.expiresAt;
+		if (!memo.projectCodes?.length) delete updated.projectCodes;
+		items[index] = updated;
+		data.items = items;
+		await writeFile(memosPath, JSON.stringify(data, null, '\t'), 'utf-8');
+		return updated;
 	}
 
 	async function archiveMemo(index: number) {
@@ -1149,6 +1233,9 @@ export function teamosApi(opts: ApiOptions): Plugin {
 				const path = url.pathname;
 				const method = req.method?.toUpperCase() ?? 'GET';
 
+				const refusal = crossSiteRefusal(req, method, path);
+				if (refusal) return json(res, { error: refusal }, 403);
+
 				try {
 					const refusal = refusalReason(await resolveIdentity(req), path);
 					if (refusal) return json(res, { error: refusal }, 403);
@@ -1177,6 +1264,14 @@ export function teamosApi(opts: ApiOptions): Plugin {
 					if (path === '/api/memos' && method === 'POST') {
 						const memo = JSON.parse(await readBody(req));
 						return json(res, await createMemo(memo), 201);
+					}
+
+					const memoMatch = path.match(/^\/api\/memos\/(\d+)$/);
+					if (memoMatch && method === 'PUT') {
+						const body = JSON.parse(await readBody(req));
+						const updated = await updateMemo(Number.parseInt(memoMatch[1], 10), body);
+						if (!updated) return json(res, { error: 'Memos changed since this page loaded — reload and edit again' }, 409);
+						return json(res, updated);
 					}
 
 					if (path.match(/^\/api\/memos\/(\d+)\/archive$/) && method === 'POST') {
@@ -1367,7 +1462,7 @@ export function teamosApi(opts: ApiOptions): Plugin {
 							if (!attachments) return json(res, { error: 'Attachments are not available' }, 400);
 							msg.attachments = await attachments.claim(msg.attachments, msg.from);
 						}
-						const sent = await sendMessage(sendableFields(msg));
+						const sent = await sendMessage(sendableFields(msg) as Parameters<typeof sendMessage>[0]);
 						if (attachments && tokens.length > 0) await attachments.release(tokens);
 						return json(res, sent, 201);
 					}

@@ -4,6 +4,7 @@ import type {
 	ChatSession,
 	ChatTranscriptEntry,
 	ChatStatus,
+	Effort,
 	MemberDetail,
 	MemberSummary,
 	Memo,
@@ -18,6 +19,8 @@ import type {
 } from './types.js';
 import type { LogChunk, LogEntry } from './logs.js';
 import type { AnswerInput } from './questions.js';
+
+type MemoInput = Omit<Memo, 'postedAt'>;
 
 /** A failed request, with its status and, for a chat that has ended, what happened to it. */
 export class ApiError extends Error {
@@ -70,6 +73,16 @@ async function put(url: string, body: unknown): Promise<void> {
 		body: JSON.stringify(body),
 	});
 	if (!res.ok) throw await failure(res);
+}
+
+async function putJson<T>(url: string, body: unknown): Promise<T> {
+	const res = await fetch(url, {
+		method: 'PUT',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify(body),
+	});
+	if (!res.ok) throw await failure(res);
+	return res.json();
 }
 
 async function del(url: string): Promise<void> {
@@ -135,6 +148,8 @@ export interface SendMessageArgs {
 	projectCode?: string;
 	/** Tokens from `uploadAttachment`; the body places them with `![caption](attachment:<token>)`, the rest go at the end. */
 	attachments?: string[];
+	/** Human senders only; the server refuses it from an agent. */
+	effort?: Effort;
 }
 
 /** An image the server is holding until the message that names it is sent. */
@@ -241,6 +256,7 @@ export const api = {
 			description?: string;
 			recurrence?: { frequency: string; interval: number; endDate?: string };
 			projectCode?: string;
+			effort?: Effort;
 		},
 	) => post<{ id: string }>(`/api/members/${encodeURIComponent(name)}/schedule`, input),
 	updateEvent: (
@@ -252,19 +268,16 @@ export const api = {
 			time?: string;
 			recurrence?: { frequency: string; interval: number; endDate?: string } | null;
 			projectCode?: string;
+			effort?: Effort | null;
 		},
 	) => patch(`/api/members/${encodeURIComponent(name)}/schedule/${encodeURIComponent(id)}`, patchBody),
 	removeEvent: (name: string, id: string) =>
 		del(`/api/members/${encodeURIComponent(name)}/schedule/${encodeURIComponent(id)}`),
 	memos: () => get<{ items: Memo[] }>('/api/memos'),
-	createMemo: (memo: {
-		title: string;
-		content: string;
-		importance: string;
-		authorName: string;
-		projectCodes?: string[];
-		expiresAt?: string;
-	}) => post<Memo>('/api/memos', memo),
+	createMemo: (memo: MemoInput) => post<Memo>('/api/memos', memo),
+	/** `postedAt` identifies the memo the index was read for; a mismatch is a 409. */
+	updateMemo: (index: number, memo: MemoInput & { postedAt: string }) =>
+		putJson<Memo>(`/api/memos/${index}`, memo),
 	archiveMemo: (index: number) => post<{ archivedAs: string }>(`/api/memos/${index}/archive`, {}),
 	projects: () => get<{ projects: Project[] }>('/api/projects'),
 	createProject: (input: { code: string; name: string; description?: string; status?: string }) =>

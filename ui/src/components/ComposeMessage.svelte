@@ -16,7 +16,7 @@ import Markdown from './Markdown.svelte';
 import { identity } from '../lib/identity.svelte.js';
 import { activeTag, completeTag, insertAtSign, previewTags, suggestions } from '../lib/mentions.js';
 import { router } from '../lib/router.svelte.js';
-import type { MemberSummary, Message, Project } from '../lib/types.js';
+import { EFFORT_LEVELS, type Effort, type MemberSummary, type Message, type Project } from '../lib/types.js';
 
 let members = $state<MemberSummary[]>([]);
 let projects = $state<Project[]>([]);
@@ -32,6 +32,7 @@ let cc = $state<Set<string>>(new Set());
 let from = $state(identity.name ?? '');
 let subject = $state('');
 let projectCode = $state('');
+let effort = $state<Effort | ''>('');
 let body = $state('');
 
 /** One image on its way with this message; `ref` is what the body's placeholder says until the upload gives a token. */
@@ -128,6 +129,10 @@ let inboxOwner = $state<string | null>(null);
 let isReplyAll = $state(false);
 
 const isReply = $derived(!!replyMessage);
+
+/** Only a human sender may set the recipient cycle's effort; the server refuses it otherwise. */
+const humanNames = $derived(new Set(members.filter((m) => m.type === 'human').map((m) => m.name)));
+const canSetEffort = $derived(humanNames.has(from.trim()));
 const backPath = $derived.by(() => {
 	if (!inboxOwner) return '/';
 	const msg = replyMessage;
@@ -217,6 +222,7 @@ async function send() {
 			replyTo: replyMessage?.id,
 			projectCode: projectCode || undefined,
 			attachments: readyTokens.length > 0 ? readyTokens : undefined,
+			effort: canSetEffort && effort ? effort : undefined,
 		});
 		addedToCc = result.addedToCc ?? [];
 	} catch (err) {
@@ -358,6 +364,7 @@ function reset() {
 	cc = new Set();
 	subject = '';
 	projectCode = '';
+	effort = '';
 	body = '';
 	caret = 0;
 	addedToCc = [];
@@ -458,6 +465,17 @@ function reset() {
 					{/each}
 				</select>
 			</div>
+			{#if canSetEffort}
+				<div class="form-group" style="flex:1">
+					<label class="label" for="effort">Effort (recipient cycle)</label>
+					<select id="effort" bind:value={effort}>
+						<option value="">Member's default</option>
+						{#each EFFORT_LEVELS as level}
+							<option value={level}>{level}</option>
+						{/each}
+					</select>
+				</div>
+			{/if}
 		</div>
 
 		{#if replyMessage}

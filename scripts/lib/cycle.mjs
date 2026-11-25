@@ -3,6 +3,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { agentSupportsResume, runAgent } from './agents/index.mjs';
 import { buildCleanupPrompt, leftoversSince, readClaims, snapshotDirty, withoutClaimed } from './leftovers.mjs';
+import { acknowledgeMemos, buildMemosSection } from './memos.mjs';
 import { PRIORITY_ORDER, normalizeVruntimes, pickNextPriority, rotateAfter } from './scheduler.mjs';
 import {
 	buildLogPath,
@@ -13,7 +14,7 @@ import {
 	waitWhilePaused,
 } from './util.mjs';
 import { describeAnswer } from './messaging/questions.mjs';
-import { CC_PRIORITY, getMembersWithWork, inboxPriority } from './work-detection.mjs';
+import { CC_PRIORITY, getMembersWithWork, inboxPriority, resolveCycleSettings } from './work-detection.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -50,6 +51,7 @@ function renderMessage(msg, { heading, headingLevel = '###', member }) {
 	lines.push(`**Sent:** ${msg.sentAt}`);
 	if (msg.projectCode) lines.push(`**Project:** ${msg.projectCode}`);
 	if (msg.replyTo) lines.push(`**In reply to:** ${msg.replyTo}`);
+	if (msg.effort) lines.push(`**Effort:** ${msg.effort}`);
 	lines.push('');
 	lines.push(msg.body || '');
 	if (msg.attachmentPaths?.length) {
@@ -142,7 +144,7 @@ export function stateBudgetWarning(sizeBytes) {
 	if (sizeBytes <= STATE_BUDGET_BYTES) return null;
 	const kb = (sizeBytes / 1024).toFixed(1);
 	const budgetKb = STATE_BUDGET_BYTES / 1024;
-	return `⚠ **state.md is ${kb} KB, over the ${budgetKb} KB budget** (agent-rules/cycle.md § Guidelines). Roll it up this cycle: archive the current file verbatim to \`archives/state-history/<YYYY-MM-DD>-pre-rollup.md\`, then rewrite \`state.md\` under budget — move reusable detail into \`team/docs/<topic>/\` (updating that folder's \`index.md\` and the top-level \`team/docs/index.md\`) rather than dropping it, and only finished narrative into the archive.`;
+	return `⚠ **state.md is ${kb} KB, over the ${budgetKb} KB budget** (agent-rules/cycle.md § Guidelines). Roll it up this cycle: archive the current file verbatim to \`archives/state-history/<YYYY-MM-DD>-pre-rollup.md\`, then rewrite \`state.md\` under budget — move permanent directives and lessons to your profile's \`## Standing notes\` (agent-rules/self-assessment.md § 2), reusable detail into \`team/docs/<topic>/\` (updating that folder's \`index.md\` and the top-level \`team/docs/index.md\`) rather than dropping it, and only finished narrative into the archive.`;
 }
 
 export async function buildInboxSection(member, messagingAdapter) {
@@ -195,6 +197,7 @@ function formatTodoForPrompt(item) {
 	);
 	if (item.description) parts.push(`    ${item.description.replace(/\n/g, '\n    ')}`);
 	if (item.projectCode) parts.push(`    project: ${item.projectCode}`);
+	if (item.effort) parts.push(`    effort: ${item.effort}`);
 	if (item.notes) parts.push(`    notes: ${item.notes.replace(/\n/g, '\n    ')}`);
 	return parts.join('\n');
 }
@@ -214,6 +217,7 @@ function formatEventForPrompt(event) {
 	parts.push(`- **${event.title || '(untitled)'}** — ${event.time}${rec}  \`(id: ${event.id})\``);
 	if (event.description) parts.push(`    ${event.description.replace(/\n/g, '\n    ')}`);
 	if (event.projectCode) parts.push(`    project: ${event.projectCode}`);
+	if (event.effort) parts.push(`    effort: ${event.effort}`);
 	return parts.join('\n');
 }
 
@@ -300,7 +304,7 @@ export async function buildCyclePrompt(member, priority, teamDir, adapters = {})
 	const [
 		rules,
 		orgDoc,
-		memosDoc,
+		memosSection,
 		projectsDoc,
 		membersDoc,
 		profile,
@@ -312,7 +316,7 @@ export async function buildCyclePrompt(member, priority, teamDir, adapters = {})
 	] = await Promise.all([
 		readTextOrEmpty(rulesFile),
 		readTextOrEmpty(join(teamDir, 'org.md')),
-		readTextOrEmpty(join(teamDir, 'memos.json')),
+		buildMemosSection(teamDir, member.name),
 		readTextOrEmpty(join(teamDir, 'projects.json')),
 		readTextOrEmpty(join(teamDir, 'members.json')),
 		readTextOrEmpty(join(memberDir, 'profile.md')),
@@ -338,7 +342,7 @@ export async function buildCyclePrompt(member, priority, teamDir, adapters = {})
 		'',
 		'## Memos',
 		'',
-		memosDoc,
+		memosSection.text,
 		'',
 		'## Projects',
 		'',
@@ -411,7 +415,10 @@ export async function buildCyclePrompt(member, priority, teamDir, adapters = {})
 		`Execute a cycle for **${member.name}** at priority level **${priority}**.`,
 	);
 
-	return { prompt: parts.join('\n'), delivered: { watches: watchesSection.delivered } };
+	return {
+		prompt: parts.join('\n'),
+		delivered: { watches: watchesSection.delivered, memosThrough: memosSection.through },
+	};
 }
 
 // ─── Cycle execution ───────────────────────────────────────────────────────────
@@ -422,7 +429,18 @@ export async function buildCyclePrompt(member, priority, teamDir, adapters = {})
  * member that can't clean up in one turn needs a person, not a loop.  Never throws — the cycle
  * already succeeded.
  */
-async function resolveLeftovers({ member, prompt, repoRoot, teamDir, currentLog, mcpContext, opts, treeBefore, sessionId }) {
+async function resolveLeftovers({
+	member,
+	prompt,
+	repoRoot,
+	teamDir,
+	currentLog,
+	mcpContext,
+	opts,
+	settings,
+	treeBefore,
+	sessionId,
+}) {
 	try {
 		// Paths a dashboard chat changed during the cycle are the chat's to resolve, not this member's.
 		const after = snapshotDirty(repoRoot, teamDir);
@@ -438,6 +456,7 @@ async function resolveLeftovers({ member, prompt, repoRoot, teamDir, currentLog,
 		await appendFile(currentLog, `\n[runner] Leftover check: resuming session ${sessionId} for ${left.length} path(s)\n`);
 		const code = await runAgent(opts.agent, prompt, repoRoot, currentLog, mcpContext, {
 			resume: { sessionId, message: buildCleanupPrompt(left) },
+			agentOptions: { model: settings.model, effort: settings.effort },
 		});
 		const afterCleanup = snapshotDirty(repoRoot, teamDir);
 		const still = withoutClaimed(leftoversSince(treeBefore, afterCleanup), await readClaims(teamDir), afterCleanup);
@@ -498,12 +517,18 @@ export async function runCycle({
 
 		memberRuns++;
 		const currentLog = buildLogPath(logsDir, member.name, priority);
+		const settings = await resolveCycleSettings(member.name, priority, teamDir, adapters, {
+			model: opts.model,
+			effort: opts.effort,
+		});
+		const effortLine = `${settings.effort}${settings.setBy.length ? ` (set by ${settings.setBy.join(', ')})` : ''}`;
 
 		console.log(
 			[
 				`${'─'.repeat(72)}`,
 				`  ${member.name} (${member.title})`,
 				`  Priority: ${priority}  |  Cycle: ${cycleCount}`,
+				`  Model: ${settings.model}  |  Effort: ${effortLine}`,
 				`  Log: ${currentLog}`,
 				`${'─'.repeat(72)}`,
 			].join('\n'),
@@ -515,6 +540,8 @@ export async function runCycle({
 				`Member: ${member.name} (${member.title})`,
 				`Priority: ${priority}`,
 				`Agent: ${opts.agent}`,
+				`Model: ${settings.model}`,
+				`Effort: ${effortLine}`,
 				`TeamOS: ${version}`,
 				`Started: ${new Date().toISOString()}`,
 				'═'.repeat(72),
@@ -542,12 +569,24 @@ export async function runCycle({
 		const treeBefore = opts.leftoverCheck ? snapshotDirty(repoRoot, teamDir) : null;
 		let sessionId = null;
 		const exitCode = await runAgent(opts.agent, prompt, repoRoot, currentLog, mcpContext, {
+			agentOptions: { model: settings.model, effort: settings.effort },
 			onSession: (id) => {
 				sessionId ??= id;
 			},
 		});
 		if (exitCode === 0 && treeBefore) {
-			await resolveLeftovers({ member, prompt, repoRoot, teamDir, currentLog, mcpContext, opts, treeBefore, sessionId });
+			await resolveLeftovers({
+				member,
+				prompt,
+				repoRoot,
+				teamDir,
+				currentLog,
+				mcpContext,
+				opts,
+				settings,
+				treeBefore,
+				sessionId,
+			});
 		}
 
 		if (exitCode !== 0) {
@@ -573,6 +612,9 @@ export async function runCycle({
 					console.error(`[runner] watches.acknowledgeObservations failed for ${member.name}: ${err.message}`);
 				});
 			}
+			await acknowledgeMemos(teamDir, member.name, delivered.memosThrough).catch((err) => {
+				console.error(`[runner] acknowledgeMemos failed for ${member.name}: ${err.message}`);
+			});
 		}
 
 		console.log(`\n  Complete: ${member.name}\n`);

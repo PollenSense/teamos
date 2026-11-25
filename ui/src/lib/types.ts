@@ -20,6 +20,10 @@ export interface MemberSummary {
 	waitingCount?: number;
 }
 
+/** Effort for the cycle that handles an item, lowest first. README § Model and effort. */
+export const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
+export type Effort = (typeof EFFORT_LEVELS)[number];
+
 export interface MessageSummary {
 	id: string;
 	from: string;
@@ -28,6 +32,7 @@ export interface MessageSummary {
 	subject: string;
 	sentAt: string;
 	projectCode?: string;
+	effort?: Effort;
 	hasParent: boolean;
 	supersedes?: string[];
 	supersededBy?: string;
@@ -58,6 +63,7 @@ export interface Message {
 	/** Questions the message asks (see lib/questions.ts) and, on the way out, where each one stands. */
 	questions?: Question[];
 	questionState?: QuestionState[];
+	effort?: Effort;
 	body: string;
 	/** Paths in `body` the server could resolve to a link (exact text -> target); see lib/linkify.ts. */
 	links?: LinkMap;
@@ -220,6 +226,7 @@ export interface TodoItem {
 	notes?: string;
 	description?: string;
 	projectCode?: string;
+	effort?: Effort;
 }
 
 export interface ScheduleEvent {
@@ -229,7 +236,9 @@ export interface ScheduleEvent {
 	time: string;
 	recurrence?: { frequency: 'daily' | 'weekly' | 'monthly'; interval: number; endDate?: string };
 	projectCode?: string;
+	effort?: Effort;
 	isDue?: boolean;
+	systemKey?: string;
 }
 
 export interface MemberDetail {
@@ -244,6 +253,7 @@ export interface Memo {
 	title: string;
 	content: string;
 	postedAt: string;
+	revisedAt?: string;
 	expiresAt?: string;
 	importance: string;
 	authorName: string;

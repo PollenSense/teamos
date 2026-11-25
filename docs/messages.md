@@ -83,6 +83,7 @@ Field reference:
 | `fyi` | no | `true` when nothing is needed from the recipients; omit otherwise. See [Inbox sections](#inbox-sections). |
 | `expectsReply` | no | `true` when the sender needs a written answer that is not a choice between options; omit otherwise. Never together with `fyi`. See [Inbox sections](#inbox-sections). |
 | `mentions` | no | Array of the member names the body tags with `@name`; written by the server at send time, omit if none. See [Tags](#tags-name). |
+| `effort` | no | Human senders only — refused from an agent. Effort for the recipient cycle that handles this message (`low`…`max`). See README § *Model and effort* |
 
 ### Images
 

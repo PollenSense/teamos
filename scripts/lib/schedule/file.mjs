@@ -1,5 +1,6 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
+import { isEffort, optionalEffort, patchEffort } from '../effort.mjs';
 
 /**
  * File-based schedule adapter.
@@ -10,12 +11,30 @@ import { dirname, join } from 'node:path';
  *   - Recurrence advancement and one-time event cleanup happen in
  *     `acknowledgeDue`, never in agent-facing tools
  *
- * Migration: legacy files may contain events without `id` and/or with the old
- * `recurring: true` flag alongside `recurrence`. Every read normalizes both.
- * Any backfill is persisted so subsequent readers see a canonical form.
+ * Migration: legacy files may contain events without `id`, with the old
+ * `recurring: true` flag alongside `recurrence`, or without `systemKey` on a
+ * system-injected event. Every read normalizes all three. Any backfill is
+ * persisted so subsequent readers see a canonical form.
  */
 
 const FREQUENCIES = new Set(['daily', 'weekly', 'monthly']);
+
+/**
+ * System-injected events (daily check-in, weekly self-assessment) carry a
+ * `systemKey` set at creation, so `ensureDailyCheckinEvents` /
+ * `ensureSelfAssessmentEvents` can recognize one even after the member
+ * renames it or changes its cadence — `updateEvent` only ever overwrites the
+ * fields a patch supplies, so `systemKey` survives any such edit untouched.
+ * Events created before this field existed carry none; on read, one is
+ * backfilled onto any event whose description still names the governing
+ * rule file, since that's the one part of the boilerplate text a member
+ * customizing title/cadence in place has the least reason to touch (e.g. a
+ * "daily → weekly" conversion that keeps citing `daily-checkin.md`).
+ */
+const SYSTEM_KEY_MIGRATION_MARKERS = [
+	{ systemKey: 'daily-checkin', marker: 'agent-rules/daily-checkin.md' },
+	{ systemKey: 'self-assessment', marker: 'agent-rules/self-assessment.md' },
+];
 
 function makeEventId() {
 	const iso = new Date().toISOString().replace(/:/g, '-');
@@ -129,6 +148,15 @@ export class FileScheduleAdapter {
 			if (typeof entry.description === 'string' && entry.description) {
 				normalized.description = entry.description;
 			}
+			if (typeof entry.systemKey === 'string' && entry.systemKey) {
+				normalized.systemKey = entry.systemKey;
+			} else {
+				const migrated = SYSTEM_KEY_MIGRATION_MARKERS.find((m) => normalized.description?.includes(m.marker));
+				if (migrated) {
+					normalized.systemKey = migrated.systemKey;
+					mutated = true;
+				}
+			}
 			if (!isValidIsoTime(entry.time)) {
 				// Can't recover an event without a valid time.
 				mutated = true;
@@ -147,6 +175,7 @@ export class FileScheduleAdapter {
 			if (typeof entry.projectCode === 'string' && entry.projectCode) {
 				normalized.projectCode = entry.projectCode;
 			}
+			if (isEffort(entry.effort)) normalized.effort = entry.effort;
 			events.push(normalized);
 		}
 		if (mutated) await this._writeEvents(member, events);
@@ -176,6 +205,7 @@ export class FileScheduleAdapter {
 				'add_event: recurrence must have a valid frequency (daily|weekly|monthly) and positive integer interval',
 			);
 		}
+		const effort = optionalEffort(input.effort, 'add_event');
 
 		// Additive, and two instances of one member can be adding at once (a
 		// chat beside a cycle). This file is reached only through the MCP
@@ -194,6 +224,13 @@ export class FileScheduleAdapter {
 		if (recurrence) event.recurrence = recurrence;
 		if (typeof input.projectCode === 'string' && input.projectCode) {
 			event.projectCode = input.projectCode;
+		}
+		if (effort) event.effort = effort;
+		// Internal only — the MCP `add_event` tool handler never forwards this
+		// field from agent-supplied args, so only trusted callers (the
+		// runner's system-event injectors) can set it.
+		if (typeof input.systemKey === 'string' && input.systemKey) {
+			event.systemKey = input.systemKey;
 		}
 		await mkdir(dirname(this._schedulePath(member)), { recursive: true });
 		const events = await this._loadNormalized(member);
@@ -246,6 +283,7 @@ export class FileScheduleAdapter {
 			if (patch.projectCode === null || patch.projectCode === '') next.projectCode = undefined;
 			else next.projectCode = String(patch.projectCode);
 		}
+		patchEffort(next, patch.effort, 'update_event');
 
 		events[idx] = next;
 		await this._writeEvents(member, events);
@@ -302,12 +340,14 @@ export class FileScheduleAdapter {
 	}
 
 	/**
-	 * Check whether an event with the given title already exists. Used by the
-	 * runner to inject system events (Daily Check-in, Weekly Self-Assessment)
-	 * without creating duplicates.
+	 * Check whether an event tagged with the given `systemKey` already exists.
+	 * Used by the runner to inject system events (Daily Check-in, Weekly
+	 * Self-Assessment) without creating duplicates — keyed on `systemKey`
+	 * rather than title so a member who renames or re-cadences the event is
+	 * still recognized as already having it.
 	 */
-	async hasEventWithTitle(member, title) {
+	async hasEventWithSystemKey(member, systemKey) {
 		const events = await this._loadNormalized(member);
-		return events.some((e) => e.title === title);
+		return events.some((e) => e.systemKey === systemKey);
 	}
 }

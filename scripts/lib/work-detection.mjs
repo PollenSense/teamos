@@ -1,5 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import { cycleEffort, highestEffort, memberSettings } from './effort.mjs';
+import { hasUnseenMemos } from './memos.mjs';
 import { PRIORITY_ORDER } from './scheduler.mjs';
 import { pathExists } from './util.mjs';
 
@@ -91,7 +93,66 @@ export async function memberHasWork(memberName, priority, teamDir, adapters = {}
 		if (await adapters.watches.hasPendingObservations(memberName, priority)) return true;
 	}
 
+	// Check memos — an unseen high (today) or critical (pressing) memo wakes the
+	// member; lower importances wait for its next cycle. See memos.mjs.
+	if (await hasUnseenMemos(teamDir, memberName, priority)) return true;
+
 	return false;
+}
+
+/**
+ * The work items a cycle at `priority` serves — the same sources `memberHasWork` weighs — each as
+ * `{ source, effort? }`. `effort` is the item's own override (effort.mjs). An unseen memo carries
+ * none, but it still counts: it is work at the member's own effort.
+ */
+export async function cycleWorkItems(memberName, priority, teamDir, adapters = {}) {
+	const ceiling = PRIORITY_ORDER.indexOf(priority);
+	const within = (p) => PRIORITY_ORDER.indexOf(p) <= ceiling;
+	const items = [];
+	if (adapters.messaging) {
+		for (const m of await adapters.messaging.listInbox(memberName)) {
+			if (within(inboxPriority(m, memberName))) items.push({ source: `message "${m.subject}"`, effort: m.effort });
+		}
+	}
+	if (adapters.tasks) {
+		for (const t of await adapters.tasks.listTodos(memberName)) {
+			if (t.status !== 'blocked' && within(t.priority)) items.push({ source: `todo "${t.title}"`, effort: t.effort });
+		}
+	}
+	if (adapters.schedule) {
+		for (const e of await adapters.schedule.listEvents(memberName)) {
+			if (e.isDue) items.push({ source: `event "${e.title}"`, effort: e.effort });
+		}
+	}
+	if (adapters.triggers) {
+		const matches = await adapters.triggers.pendingMatches(memberName);
+		if (matches.length > 0) {
+			const byId = new Map((await adapters.triggers.listTriggers(memberName)).map((t) => [t.id, t]));
+			for (const m of matches) {
+				if (!within(m.priority)) continue;
+				const effort = highestEffort(m.matchedTriggerIds.map((id) => byId.get(id)?.effort));
+				items.push({ source: `commit ${m.shortHash}`, effort });
+			}
+		}
+	}
+	if (adapters.watches) {
+		for (const o of await adapters.watches.pendingObservations(memberName)) {
+			if (within(o.priority)) items.push({ source: `watch ${o.probe}`, effort: o.effort });
+		}
+	}
+	if (await hasUnseenMemos(teamDir, memberName, priority)) items.push({ source: 'memo' });
+	return items;
+}
+
+/**
+ * Model and effort for one member's cycle at `priority`: the profile over the run-wide `base`,
+ * then the highest effort among the work items. `setBy` names the items that moved the effort.
+ */
+export async function resolveCycleSettings(memberName, priority, teamDir, adapters, base) {
+	const member = await memberSettings(teamDir, memberName, base);
+	const items = await cycleWorkItems(memberName, priority, teamDir, adapters);
+	const { effort, setBy } = cycleEffort(member.effort, items);
+	return { model: member.model, effort, setBy };
 }
 
 export async function getMembersWithWork(members, priority, teamDir, adapters = {}) {
@@ -108,6 +169,11 @@ export async function getMembersWithWork(members, priority, teamDir, adapters = 
 
 const SELF_ASSESSMENT_TITLE = 'Weekly Self-Assessment';
 const DAILY_CHECKIN_TITLE = 'Daily Check-in';
+
+// Stable identity for these events, independent of title/cadence — see the
+// `systemKey` note in schedule/file.mjs for why title matching broke this.
+const SELF_ASSESSMENT_KEY = 'self-assessment';
+const DAILY_CHECKIN_KEY = 'daily-checkin';
 
 function nextFriday(from = new Date()) {
 	const d = new Date(from);
@@ -128,7 +194,7 @@ function nextMorning(from = new Date()) {
 export async function ensureSelfAssessmentEvents(members, scheduleAdapter) {
 	let added = 0;
 	for (const member of members) {
-		if (await scheduleAdapter.hasEventWithTitle(member.name, SELF_ASSESSMENT_TITLE)) continue;
+		if (await scheduleAdapter.hasEventWithSystemKey(member.name, SELF_ASSESSMENT_KEY)) continue;
 		// Skip the first occurrence so a freshly-added member doesn't immediately
 		// think it needs to self-assess on its first cycle.
 		const first = nextFriday(new Date());
@@ -138,6 +204,7 @@ export async function ensureSelfAssessmentEvents(members, scheduleAdapter) {
 			description: 'Conduct a weekly self-assessment following the rules in teamos/agent-rules/self-assessment.md.',
 			time: first.toISOString(),
 			recurrence: { frequency: 'weekly', interval: 1 },
+			systemKey: SELF_ASSESSMENT_KEY,
 		});
 		added++;
 	}
@@ -149,7 +216,7 @@ export async function ensureSelfAssessmentEvents(members, scheduleAdapter) {
 export async function ensureDailyCheckinEvents(members, scheduleAdapter) {
 	let added = 0;
 	for (const member of members) {
-		if (await scheduleAdapter.hasEventWithTitle(member.name, DAILY_CHECKIN_TITLE)) continue;
+		if (await scheduleAdapter.hasEventWithSystemKey(member.name, DAILY_CHECKIN_KEY)) continue;
 		// Skip the first occurrence so a freshly-added member doesn't immediately
 		// think it needs to check in on its first cycle.
 		const first = nextMorning(new Date());
@@ -159,6 +226,7 @@ export async function ensureDailyCheckinEvents(members, scheduleAdapter) {
 			description: 'Daily check-in following the rules in teamos/agent-rules/daily-checkin.md.',
 			time: first.toISOString(),
 			recurrence: { frequency: 'daily', interval: 1 },
+			systemKey: DAILY_CHECKIN_KEY,
 		});
 		added++;
 	}

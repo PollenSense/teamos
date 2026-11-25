@@ -77,7 +77,7 @@ test('a module registers a tool: it is listed with the member field, answers a c
 			assert.ok(sent.json.id);
 			const inbox = await tool('list_inbox', { member: 'bob' });
 			assert.equal(inbox.json.length, 1);
-		});
+		}, 'alice', { anyMember: true });
 	}));
 
 test('a tool that throws gives an error result for that call; the server keeps answering', () =>
@@ -128,7 +128,7 @@ test('the caller is validated like for the built-in tools, and is null when nobo
 			assert.match(walk.error.message, /Invalid member name/);
 			const notString = await tool('echo_tool', { text: 'x', member: 5 });
 			assert.equal(notString.error.code, -32602);
-		});
+		}, 'alice', { anyMember: true });
 		await withServer(
 			dir,
 			async ({ tool }) => {
