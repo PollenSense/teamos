@@ -100,11 +100,62 @@ const LABEL = '[\\p{L}\\p{N}](?:[\\p{L}\\p{N}\\p{M}-]*[\\p{L}\\p{N}\\p{M}])?';
 const AT = '(?:@|%40|&#0*64;|&#x0*40;|&commat;)';
 // The local part starts at the first character of its run (so a quote, `_`, `+` or `%20` before it is swallowed, never a gap),
 // or is a quoted string. The domain ends at a letter-only (or punycode) last label that is not followed by more label text;
-// `git@github.com:org/repo.git` (a path after the colon) is a repository address, not a person.
-const EMAIL = new RegExp(
-	`(?:(?<!${LOCAL})${LOCAL}+|"[^"\\r\\n@]{1,64}")${AT}(${LABEL}(?:\\.${LABEL})*\\.(xn--[a-z0-9-]{1,59}|(?:\\p{L}\\p{M}*){2,24}))(?![\\p{L}\\p{N}])(?!-[\\p{L}\\p{N}])(?!:[A-Za-z0-9_.~-]*/)`,
-	'giu',
-);
+// `git@github.com:org/repo.git` (a path after the colon) is a repository address, not a person. Where a match is followed by an
+// at-sign, a shorter domain that is not is preferred: in `a@x.org.bob@y.org` the domain is `x.org` and `bob@y.org` is the next
+// address, not `x.org.bob` and a stray `@y.org`. With no shorter domain the match stands (`jo@example.org@` is still an address).
+const EMAIL_TAIL = `${AT}(${LABEL}(?:\\.${LABEL})*\\.(xn--[a-z0-9-]{1,59}|(?:\\p{L}\\p{M}*){2,24}))(?![\\p{L}\\p{N}])(?!-[\\p{L}\\p{N}])(?!:[A-Za-z0-9_.~-]*/)`;
+const EMAIL_START = `(?:(?<!${LOCAL})${LOCAL}+|"[^"\\r\\n@]{1,64}")`;
+const EMAIL = new RegExp(`${EMAIL_START}${EMAIL_TAIL}`, 'giu');
+// The same address with a domain that does not run into an at-sign; tried only where a match is followed by one (see `atSafe`).
+const EMAIL_AT_SAFE = new RegExp(`${EMAIL_START}${EMAIL_TAIL}(?!${AT})`, 'yiu');
+const AT_HERE = new RegExp(AT, 'yiu');
+// An address glued to the end of the one before it (`a@x.org_b@y.org`, joined by `_ - . + %`): its local part starts right
+// after a local-part character, so EMAIL's start-of-run rule skips it, and the search then reads the earlier domain as a local
+// part (`x.org_b@y.org`), leaving `a@` and its local part behind. So right after each match the scan first steps over the
+// joining characters and tries this one there: it starts exactly at that point (sticky) and has no start-of-run rule (Devon,
+// 11/18). The joining characters stay in the text (`[email]_[email]`, and `photo@2x.png_[email].txt` after a file name).
+// At least one joining character (the local-part characters that are not letters or digits), and the next local part starts at
+// a letter or digit. A glued match is marked `glued`: if it is one of our own addresses it stays in the text, and the characters
+// read as its local part may be a number in punctuation (`x@pollensense.com'555-010-0199'sales@pollensense.com`), so only its
+// domain is kept out of the phone scan (see `findAll`). A number joined to it by `_ - +` is still read as part of the local part
+// and stays, as it did before (known limit).
+const EMAIL_GLUED = new RegExp(`[\\p{L}\\p{N}]${LOCAL}*${EMAIL_TAIL}`, 'yiu');
+const EMAIL_GLUED_AT_SAFE = new RegExp(`[\\p{L}\\p{N}]${LOCAL}*${EMAIL_TAIL}(?!${AT})`, 'yiu');
+
+/** `m`, or the same address with a shorter domain when `m` runs into an at-sign and a shorter one does not. */
+function atSafe(norm, m, safe) {
+	if (m === null) return null;
+	AT_HERE.lastIndex = m.index + m[0].length;
+	if (!AT_HERE.test(norm)) return m;
+	safe.lastIndex = m.index;
+	return safe.exec(norm) ?? m;
+}
+const AT_AT_END = new RegExp(`${AT}$`, 'iu');
+const JOINERS = new RegExp(`[\\p{M}._%+'${APOSTROPHE}-]+`, 'yu');
+
+/** Every EMAIL match in order, with an address glued to the end of a match taken as the next match (rules above). */
+function* emailMatches(norm) {
+	EMAIL.lastIndex = 0;
+	let m = atSafe(norm, EMAIL.exec(norm), EMAIL_AT_SAFE);
+	while (m !== null) {
+		yield m;
+		const end = m.index + m[0].length;
+		JOINERS.lastIndex = end;
+		const joiners = JOINERS.exec(norm);
+		let glued = null;
+		if (joiners !== null) {
+			EMAIL_GLUED.lastIndex = end + joiners[0].length;
+			glued = atSafe(norm, EMAIL_GLUED.exec(norm), EMAIL_GLUED_AT_SAFE);
+		}
+		if (glued !== null) {
+			glued.glued = true;
+			m = glued;
+			continue;
+		}
+		EMAIL.lastIndex = end;
+		m = atSafe(norm, EMAIL.exec(norm), EMAIL_AT_SAFE);
+	}
+}
 
 // ─── Phone ──────────────────────────────────────────────────────────────────────
 
@@ -217,20 +268,29 @@ function findAll(text, internalDomains) {
 	const addressSpans = []; // every address, ours too: digits inside any of them are part of the address, not a number
 	let emails = 0;
 	let internalEmails = 0;
-	for (const m of norm.matchAll(EMAIL)) {
+	// A mark right after the match belongs to the last label (the pattern gave it up because a digit follows), so the whole
+	// domain is not one of ours: `jo@pollensense.com` + U+0301 + `5` is an outside address and is redacted (CodeRabbit, round 6).
+	const isInternal = (m) => {
+		const domain = m[1].toLowerCase();
+		const end = m.index + m[0].length;
+		const markAfter = /^\p{M}/u.test(norm.slice(end, end + 2));
+		return !markAfter && internalDomains.some((d) => domain === d || domain.endsWith(`.${d}`));
+	};
+	for (const m of emailMatches(norm)) {
 		// A mark that trails the last label makes it a different name (`com` + U+0301 is not `com`), so for the file
 		// extension test it is stripped (the text is then still a file name) but the internal-domain comparison below
 		// uses the whole domain: an address that only looks like one of ours is an outside address and is redacted.
 		const bare = (label) => label.replace(/\p{M}+$/u, '').toLowerCase();
 		if (FILE_EXTENSIONS.has(bare(m[2]))) continue;
-		const domain = m[1].toLowerCase();
 		const span = { start: m.index, end: m.index + m[0].length, label: '[email]' };
-		// A mark right after the match belongs to the last label (the pattern gave it up because a digit follows), so the whole
-		// domain is not one of ours: `jo@pollensense.com` + U+0301 + `5` is an outside address and is redacted (CodeRabbit, round 6).
-		const markAfter = /^\p{M}/u.test(norm.slice(span.end, span.end + 2));
-		const internal = !markAfter && internalDomains.some((d) => domain === d || domain.endsWith(`.${d}`));
+		const internal = isInternal(m);
 		// A quoted local part can hold free text (`"call 555-010-0199 now"@...`): for one of our own addresses it does not hide a number.
-		if (!(internal && m[0].startsWith('"'))) addressSpans.push(span);
+		if (internal && m.glued) {
+			// Our own address read from the characters after another address: its domain is part of the address, its local part is
+			// left to the phone scan (a number between two of our addresses in quotes is a number, not a local part).
+			const local = m[0].slice(0, m[0].length - m[1].length);
+			addressSpans.push({ start: m.index + local.search(AT_AT_END), end: span.end });
+		} else if (!(internal && m[0].startsWith('"'))) addressSpans.push(span);
 		if (internal) {
 			internalEmails++;
 			continue;
